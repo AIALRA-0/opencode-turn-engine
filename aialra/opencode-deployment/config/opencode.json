@@ -1,0 +1,110 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "snapshot": true,
+  "server": {
+    "hostname": "127.0.0.1",
+    "port": 12601,
+    "mdns": false,
+    "cors": [
+      "https://opencode.aialra.online",
+      "http://127.0.0.1:12601"
+    ]
+  },
+  "model": "deepseek/deepseek-v4-flash",
+  "small_model": "deepseek/deepseek-v4-flash",
+  "provider": {
+    "deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepSeek",
+      "options": {
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "{env:OPENCODE_DEEPSEEK_API_KEY}",
+        "timeout": 600000,
+        "chunkTimeout": 60000
+      },
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro"
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash"
+        },
+        "deepseek-chat": {
+          "name": "DeepSeek Chat"
+        },
+        "deepseek-reasoner": {
+          "name": "DeepSeek Reasoner"
+        }
+      }
+    },
+    "kimi": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Kimi",
+      "options": {
+        "baseURL": "https://api.kimi.com/coding/v1",
+        "apiKey": "{env:OPENCODE_KIMI_API_KEY}",
+        "headers": {
+          "anthropic-version": "2023-06-01"
+        }
+      },
+      "models": {
+        "kimi-for-coding": {
+          "name": "Kimi For Coding"
+        }
+      }
+    },
+    "minimax": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "MiniMax",
+      "options": {
+        "baseURL": "https://api.minimaxi.com/anthropic/v1",
+        "apiKey": "{env:OPENCODE_MINIMAX_API_KEY}",
+        "headers": {
+          "anthropic-version": "2023-06-01"
+        }
+      },
+      "models": {
+        "MiniMax-M2.7": {
+          "name": "MiniMax M2.7"
+        }
+      }
+    },
+    "sensenova": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "SenseNova",
+      "options": {
+        "baseURL": "http://127.0.0.1:12602/v1",
+        "apiKey": "{env:OPENCODE_SENSETIME_API_KEY}",
+        "timeout": 600000,
+        "chunkTimeout": 60000
+      },
+      "models": {
+        "SenseChat": {
+          "name": "SenseChat"
+        },
+        "SenseNova-V6.5-Pro": {
+          "name": "SenseNova V6.5 Pro"
+        },
+        "SenseNova-V6.5-Turbo": {
+          "name": "SenseNova V6.5 Turbo"
+        }
+      }
+    }
+  },
+  "watcher": {
+    "ignore": [
+      ".git/**",
+      ".next/**",
+      "node_modules/**",
+      "api/.venv/**",
+      "opencode/runtime/node_modules/**",
+      "opencode/.tmp/**",
+      "opencode/source/.git/**",
+      ".DeeeeeepWiki/generated/**",
+      ".DeeeeeepWiki/cache/**",
+      ".DeeeeeepWiki/archive/**"
+    ]
+  }
+}
