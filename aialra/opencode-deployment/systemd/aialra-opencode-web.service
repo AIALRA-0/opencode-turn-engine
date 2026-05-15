@@ -1,0 +1,27 @@
+[Unit]
+Description=AIALRA OpenCode Web GUI and server
+After=network-online.target aialra-opencode-sensenova.service
+Wants=network-online.target
+Requires=aialra-opencode-sensenova.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/srv/aialra/apps/opencode-turn-engine
+EnvironmentFile=/srv/aialra/config/secrets/opencode.env
+Environment=HOME=/srv/aialra/state/root-home
+Environment=XDG_CONFIG_HOME=/srv/aialra/state/root-home/.config
+Environment=XDG_DATA_HOME=/srv/aialra/state/root-home/.local/share
+Environment=NODE_ENV=production
+Environment=AIALRA_TURN_TRACE=1
+Environment=AIALRA_TURN_TRACE_DIR=/srv/aialra/apps/opencode-turn-engine/aialra/turn-observability/traces
+ExecStart=/srv/aialra/apps/opencode-turn-engine/aialra/opencode-deployment/scripts/start-web.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/srv/aialra/logs/opencode/web/service.log
+StandardError=append:/srv/aialra/logs/opencode/web/service.log
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

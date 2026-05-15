@@ -15,6 +15,8 @@ that currently power `opencode.aialra.online`.
 - Imported the local deployment overlay under `aialra/opencode-deployment/`,
   including the form login proxy, SenseNova bridge, runtime package manifest,
   scripts, config templates, and tests.
+- Added optional turn observability under `aialra/turn-observability/` for
+  tracing OpenCode workflow phases without logging prompt text or secrets.
 
 ## Development Rule
 

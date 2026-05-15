@@ -1,0 +1,22 @@
+[Unit]
+Description=AIALRA OpenCode form login proxy
+After=network-online.target aialra-opencode-web.service
+Wants=network-online.target
+Requires=aialra-opencode-web.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/srv/aialra/apps/opencode-turn-engine
+EnvironmentFile=/srv/aialra/config/secrets/opencode.env
+Environment=NODE_ENV=production
+ExecStart=/srv/aialra/apps/opencode-turn-engine/aialra/opencode-deployment/scripts/start-login-proxy.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/srv/aialra/logs/opencode/login/service.log
+StandardError=append:/srv/aialra/logs/opencode/login/service.log
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

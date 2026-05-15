@@ -28,6 +28,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { AialraTurnTrace } from "./turn-trace"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
@@ -122,6 +123,16 @@ export const layer = Layer.effect(
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
+      yield* AialraTurnTrace.emit({
+        phase: "processor.created",
+        sessionID: input.sessionID,
+        messageID: input.assistantMessage.id,
+        data: {
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+          snapshot: !!initialSnapshot,
+        },
+      })
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -189,6 +200,19 @@ export const layer = Layer.effect(
             attachments: output.attachments,
           },
         })
+        yield* AialraTurnTrace.emit({
+          phase: "tool.call.finished",
+          sessionID: match.part.sessionID,
+          messageID: match.part.messageID,
+          data: {
+            callID: toolCallID,
+            tool: match.part.tool,
+            status: "completed",
+            title: output.title,
+            outputChars: output.output.length,
+            attachments: output.attachments?.length ?? 0,
+          },
+        })
         yield* settleToolCall(toolCallID)
       })
 
@@ -204,6 +228,17 @@ export const layer = Layer.effect(
             time: { start: match.part.state.time.start, end: Date.now() },
           },
         })
+        yield* AialraTurnTrace.emit({
+          phase: "tool.call.finished",
+          sessionID: match.part.sessionID,
+          messageID: match.part.messageID,
+          data: {
+            callID: toolCallID,
+            tool: match.part.tool,
+            status: "error",
+            errorType: error instanceof Error ? error.name : typeof error,
+          },
+        })
         if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
@@ -215,6 +250,11 @@ export const layer = Layer.effect(
         switch (value.type) {
           case "start":
             yield* status.set(ctx.sessionID, { type: "busy" })
+            yield* AialraTurnTrace.emit({
+              phase: "model.stream.started",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+            })
             return
 
           case "reasoning-start":
@@ -300,6 +340,16 @@ export const layer = Layer.effect(
               messageID: part.messageID,
               sessionID: part.sessionID,
             }
+            yield* AialraTurnTrace.emit({
+              phase: "tool.input.started",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                callID: value.id,
+                tool: value.toolName,
+                providerExecuted: value.providerExecuted === true,
+              },
+            })
             return
 
           case "tool-input-delta":
@@ -350,6 +400,17 @@ export const layer = Layer.effect(
                 ? { ...value.providerMetadata, providerExecuted: true }
                 : value.providerMetadata,
             }))
+            yield* AialraTurnTrace.emit({
+              phase: "tool.call.started",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                callID: value.toolCallId,
+                tool: value.toolName,
+                inputKeys: AialraTurnTrace.keys(value.input),
+                providerExecuted: toolCall?.part.metadata?.providerExecuted === true,
+              },
+            })
 
             const parts = MessageV2.parts(ctx.assistantMessage.id)
             const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
@@ -481,6 +542,17 @@ export const layer = Layer.effect(
                 })
               }
             }
+            yield* AialraTurnTrace.emit({
+              phase: "model.step.started",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                agent: input.assistantMessage.agent,
+                providerID: ctx.model.providerID,
+                modelID: ctx.model.id,
+                snapshot: !!ctx.snapshot,
+              },
+            })
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
@@ -550,6 +622,17 @@ export const layer = Layer.effect(
             ) {
               ctx.needsCompaction = true
             }
+            yield* AialraTurnTrace.emit({
+              phase: "model.step.finished",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                finish: value.finishReason,
+                cost: usage.cost,
+                tokens: usage.tokens,
+                needsCompaction: ctx.needsCompaction,
+              },
+            })
             return
           }
 
@@ -573,6 +656,11 @@ export const layer = Layer.effect(
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.currentText)
+            yield* AialraTurnTrace.emit({
+              phase: "text.started",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+            })
             return
 
           case "text-delta":
@@ -617,6 +705,14 @@ export const layer = Layer.effect(
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
             yield* session.updatePart(ctx.currentText)
+            yield* AialraTurnTrace.emit({
+              phase: "text.finished",
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                chars: ctx.currentText.text.length,
+              },
+            })
             ctx.currentText = undefined
             return
 
@@ -711,6 +807,15 @@ export const layer = Layer.effect(
           }
         }
         ctx.assistantMessage.error = error
+        yield* AialraTurnTrace.emit({
+          phase: "processor.halted",
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            errorType: e instanceof Error ? e.name : typeof e,
+            aborted,
+          },
+        })
         yield* bus.publish(Session.Event.Error, {
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
@@ -722,8 +827,22 @@ export const layer = Layer.effect(
         slog.info("process")
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        yield* AialraTurnTrace.emit({
+          phase: "processor.process.started",
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            agent: streamInput.agent.name,
+            providerID: streamInput.model.providerID,
+            modelID: streamInput.model.id,
+            systemCount: streamInput.system.length,
+            messageCount: streamInput.messages.length,
+            toolCount: Object.keys(streamInput.tools).length,
+            toolChoice: streamInput.toolChoice,
+          },
+        })
 
-        return yield* Effect.gen(function* () {
+        const result = yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
@@ -786,6 +905,19 @@ export const layer = Layer.effect(
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })
+        yield* AialraTurnTrace.emit({
+          phase: "processor.process.finished",
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            result,
+            finish: ctx.assistantMessage.finish,
+            needsCompaction: ctx.needsCompaction,
+            blocked: ctx.blocked,
+            hasError: !!ctx.assistantMessage.error,
+          },
+        })
+        return result
       })
 
       return {

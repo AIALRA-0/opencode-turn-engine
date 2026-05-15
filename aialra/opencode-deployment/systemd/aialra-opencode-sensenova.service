@@ -1,0 +1,21 @@
+[Unit]
+Description=AIALRA OpenCode SenseNova OpenAI-compatible bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/srv/aialra/apps/opencode-turn-engine
+EnvironmentFile=/srv/aialra/config/secrets/opencode.env
+Environment=NODE_ENV=production
+ExecStart=/srv/aialra/apps/opencode-turn-engine/aialra/opencode-deployment/scripts/start-sensenova-bridge.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/srv/aialra/logs/opencode/sensenova/service.log
+StandardError=append:/srv/aialra/logs/opencode/sensenova/service.log
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

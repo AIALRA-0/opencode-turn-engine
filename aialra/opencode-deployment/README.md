@@ -34,6 +34,10 @@ opencode/
 | `aialra-opencode-login.service` | Provides a form login UI and proxies authenticated Web sessions | `127.0.0.1:12603` |
 | Nginx | Publishes the Web GUI | `https://opencode.aialra.online` |
 
+Tracked systemd unit templates live in `systemd/`. The active deployment uses
+the fork build at `packages/opencode/dist/opencode-linux-x64/bin/opencode` when
+that binary exists, and falls back to `runtime/node_modules/.bin/opencode`.
+
 ## Secrets
 
 Real tokens are stored outside the repository in:
@@ -89,6 +93,12 @@ needs provider-side permission correction before live SenseNova calls can pass.
 
 ## TUI
 
+Build the fork runtime before restarting the web service:
+
+```bash
+./aialra/opencode-deployment/scripts/build-opencode.sh
+```
+
 Attach the TUI to the deployed OpenCode server:
 
 ```bash
@@ -99,6 +109,21 @@ Run a one-shot non-interactive task against the deployed server:
 
 ```bash
 ./aialra/opencode-deployment/scripts/opencode-run.sh "Inspect the repo and summarize the current module layout."
+```
+
+## Turn traces
+
+Enable structural workflow traces with:
+
+```bash
+AIALRA_TURN_TRACE=1 ./aialra/opencode-deployment/scripts/start-web.sh
+```
+
+The default trace directory is `aialra/turn-observability/traces/`, and the
+directory is ignored by git. Render the newest trace as a timeline with:
+
+```bash
+node aialra/turn-observability/scripts/render-trace.js aialra/turn-observability/traces
 ```
 
 ## Validation
