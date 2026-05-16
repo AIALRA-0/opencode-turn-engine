@@ -431,3 +431,9 @@ build
 安全检查记录：提交前扫描了本阶段相关源码、测试和文档里的 `github_pat_`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`password`、`secret`、`token` 等关键词。命中的是普通字段名、测试说明和文档里的“不要记录 token”文字，没有发现真实 GitHub token、模型 API key、账号密码或 provider 密钥。
 
 边界记录：这次已经落地 Codex 命名的生命周期、请求/流重试参数、UserTurn/TurnContext 字段、cwd 传播、approval=never 的 ask-to-deny 投影，以及只读权限的第一层拒绝规则。更深层的“每个工具都完全按 Codex sandbox 做系统级隔离”仍需要下一轮继续推进到 tool executor 层；这次不会把它伪装成已经完整等价。
+
+部署记录：提交 `10f610cda` 已推送到 `origin/dev`。随后执行 `./aialra/opencode-deployment/scripts/build-opencode.sh`，完成 fork runtime 构建，版本为 `0.0.0-dev-202605162351`。构建后重启了 `aialra-opencode-web.service`，并确认 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-opencode-sensenova.service` 均为 active。未重启 sensenova bridge，以避免把工作区里已有的、与本阶段无关的 sensenova 文件改动混入部署。
+
+部署 smoke：执行 `./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，网页登录页、登录代理、bootstrap、健康检查和 CLI 入口均通过。随后执行 `RUN_MODEL_CALL=1 ./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，真实模型短 prompt 成功完成。
+
+真实 trace 验证：最新 trace 文件为 `aialra/turn-observability/traces/ses_1cccabf2bffenkHjSsZDoffbqR.jsonl`，turnID 为 `msg_e33354184001w3x1hae6nnQ5hA`。该 trace 显示 `prompt.received -> turn.context.created -> turn.started -> model.stream.started -> prompt.completed -> turn.completed`，总耗时约 4.9 秒，`turn.context.created` 中能看到 cwd、approval_policy、sandbox_policy、permission_profile、model、collaboration_mode、environments、request_max_retries、stream_max_retries、stream_idle_timeout_ms。
