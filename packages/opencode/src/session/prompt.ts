@@ -64,6 +64,7 @@ import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
 import { SessionTable } from "./session.sql"
 import { AialraTurnTrace } from "./turn-trace"
+import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -164,6 +165,44 @@ function referenceTextPart(input: {
     ].join("\n"),
     metadata: { reference: metadata },
   }
+}
+
+function withoutMentionSigil(value: string) {
+  return value.startsWith("@") ? value.slice(1) : value
+}
+
+function promptPartSignatures(part: PromptInput["parts"][number]) {
+  const result: string[] = []
+  if (part.type === "file") {
+    result.push(`file:url:${part.url}`)
+    if (part.filename) result.push(`file:name:${part.filename}`)
+    if (part.source?.text?.value) result.push(`file:name:${withoutMentionSigil(part.source.text.value)}`)
+  }
+  if (part.type === "agent") result.push(`agent:${part.name}`)
+  if (part.type === "subtask") {
+    result.push(`subtask:${part.agent}:${part.command ?? ""}:${part.description}:${part.prompt}`)
+  }
+  if (part.type === "text") {
+    const reference = referencePromptMetadata(part.metadata?.reference)
+    if (reference) {
+      result.push(`reference:source:${withoutMentionSigil(reference.source.value)}`)
+      result.push(`reference:name:${reference.target === undefined ? reference.name : `${reference.name}/${reference.target}`}`)
+    }
+  }
+  return result
+}
+
+function addPromptPartSignatures(seen: Set<string>, part: PromptInput["parts"][number]) {
+  for (const signature of promptPartSignatures(part)) seen.add(signature)
+}
+
+function hasPromptPartSignature(seen: Set<string>, part: PromptInput["parts"][number]) {
+  const signatures = promptPartSignatures(part)
+  return signatures.length > 0 && signatures.some((signature) => seen.has(signature))
+}
+
+function messageTurnID(info: MessageV2.Info) {
+  return info.role === "assistant" ? info.parentID : info.id
 }
 
 export interface Interface {
@@ -319,6 +358,39 @@ export const layer = Layer.effect(
         { concurrency: "unbounded", discard: true },
       )
       return parts
+    })
+
+    const normalizePromptInputExplicitParts = Effect.fn("SessionPrompt.normalizePromptInputExplicitParts")(function* (
+      input: PromptInput,
+    ) {
+      const seen = new Set<string>()
+      for (const part of input.parts) addPromptPartSignatures(seen, part)
+
+      const parts: Array<PromptInput["parts"][number]> = []
+      let added = 0
+      const addedByType: Record<string, number> = {}
+
+      for (const part of input.parts) {
+        parts.push(part)
+        if (part.type !== "text" || part.synthetic === true || !part.text.includes("@")) continue
+
+        const resolved = yield* resolvePromptParts(part.text)
+        for (const candidate of resolved) {
+          if (candidate.type === "text" && candidate.synthetic !== true) continue
+          if (hasPromptPartSignature(seen, candidate)) continue
+
+          addPromptPartSignatures(seen, candidate)
+          parts.push(candidate)
+          added++
+          addedByType[candidate.type] = (addedByType[candidate.type] ?? 0) + 1
+        }
+      }
+
+      return {
+        input: added === 0 ? input : { ...input, parts },
+        added,
+        addedByType,
+      }
     })
 
     const title = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
@@ -1609,49 +1681,87 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         }
       }
 
-      yield* AialraTurnTrace.emit({
-        phase: "user_message.created",
-        sessionID: input.sessionID,
-        messageID: info.id,
-        data: {
-          agent: info.agent,
-          providerID: info.model.providerID,
-          modelID: info.model.modelID,
-          variant: info.model.variant,
-          tools: AialraTurnTrace.keys(info.tools),
-          format: info.format?.type ?? "text",
-          parts: AialraTurnTrace.partSummary(parts),
-        },
-      })
-
       return { info, parts }
     }, Effect.scoped)
 
-    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn(
-      "SessionPrompt.prompt",
-    )(function* (input: PromptInput) {
+    const promptWithRoute: (
+      input: PromptInput,
+      route: TurnFrameRoute,
+    ) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn("SessionPrompt.prompt")(function* (
+      input: PromptInput,
+      route: TurnFrameRoute,
+    ) {
+      const receivedAt = Date.now()
+      const messageID = input.messageID ?? MessageID.ascending()
+      const intakeInput: PromptInput = input.messageID ? input : { ...input, messageID }
       yield* AialraTurnTrace.emit({
         phase: "prompt.received",
-        sessionID: input.sessionID,
-        messageID: input.messageID,
+        turnID: intakeInput.messageID,
+        sessionID: intakeInput.sessionID,
+        messageID: intakeInput.messageID,
         data: {
-          agent: input.agent,
-          providerID: input.model?.providerID,
-          modelID: input.model?.modelID,
-          variant: input.variant,
-          noReply: input.noReply === true,
-          tools: AialraTurnTrace.keys(input.tools),
-          parts: AialraTurnTrace.partSummary(input.parts),
-          format: input.format?.type ?? "text",
+          route,
+          agent: intakeInput.agent,
+          providerID: intakeInput.model?.providerID,
+          modelID: intakeInput.model?.modelID,
+          variant: intakeInput.variant,
+          noReply: intakeInput.noReply === true,
+          tools: AialraTurnTrace.keys(intakeInput.tools),
+          parts: AialraTurnTrace.partSummary(intakeInput.parts),
+          format: intakeInput.format?.type ?? "text",
         },
       })
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const normalized = yield* normalizePromptInputExplicitParts(intakeInput)
+      const normalizedInput = normalized.input
+      yield* AialraTurnTrace.emit({
+        phase: "prompt.explicit_context_resolved",
+        turnID: normalizedInput.messageID,
+        sessionID: normalizedInput.sessionID,
+        messageID: normalizedInput.messageID,
+        data: {
+          route,
+          added: normalized.added,
+          addedByType: normalized.addedByType,
+          parts: AialraTurnTrace.partSummary(normalizedInput.parts),
+        },
+      })
+      const session = yield* sessions.get(normalizedInput.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
-      const message = yield* createUserMessage(input)
-      yield* sessions.touch(input.sessionID)
+      const message = yield* createUserMessage(normalizedInput)
+      yield* sessions.touch(normalizedInput.sessionID)
+      const frame = TurnFrame.fromUserMessage({
+        route,
+        info: message.info,
+        parts: message.parts,
+        noReply: normalizedInput.noReply,
+        receivedAt,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "turn.frame.created",
+        turnID: frame.turnID,
+        sessionID: frame.sessionID,
+        messageID: frame.messageID,
+        data: frame,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "user_message.created",
+        turnID: frame.turnID,
+        sessionID: normalizedInput.sessionID,
+        messageID: message.info.id,
+        data: {
+          route,
+          agent: message.info.agent,
+          providerID: message.info.model.providerID,
+          modelID: message.info.model.modelID,
+          variant: message.info.model.variant,
+          tools: AialraTurnTrace.keys(message.info.tools),
+          format: message.info.format?.type ?? "text",
+          parts: AialraTurnTrace.partSummary(message.parts),
+        },
+      })
 
       const permissions: Permission.Ruleset = []
-      for (const [t, enabled] of Object.entries(input.tools ?? {})) {
+      for (const [t, enabled] of Object.entries(normalizedInput.tools ?? {})) {
         permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
       }
       if (permissions.length > 0) {
@@ -1659,23 +1769,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
       }
 
-      if (input.noReply === true) {
+      if (normalizedInput.noReply === true) {
         yield* AialraTurnTrace.emit({
           phase: "prompt.no_reply",
-          sessionID: input.sessionID,
+          turnID: frame.turnID,
+          sessionID: normalizedInput.sessionID,
           messageID: message.info.id,
         })
         return message
       }
       yield* AialraTurnTrace.emit({
         phase: "prompt.reply_requested",
-        sessionID: input.sessionID,
+        turnID: frame.turnID,
+        sessionID: normalizedInput.sessionID,
         messageID: message.info.id,
       })
-      const result = yield* loop({ sessionID: input.sessionID })
+      const result = yield* loop({ sessionID: normalizedInput.sessionID })
       yield* AialraTurnTrace.emit({
         phase: "prompt.completed",
-        sessionID: input.sessionID,
+        turnID: frame.turnID,
+        sessionID: normalizedInput.sessionID,
         messageID: result.info.id,
         data: {
           role: result.info.role,
@@ -1684,6 +1797,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       })
       return result
     })
+
+    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = (input) =>
+      promptWithRoute(input, "prompt")
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -1740,6 +1856,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* slog.info("exiting loop")
             yield* AialraTurnTrace.emit({
               phase: "loop.exit_condition.met",
+              turnID: lastUser.id,
               sessionID,
               messageID: lastAssistant.id,
               step,
@@ -1755,6 +1872,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           step++
           yield* AialraTurnTrace.emit({
             phase: "loop.step.started",
+            turnID: lastUser.id,
             sessionID,
             messageID: lastUser.id,
             step,
@@ -1779,6 +1897,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (task?.type === "subtask") {
             yield* AialraTurnTrace.emit({
               phase: "task.subtask.started",
+              turnID: lastUser.id,
               sessionID,
               messageID: lastUser.id,
               step,
@@ -1792,6 +1911,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* handleSubtask({ task, model, lastUser, sessionID, session, msgs })
             yield* AialraTurnTrace.emit({
               phase: "task.subtask.finished",
+              turnID: lastUser.id,
               sessionID,
               messageID: lastUser.id,
               step,
@@ -1806,6 +1926,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (task?.type === "compaction") {
             yield* AialraTurnTrace.emit({
               phase: "task.compaction.started",
+              turnID: lastUser.id,
               sessionID,
               messageID: lastUser.id,
               step,
@@ -1823,6 +1944,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             })
             yield* AialraTurnTrace.emit({
               phase: "task.compaction.finished",
+              turnID: lastUser.id,
               sessionID,
               messageID: lastUser.id,
               step,
@@ -1839,6 +1961,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           ) {
             yield* AialraTurnTrace.emit({
               phase: "compaction.overflow_requested",
+              turnID: lastUser.id,
               sessionID,
               messageID: lastFinished.id,
               step,
@@ -1881,6 +2004,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           yield* sessions.updateMessage(msg)
           yield* AialraTurnTrace.emit({
             phase: "assistant_message.created",
+            turnID: msg.parentID,
             sessionID,
             messageID: msg.id,
             step,
@@ -1927,6 +2051,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             })
             yield* AialraTurnTrace.emit({
               phase: "tools.resolved",
+              turnID: lastUser.id,
               sessionID,
               messageID: handle.message.id,
               step,
@@ -1946,6 +2071,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               })
               yield* AialraTurnTrace.emit({
                 phase: "tools.structured_output_added",
+                turnID: lastUser.id,
                 sessionID,
                 messageID: handle.message.id,
                 step,
@@ -1986,6 +2112,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             yield* AialraTurnTrace.emit({
               phase: "model.context_built",
+              turnID: lastUser.id,
               sessionID,
               messageID: handle.message.id,
               step,
@@ -1999,6 +2126,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             })
             yield* AialraTurnTrace.emit({
               phase: "model.process.started",
+              turnID: lastUser.id,
               sessionID,
               messageID: handle.message.id,
               step,
@@ -2022,6 +2150,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             })
             yield* AialraTurnTrace.emit({
               phase: "model.process.finished",
+              turnID: lastUser.id,
               sessionID,
               messageID: handle.message.id,
               step,
@@ -2070,6 +2199,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           )
           yield* AialraTurnTrace.emit({
             phase: "loop.step.finished",
+            turnID: handle.message.parentID,
             sessionID,
             messageID: handle.message.id,
             step,
@@ -2087,6 +2217,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const final = yield* lastAssistant(sessionID)
         yield* AialraTurnTrace.emit({
           phase: "loop.finished",
+          turnID: messageTurnID(final.info),
           sessionID,
           messageID: final.info.id,
           step,
@@ -2212,14 +2343,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         { parts },
       )
 
-      const result = yield* prompt({
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-        model: userModel,
-        agent: userAgent,
-        parts,
-        variant: input.variant,
-      })
+      const result = yield* promptWithRoute(
+        {
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          model: userModel,
+          agent: userAgent,
+          parts,
+          variant: input.variant,
+        },
+        "command",
+      )
       yield* bus.publish(Command.Event.Executed, {
         name: input.command,
         sessionID: input.sessionID,

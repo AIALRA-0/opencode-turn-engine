@@ -3,7 +3,7 @@
 This layer records the OpenCode turn workflow from user prompt entry through
 loop orchestration, model streaming, and tool execution. It is intentionally
 off by default and writes only structural metadata: phase names, IDs, counts,
-model names, tool names, token totals, cost, and finish states.
+turn IDs, model names, tool names, token totals, cost, and finish states.
 
 It does not write prompt text, generated text, tool arguments, tool output, API
 tokens, usernames, or passwords.
@@ -47,15 +47,21 @@ can also pass a specific trace file.
 
 The first comparison target is the shape of a single turn:
 
-1. `prompt.received` and `user_message.created`
-2. `loop.started` and `loop.step.started`
-3. `assistant_message.created`
-4. `tools.resolved`
-5. `model.context_built`
-6. `processor.process.started`
-7. stream events such as `model.step.started`, `text.started`, `tool.call.started`
-8. `processor.process.finished`
-9. `loop.step.finished`, `loop.finished`, `prompt.completed`
+1. `prompt.received`
+2. `prompt.explicit_context_resolved`
+3. `turn.frame.created`
+4. `user_message.created` and `prompt.reply_requested`
+5. `loop.started` and `loop.step.started`
+6. `assistant_message.created`
+7. `tools.resolved`
+8. `model.context_built`
+9. `processor.process.started`
+10. stream events such as `model.step.started`, `text.started`, `tool.call.started`
+11. `processor.process.finished`
+12. `loop.step.finished`, `loop.finished`, `prompt.completed`
 
 That gives us a stable observation surface before we merge in Codex-style turn
 planning, tool governance, retry behavior, and final response handling.
+Events that belong to a user turn carry the same top-level `turnID`, so a
+single prompt can be followed through intake, loop, model, processor, and final
+response without reading prompt text.

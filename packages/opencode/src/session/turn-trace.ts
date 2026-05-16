@@ -7,6 +7,7 @@ type TraceData = Record<string, unknown>
 
 type TraceInput = {
   phase: string
+  turnID?: string
   sessionID?: string
   messageID?: string
   step?: number
@@ -52,9 +53,9 @@ export namespace AialraTurnTrace {
   }
 
   export function emit(input: TraceInput): Effect.Effect<void> {
+    if (!enabled()) return Effect.void
     return Effect.try({
       try: () => {
-        if (!enabled()) return
         const dir = traceDir()
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
         fs.appendFileSync(
@@ -63,6 +64,7 @@ export namespace AialraTurnTrace {
             trace: "aialra.turn.v1",
             ts: new Date().toISOString(),
             phase: input.phase,
+            turnID: input.turnID,
             sessionID: input.sessionID,
             messageID: input.messageID,
             step: input.step,

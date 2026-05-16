@@ -65,8 +65,9 @@ export function renderTimeline(events, traceFile = "") {
   lines.push("Timeline:")
   for (const event of events) {
     const step = event.step === undefined ? "" : ` step=${event.step}`
+    const turn = event.turnID === undefined ? "" : ` turn=${event.turnID}`
     const message = event.messageID === undefined ? "" : ` message=${event.messageID}`
-    lines.push(`  ${elapsed(first, event.ts)} ${event.phase}${step}${message}${compactData(event.data)}`)
+    lines.push(`  ${elapsed(first, event.ts)} ${event.phase}${step}${turn}${message}${compactData(event.data)}`)
   }
   return lines.join(os.EOL)
 }

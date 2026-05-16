@@ -2,6 +2,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { FetchHttpClient } from "effect/unstable/http"
 import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import fs from "fs"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -87,6 +88,43 @@ function withSh<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
         Shell.preferred.reset()
       }),
   )
+}
+
+function withTurnTrace<A, E, R>(dir: string, effect: Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previousTrace = process.env.AIALRA_TURN_TRACE
+      const previousDir = process.env.AIALRA_TURN_TRACE_DIR
+      process.env.AIALRA_TURN_TRACE = "1"
+      process.env.AIALRA_TURN_TRACE_DIR = dir
+      return { previousTrace, previousDir }
+    }),
+    () => effect,
+    ({ previousTrace, previousDir }) =>
+      Effect.sync(() => {
+        if (previousTrace === undefined) delete process.env.AIALRA_TURN_TRACE
+        else process.env.AIALRA_TURN_TRACE = previousTrace
+        if (previousDir === undefined) delete process.env.AIALRA_TURN_TRACE_DIR
+        else process.env.AIALRA_TURN_TRACE_DIR = previousDir
+      }),
+  )
+}
+
+function readTraceEvents(dir: string) {
+  const files = fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => path.join(dir, name))
+  expect(files.length).toBeGreaterThan(0)
+  return files
+    .flatMap((file) =>
+      fs
+        .readFileSync(file, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, any>),
+    )
+    .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
 }
 
 function toolPart(parts: MessageV2.Part[]) {
@@ -2085,6 +2123,253 @@ it.instance(
       },
     },
   },
+)
+
+it.instance(
+  "resolves raw text file mentions before storing user messages",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const file = path.join(dir, "raw-file.txt")
+      yield* writeText(file, "raw file content\n")
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const message = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "Read @raw-file.txt before answering" }],
+      })
+
+      const stored = yield* MessageV2.get({ sessionID: session.id, messageID: message.info.id })
+      const textParts = stored.parts.filter((part): part is MessageV2.TextPart => part.type === "text")
+      const fileParts = stored.parts.filter((part): part is MessageV2.FilePart => part.type === "file")
+
+      expect(textParts.some((part) => !part.synthetic && part.text === "Read @raw-file.txt before answering")).toBe(
+        true,
+      )
+      expect(textParts.some((part) => part.synthetic && part.text.startsWith("Called the Read tool"))).toBe(true)
+      expect(textParts.some((part) => part.synthetic && part.text.includes("raw file content"))).toBe(true)
+      expect(fileParts.filter((part) => part.filename === "raw-file.txt")).toHaveLength(1)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true, config: cfg },
+)
+
+it.instance(
+  "does not duplicate file parts when TUI already supplied the explicit file",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const file = path.join(dir, "duplicate.txt")
+      yield* writeText(file, "duplicate content\n")
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const message = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [
+          { type: "text", text: "Read @duplicate.txt" },
+          {
+            type: "file",
+            mime: "text/plain",
+            filename: "duplicate.txt",
+            url: pathToFileURL(file).href,
+            source: {
+              type: "file",
+              path: "duplicate.txt",
+              text: { value: "@duplicate.txt", start: 5, end: 19 },
+            },
+          },
+        ],
+      })
+
+      const stored = yield* MessageV2.get({ sessionID: session.id, messageID: message.info.id })
+      const textParts = stored.parts.filter((part): part is MessageV2.TextPart => part.type === "text")
+      const fileParts = stored.parts.filter((part): part is MessageV2.FilePart => part.type === "file")
+
+      expect(fileParts.filter((part) => part.filename === "duplicate.txt")).toHaveLength(1)
+      expect(textParts.filter((part) => part.synthetic && part.text.startsWith("Called the Read tool"))).toHaveLength(1)
+      expect(textParts.filter((part) => part.synthetic && part.text.includes("duplicate content"))).toHaveLength(1)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true, config: cfg },
+)
+
+it.instance(
+  "resolves configured references from raw text before read context",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const docs = path.join(dir, "external-docs")
+      const readme = path.join(docs, "README.md")
+      yield* ensureDir(docs)
+      yield* writeText(readme, "configured reference readme")
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const message = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "Use @docs/README.md" }],
+      })
+
+      const stored = yield* MessageV2.get({ sessionID: session.id, messageID: message.info.id })
+      const referenceIndex = stored.parts.findIndex(
+        (part) =>
+          part.type === "text" &&
+          part.synthetic === true &&
+          part.text.startsWith("Referenced configured reference @docs/README.md."),
+      )
+      const readIndex = stored.parts.findIndex(
+        (part) => part.type === "text" && part.synthetic === true && part.text.startsWith("Called the Read tool"),
+      )
+
+      expect(referenceIndex).toBeGreaterThanOrEqual(0)
+      expect(readIndex).toBeGreaterThan(referenceIndex)
+      const reference = stored.parts[referenceIndex]
+      expect(reference?.type === "text" ? reference.metadata?.reference : undefined).toMatchObject({
+        name: "docs",
+        kind: "local",
+        path: docs,
+        target: "README.md",
+        targetPath: readme,
+      })
+
+      yield* sessions.remove(session.id)
+    }),
+  {
+    git: true,
+    config: {
+      ...cfg,
+      reference: {
+        docs: "./external-docs",
+      },
+    },
+  },
+)
+
+it.instance(
+  "records agent mentions in the prompt TurnFrame without tracing raw text",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const traceDir = path.join(dir, "trace-agent")
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const message = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "Ask @build to inspect this" }],
+        }),
+      )
+
+      const stored = yield* MessageV2.get({ sessionID: session.id, messageID: message.info.id })
+      expect(stored.parts.some((part) => part.type === "agent" && part.name === "build")).toBe(true)
+
+      const events = readTraceEvents(traceDir)
+      const frame = events.find((event) => event.phase === "turn.frame.created")
+      expect(frame?.turnID).toBe(message.info.id)
+      expect(frame?.data?.route).toBe("prompt")
+      expect(frame?.data?.explicit).toMatchObject({ agents: ["build"] })
+      expect(JSON.stringify(frame)).not.toContain("Ask @build to inspect this")
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true, config: cfg },
+)
+
+it.instance(
+  "keeps large raw text intact while tracing only TurnFrame metrics",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const file = path.join(dir, "large.txt")
+      const traceDir = path.join(dir, "trace-large")
+      const rawText = `${"x".repeat(9000)} @large.txt`
+      yield* writeText(file, "large file content\n")
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const message = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: rawText }],
+        }),
+      )
+
+      const stored = yield* MessageV2.get({ sessionID: session.id, messageID: message.info.id })
+      expect(stored.parts.some((part) => part.type === "text" && !part.synthetic && part.text === rawText)).toBe(true)
+
+      const events = readTraceEvents(traceDir)
+      const frame = events.find((event) => event.phase === "turn.frame.created")
+      const resolved = events.find((event) => event.phase === "prompt.explicit_context_resolved")
+      expect(frame?.turnID).toBe(message.info.id)
+      expect(frame?.data?.input).toMatchObject({ textChars: rawText.length, fileParts: 1 })
+      expect(resolved?.data).toMatchObject({ added: 1, addedByType: { file: 1 } })
+      expect(JSON.stringify(events)).not.toContain("x".repeat(500))
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true, config: cfg },
+)
+
+it.instance(
+  "marks command prompts with command route in the TurnFrame",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        command: {
+          routecheck: {
+            template: "Route command $ARGUMENTS",
+          },
+        },
+      }))
+      const traceDir = path.join(dir, "trace-command")
+      const { prompt, sessions, chat } = yield* boot()
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.command({
+          sessionID: chat.id,
+          command: "routecheck",
+          arguments: "now",
+          agent: "build",
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      const events = readTraceEvents(traceDir)
+      const frame = events.find((event) => event.phase === "turn.frame.created")
+      expect(frame?.data?.route).toBe("command")
+      expect(events.some((event) => event.phase === "prompt.reply_requested" && event.turnID === frame?.turnID)).toBe(
+        true,
+      )
+
+      yield* sessions.remove(chat.id)
+    }),
+  { git: true },
 )
 
 // Special characters in filenames

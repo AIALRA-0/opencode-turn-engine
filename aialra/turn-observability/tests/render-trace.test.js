@@ -18,17 +18,88 @@ test("selects newest trace file and renders a structural timeline", () => {
           trace: "aialra.turn.v1",
           ts: "2026-05-15T00:00:00.000Z",
           phase: "prompt.received",
+          turnID: "turn_test",
           sessionID: "ses_test",
           data: { parts: { count: 1, byType: { text: 1 } } },
         },
         {
           trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.100Z",
+          phase: "prompt.explicit_context_resolved",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+          data: { added: 1, addedByType: { file: 1 } },
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.200Z",
+          phase: "turn.frame.created",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+          data: {
+            turnID: "turn_test",
+            route: "prompt",
+            input: { textChars: 12, fileParts: 1 },
+            explicit: { files: ["README.md"], agents: [], references: [] },
+          },
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.300Z",
+          phase: "user_message.created",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+          data: { parts: { count: 2, byType: { text: 1, file: 1 } } },
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.400Z",
+          phase: "prompt.reply_requested",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.800Z",
+          phase: "model.context_built",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "msg_test",
+          step: 1,
+          data: { systemCount: 3, modelMessageCount: 1 },
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.900Z",
+          phase: "processor.process.started",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "msg_test",
+          step: 1,
+          data: { toolCount: 4 },
+        },
+        {
+          trace: "aialra.turn.v1",
           ts: "2026-05-15T00:00:01.250Z",
           phase: "model.process.finished",
+          turnID: "turn_test",
           sessionID: "ses_test",
           messageID: "msg_test",
           step: 1,
           data: { result: "continue" },
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:01.500Z",
+          phase: "prompt.completed",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "msg_test",
+          data: { role: "assistant" },
         },
       ]
         .map((event) => JSON.stringify(event))
@@ -40,6 +111,11 @@ test("selects newest trace file and renders a structural timeline", () => {
     assert.equal(selectTraceFile(dir), newFile)
     const rendered = renderTimeline(readEvents(newFile), newFile)
     assert.match(rendered, /Session: ses_test/)
+    assert.match(rendered, /turn=turn_test/)
+    assert.match(rendered, /turn\.frame\.created/)
+    assert.match(rendered, /prompt\.explicit_context_resolved/)
+    assert.match(rendered, /processor\.process\.started/)
+    assert.match(rendered, /prompt\.completed/)
     assert.match(rendered, /model\.process\.finished/)
     assert.doesNotMatch(rendered, /secret prompt/)
   } finally {

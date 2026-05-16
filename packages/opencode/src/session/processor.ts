@@ -125,6 +125,7 @@ export const layer = Layer.effect(
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
       yield* AialraTurnTrace.emit({
         phase: "processor.created",
+        turnID: input.assistantMessage.parentID,
         sessionID: input.sessionID,
         messageID: input.assistantMessage.id,
         data: {
@@ -202,6 +203,7 @@ export const layer = Layer.effect(
         })
         yield* AialraTurnTrace.emit({
           phase: "tool.call.finished",
+          turnID: ctx.assistantMessage.parentID,
           sessionID: match.part.sessionID,
           messageID: match.part.messageID,
           data: {
@@ -230,6 +232,7 @@ export const layer = Layer.effect(
         })
         yield* AialraTurnTrace.emit({
           phase: "tool.call.finished",
+          turnID: ctx.assistantMessage.parentID,
           sessionID: match.part.sessionID,
           messageID: match.part.messageID,
           data: {
@@ -252,6 +255,7 @@ export const layer = Layer.effect(
             yield* status.set(ctx.sessionID, { type: "busy" })
             yield* AialraTurnTrace.emit({
               phase: "model.stream.started",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
             })
@@ -342,6 +346,7 @@ export const layer = Layer.effect(
             }
             yield* AialraTurnTrace.emit({
               phase: "tool.input.started",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
               data: {
@@ -402,6 +407,7 @@ export const layer = Layer.effect(
             }))
             yield* AialraTurnTrace.emit({
               phase: "tool.call.started",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
               data: {
@@ -544,6 +550,7 @@ export const layer = Layer.effect(
             }
             yield* AialraTurnTrace.emit({
               phase: "model.step.started",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
               data: {
@@ -624,6 +631,7 @@ export const layer = Layer.effect(
             }
             yield* AialraTurnTrace.emit({
               phase: "model.step.finished",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
               data: {
@@ -658,6 +666,7 @@ export const layer = Layer.effect(
             yield* session.updatePart(ctx.currentText)
             yield* AialraTurnTrace.emit({
               phase: "text.started",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
             })
@@ -707,6 +716,7 @@ export const layer = Layer.effect(
             yield* session.updatePart(ctx.currentText)
             yield* AialraTurnTrace.emit({
               phase: "text.finished",
+              turnID: ctx.assistantMessage.parentID,
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
               data: {
@@ -809,6 +819,7 @@ export const layer = Layer.effect(
         ctx.assistantMessage.error = error
         yield* AialraTurnTrace.emit({
           phase: "processor.halted",
+          turnID: ctx.assistantMessage.parentID,
           sessionID: ctx.sessionID,
           messageID: ctx.assistantMessage.id,
           data: {
@@ -829,6 +840,7 @@ export const layer = Layer.effect(
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
         yield* AialraTurnTrace.emit({
           phase: "processor.process.started",
+          turnID: ctx.assistantMessage.parentID,
           sessionID: ctx.sessionID,
           messageID: ctx.assistantMessage.id,
           data: {
@@ -907,6 +919,7 @@ export const layer = Layer.effect(
         })
         yield* AialraTurnTrace.emit({
           phase: "processor.process.finished",
+          turnID: ctx.assistantMessage.parentID,
           sessionID: ctx.sessionID,
           messageID: ctx.assistantMessage.id,
           data: {

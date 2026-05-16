@@ -7,6 +7,7 @@ Each line is an independent JSON object.
   "trace": "aialra.turn.v1",
   "ts": "2026-05-15T12:00:00.000Z",
   "phase": "model.process.finished",
+  "turnID": "msg_user_...",
   "sessionID": "ses_...",
   "messageID": "msg_...",
   "step": 1,
@@ -19,6 +20,7 @@ Each line is an independent JSON object.
 - `trace`: schema marker. Current value is `aialra.turn.v1`.
 - `ts`: ISO timestamp emitted at write time.
 - `phase`: workflow event name.
+- `turnID`: user message ID that owns the current turn, when known.
 - `sessionID`: OpenCode session ID when available.
 - `messageID`: OpenCode message ID when available.
 - `step`: run-loop step when available.
@@ -29,7 +31,9 @@ Each line is an independent JSON object.
 The trace layer may record:
 
 - IDs and phase names.
+- turn IDs that connect intake, loop, model, processor, and final events.
 - part counts and part type counts.
+- `TurnFrame` structural fields such as route, model, agent, explicit file/agent/reference labels, and text length.
 - agent, provider, model, variant, finish reason.
 - tool names and tool input keys.
 - token totals, cost, and boolean state flags.
@@ -46,6 +50,8 @@ The trace layer must not record:
 ## Current phases
 
 - `prompt.received`
+- `prompt.explicit_context_resolved`
+- `turn.frame.created`
 - `user_message.created`
 - `prompt.no_reply`
 - `prompt.reply_requested`
