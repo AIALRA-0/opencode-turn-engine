@@ -47,6 +47,29 @@ test("selects newest trace file and renders a structural timeline", () => {
         },
         {
           trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.250Z",
+          phase: "turn.context.created",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+          data: {
+            cwd: "/tmp/work",
+            approval_policy: "on-request",
+            active_permission_profile: { id: ":workspace" },
+            retry: { request_max_retries: 4, stream_max_retries: 5, stream_idle_timeout_ms: 300000 },
+          },
+        },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.280Z",
+          phase: "turn.started",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+          data: { startedAt: 1770000000000, modelContextWindow: 100000, collaborationModeKind: "default" },
+        },
+        {
+          trace: "aialra.turn.v1",
           ts: "2026-05-15T00:00:00.300Z",
           phase: "user_message.created",
           turnID: "turn_test",
@@ -101,6 +124,15 @@ test("selects newest trace file and renders a structural timeline", () => {
           messageID: "msg_test",
           data: { role: "assistant" },
         },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:01.600Z",
+          phase: "turn.completed",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "msg_test",
+          data: { durationMs: 1600, timeToFirstTokenMs: 700 },
+        },
       ]
         .map((event) => JSON.stringify(event))
         .join("\n") + "\n",
@@ -113,9 +145,12 @@ test("selects newest trace file and renders a structural timeline", () => {
     assert.match(rendered, /Session: ses_test/)
     assert.match(rendered, /turn=turn_test/)
     assert.match(rendered, /turn\.frame\.created/)
+    assert.match(rendered, /turn\.context\.created/)
+    assert.match(rendered, /turn\.started/)
     assert.match(rendered, /prompt\.explicit_context_resolved/)
     assert.match(rendered, /processor\.process\.started/)
     assert.match(rendered, /prompt\.completed/)
+    assert.match(rendered, /turn\.completed/)
     assert.match(rendered, /model\.process\.finished/)
     assert.doesNotMatch(rendered, /secret prompt/)
   } finally {

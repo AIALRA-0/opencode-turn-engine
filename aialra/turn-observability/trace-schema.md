@@ -34,6 +34,7 @@ The trace layer may record:
 - turn IDs that connect intake, loop, model, processor, and final events.
 - part counts and part type counts.
 - `TurnFrame` structural fields such as route, model, agent, explicit file/agent/reference labels, and text length.
+- `UserTurn`/`TurnContext` structural fields such as cwd, approval policy, sandbox policy, permission profile, collaboration mode, environment IDs, and retry limits.
 - agent, provider, model, variant, finish reason.
 - tool names and tool input keys.
 - token totals, cost, and boolean state flags.
@@ -52,10 +53,14 @@ The trace layer must not record:
 - `prompt.received`
 - `prompt.explicit_context_resolved`
 - `turn.frame.created`
+- `turn.context.created`
+- `turn.started`
 - `user_message.created`
 - `prompt.no_reply`
 - `prompt.reply_requested`
 - `prompt.completed`
+- `turn.completed`
+- `turn.aborted`
 - `loop.started`
 - `loop.step.started`
 - `loop.exit_condition.met`
@@ -70,6 +75,8 @@ The trace layer must not record:
 - `model.context_built`
 - `model.process.started`
 - `model.process.finished`
+- `model.request.retrying`
+- `model.stream.retrying`
 - `loop.step.finished`
 - `loop.finished`
 - `processor.created`

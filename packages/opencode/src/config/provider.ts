@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { PositiveInt } from "@opencode-ai/core/schema"
+import { NonNegativeInt, PositiveInt } from "@opencode-ai/core/schema"
 import { ModelStatus } from "@/provider/model-status"
 
 export const Model = Schema.Struct({
@@ -99,6 +99,18 @@ export const Info = Schema.Struct({
         chunkTimeout: Schema.optional(PositiveInt).annotate({
           description:
             "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.",
+        }),
+        request_max_retries: Schema.optional(NonNegativeInt).annotate({
+          description:
+            "Codex-compatible maximum number of request retries before a model stream has started. Default is 4. Values above 100 are capped at runtime.",
+        }),
+        stream_max_retries: Schema.optional(NonNegativeInt).annotate({
+          description:
+            "Codex-compatible maximum number of stream retries after a model stream has started. Default is 5. Values above 100 are capped at runtime.",
+        }),
+        stream_idle_timeout_ms: Schema.optional(PositiveInt).annotate({
+          description:
+            "Codex-compatible timeout in milliseconds between streamed SSE chunks. Takes precedence over chunkTimeout. Default is 300000.",
         }),
       }),
       [Schema.Record(Schema.String, Schema.Any)],

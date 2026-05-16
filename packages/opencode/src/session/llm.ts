@@ -23,6 +23,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import type { CodexRetryConfig, TurnContext } from "./turn-context"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -44,6 +45,8 @@ export type StreamInput = {
   small?: boolean
   tools: Record<string, Tool>
   retries?: number
+  retry?: CodexRetryConfig
+  turn?: TurnContext
   toolChoice?: "auto" | "required" | "none"
 }
 

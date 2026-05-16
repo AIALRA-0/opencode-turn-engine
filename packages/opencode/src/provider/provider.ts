@@ -1561,8 +1561,16 @@ export const layer = Layer.effect(
         if (existing) return existing
 
         const customFetch = options["fetch"]
-        const chunkTimeout = options["chunkTimeout"]
+        const codexStreamIdleTimeout = options["stream_idle_timeout_ms"]
+        const legacyChunkTimeout = options["chunkTimeout"]
+        const chunkTimeout =
+          typeof codexStreamIdleTimeout === "number" && codexStreamIdleTimeout > 0
+            ? codexStreamIdleTimeout
+            : legacyChunkTimeout
         delete options["chunkTimeout"]
+        delete options["stream_idle_timeout_ms"]
+        delete options["stream_max_retries"]
+        delete options["request_max_retries"]
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch

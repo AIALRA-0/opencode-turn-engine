@@ -175,13 +175,17 @@ function parseJSON(value: unknown) {
 export function policy(opts: {
   provider: string
   parse: (error: unknown) => Err
+  maxAttempts?: number | ((error: unknown) => number | undefined)
+  retryableRaw?: (error: unknown) => Retryable | undefined
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
-      const retry = retryable(error, opts.provider)
+      const retry = opts.retryableRaw?.(meta.input) ?? retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
+      const maxAttempts = typeof opts.maxAttempts === "function" ? opts.maxAttempts(meta.input) : opts.maxAttempts
+      if (maxAttempts !== undefined && meta.attempt > maxAttempts) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
         const wait = delay(meta.attempt, MessageV2.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis

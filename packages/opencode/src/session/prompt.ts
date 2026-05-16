@@ -65,6 +65,7 @@ import * as Database from "@/storage/db"
 import { SessionTable } from "./session.sql"
 import { AialraTurnTrace } from "./turn-trace"
 import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
+import { CodexTurn, type TurnAbortReason, type TurnContext } from "./turn-context"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -247,6 +248,8 @@ export const layer = Layer.effect(
     const references = yield* Reference.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const activeTurns = new Map<SessionID, TurnContext>()
+    const closedTurns = new Set<string>()
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
     })
@@ -261,6 +264,8 @@ export const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* elog.info("cancel", { sessionID })
+      const activeTurn = activeTurns.get(sessionID)
+      if (activeTurn) yield* emitTurnAborted(activeTurn, "interrupted")
       yield* state.cancel(sessionID)
     })
 
@@ -1684,6 +1689,92 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return { info, parts }
     }, Effect.scoped)
 
+    const emitTurnStarted = Effect.fn("SessionPrompt.turnStarted")(function* (
+      turn: TurnContext,
+      model?: Provider.Model,
+    ) {
+      const modelContextWindow = model ? CodexTurn.modelContextWindow(model) : undefined
+      yield* bus.publish(Session.Event.TurnStarted, {
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        startedAt: turn.startedAt,
+        modelContextWindow,
+        collaborationModeKind: turn.collaboration_mode.kind,
+        cwd: turn.cwd,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "turn.started",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          startedAt: turn.startedAt,
+          modelContextWindow,
+          collaborationModeKind: turn.collaboration_mode.kind,
+          cwd: turn.cwd,
+        },
+      })
+    })
+
+    const emitTurnCompleted = Effect.fn("SessionPrompt.turnCompleted")(function* (
+      turn: TurnContext,
+      lastAgentMessage?: MessageID,
+    ) {
+      if (closedTurns.has(turn.turnID)) return
+      closedTurns.add(turn.turnID)
+      activeTurns.delete(turn.sessionID)
+      const completedAt = Date.now()
+      yield* bus.publish(Session.Event.TurnCompleted, {
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        lastAgentMessage,
+        completedAt,
+        durationMs: Math.max(0, completedAt - turn.startedAt),
+        timeToFirstTokenMs: turn.timeToFirstTokenMs,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "turn.completed",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: lastAgentMessage,
+        data: {
+          completedAt,
+          durationMs: Math.max(0, completedAt - turn.startedAt),
+          timeToFirstTokenMs: turn.timeToFirstTokenMs,
+        },
+      })
+      yield* status.set(turn.sessionID, { type: "idle" })
+    })
+
+    const emitTurnAborted = Effect.fn("SessionPrompt.turnAborted")(function* (
+      turn: TurnContext,
+      reason: TurnAbortReason,
+    ) {
+      if (closedTurns.has(turn.turnID)) return
+      closedTurns.add(turn.turnID)
+      activeTurns.delete(turn.sessionID)
+      const completedAt = Date.now()
+      yield* bus.publish(Session.Event.TurnAborted, {
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        reason,
+        completedAt,
+        durationMs: Math.max(0, completedAt - turn.startedAt),
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "turn.aborted",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          reason,
+          completedAt,
+          durationMs: Math.max(0, completedAt - turn.startedAt),
+        },
+      })
+      yield* status.set(turn.sessionID, { type: "idle" })
+    })
+
     const promptWithRoute: (
       input: PromptInput,
       route: TurnFrameRoute,
@@ -1743,6 +1834,34 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         messageID: frame.messageID,
         data: frame,
       })
+      const instance = yield* InstanceState.context
+      const activeModelExit = yield* provider
+        .getModel(message.info.model.providerID, message.info.model.modelID)
+        .pipe(Effect.exit)
+      const activeModel = Exit.isSuccess(activeModelExit) ? activeModelExit.value : undefined
+      const activeProvider = activeModel ? yield* provider.getProvider(activeModel.providerID) : undefined
+      const turn = CodexTurn.fromFrame({
+        frame,
+        parts: message.parts,
+        cwd: path.resolve(session.directory || instance.worktree),
+        retry: CodexTurn.retryConfig({
+          providerOptions: activeProvider?.options,
+          modelOptions: activeModel?.options,
+        }),
+        startedAt: receivedAt,
+      })
+      if (message.info.format?.type === "json_schema") {
+        turn.final_output_json_schema = message.info.format.schema
+      }
+      activeTurns.set(turn.sessionID, turn)
+      yield* AialraTurnTrace.emit({
+        phase: "turn.context.created",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: CodexTurn.traceSummary(turn),
+      })
+      yield* emitTurnStarted(turn, activeModel)
       yield* AialraTurnTrace.emit({
         phase: "user_message.created",
         turnID: frame.turnID,
@@ -1776,6 +1895,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           sessionID: normalizedInput.sessionID,
           messageID: message.info.id,
         })
+        yield* emitTurnCompleted(turn, message.info.id)
         return message
       }
       yield* AialraTurnTrace.emit({
@@ -1784,7 +1904,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         sessionID: normalizedInput.sessionID,
         messageID: message.info.id,
       })
-      const result = yield* loop({ sessionID: normalizedInput.sessionID })
+      const completeTurn = (lastAgentMessage?: MessageID) =>
+        emitTurnCompleted(turn, lastAgentMessage)
+      const abortTurn = (reason: TurnAbortReason) =>
+        emitTurnAborted(turn, reason)
+      const result = yield* loop({ sessionID: normalizedInput.sessionID, turn }).pipe(
+        Effect.onInterrupt(() => abortTurn("interrupted")),
+        Effect.catch((error: Image.Error) => completeTurn().pipe(Effect.andThen(Effect.fail(error)))),
+      )
       yield* AialraTurnTrace.emit({
         phase: "prompt.completed",
         turnID: frame.turnID,
@@ -1795,6 +1922,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           parts: AialraTurnTrace.partSummary(result.parts),
         },
       })
+      yield* completeTurn(result.info.role === "assistant" ? result.info.id : undefined)
       return result
     })
 
@@ -1809,8 +1937,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       throw new Error("Impossible")
     })
 
-    const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
-      function* (sessionID: SessionID) {
+    const runLoop: (sessionID: SessionID, turn?: TurnContext) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
+      "SessionPrompt.run",
+    )(function* (sessionID: SessionID, turn?: TurnContext) {
         const ctx = yield* InstanceState.context
         const slog = elog.with({ sessionID })
         let structured: unknown
@@ -1818,12 +1947,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
         yield* AialraTurnTrace.emit({
           phase: "loop.started",
+          turnID: turn?.turnID,
           sessionID,
           data: {
             agent: session.agent,
             providerID: session.model?.providerID,
             modelID: session.model?.id,
             parentID: session.parentID,
+            cwd: turn?.cwd,
           },
         })
 
@@ -1993,7 +2124,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             mode: agent.name,
             agent: agent.name,
             variant: lastUser.model.variant,
-            path: { cwd: ctx.directory, root: ctx.worktree },
+            path: { cwd: turn?.cwd ?? ctx.directory, root: ctx.worktree },
             cost: 0,
             tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
             modelID: model.id,
@@ -2122,6 +2253,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 toolCount: Object.keys(tools).length,
                 format: format.type,
                 isLastStep,
+                cwd: turn?.cwd,
+                approval_policy: turn?.approval_policy,
+                active_permission_profile: turn?.active_permission_profile,
               },
             })
             yield* AialraTurnTrace.emit({
@@ -2136,16 +2270,31 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 toolChoice: format.type === "json_schema" ? "required" : undefined,
               },
             })
+            const activeProvider = yield* provider.getProvider(model.providerID)
+            const activeTurn = turn?.turnID === lastUser.id ? turn : undefined
             const result = yield* handle.process({
               user: lastUser,
               agent,
-              permission: session.permission,
+              permission: activeTurn
+                ? CodexTurn.permissionRules({
+                    profile: activeTurn.permission_profile,
+                    approvalPolicy: activeTurn.approval_policy,
+                    base: session.permission,
+                  })
+                : session.permission,
               sessionID,
               parentSessionID: session.parentID,
               system,
               messages: [...modelMsgs, ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : [])],
               tools,
               model,
+              turn: activeTurn,
+              retry:
+                activeTurn?.retry ??
+                CodexTurn.retryConfig({
+                  providerOptions: activeProvider.options,
+                  modelOptions: model.options,
+                }),
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
             yield* AialraTurnTrace.emit({
@@ -2227,13 +2376,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           },
         })
         return final
-      },
-    )
+      })
 
-    const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
-      input: LoopInput,
-    ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+    const loop: (input: LoopInput & { turn?: TurnContext }) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
+      "SessionPrompt.loop",
+    )(function* (input: LoopInput & { turn?: TurnContext }) {
+      return yield* state.ensureRunning(
+        input.sessionID,
+        lastAssistant(input.sessionID),
+        runLoop(input.sessionID, input.turn),
+      )
     })
 
     const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts, Session.BusyError> = Effect.fn(

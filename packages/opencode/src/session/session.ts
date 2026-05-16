@@ -365,6 +365,38 @@ export const Event = {
       error: MessageV2.Assistant.fields.error,
     }),
   ),
+  TurnStarted: BusEvent.define(
+    "turn.started",
+    Schema.Struct({
+      turnID: MessageID,
+      sessionID: SessionID,
+      startedAt: NonNegativeInt,
+      modelContextWindow: Schema.optional(Schema.Finite),
+      collaborationModeKind: Schema.String,
+      cwd: Schema.optional(Schema.String),
+    }),
+  ),
+  TurnCompleted: BusEvent.define(
+    "turn.completed",
+    Schema.Struct({
+      turnID: MessageID,
+      sessionID: SessionID,
+      lastAgentMessage: Schema.optional(MessageID),
+      completedAt: NonNegativeInt,
+      durationMs: NonNegativeInt,
+      timeToFirstTokenMs: Schema.optional(NonNegativeInt),
+    }),
+  ),
+  TurnAborted: BusEvent.define(
+    "turn.aborted",
+    Schema.Struct({
+      turnID: MessageID,
+      sessionID: SessionID,
+      reason: Schema.Literals(["interrupted", "replaced", "review_ended", "budget_limited"]),
+      completedAt: NonNegativeInt,
+      durationMs: NonNegativeInt,
+    }),
+  ),
 }
 
 export function plan(input: { slug: string; time: { created: number } }, instance: InstanceContext) {

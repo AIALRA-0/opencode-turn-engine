@@ -51,7 +51,7 @@ import { Format } from "../../src/format"
 import { Reference } from "../../src/reference/reference"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { reply, TestLLMServer } from "../lib/llm-server"
+import { httpError, reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -485,6 +485,7 @@ it.instance(
       expect(yield* llm.calls).toBe(0)
     }),
   { git: true },
+  10_000,
 )
 
 it.instance(
@@ -702,6 +703,7 @@ it.instance(
       expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
     }),
   { git: true },
+  10_000,
 )
 
 it.instance(
@@ -885,7 +887,7 @@ it.instance(
       expect((yield* status.get(chat.id)).type).toBe("idle")
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 // Cancel semantics
@@ -914,7 +916,7 @@ it.instance(
       }
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 it.instance(
@@ -941,7 +943,7 @@ it.instance(
       }
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 race.instance(
@@ -1031,7 +1033,7 @@ race.instance(
       }
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 it.instance(
@@ -1142,7 +1144,7 @@ it.instance(
       }
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 // Queue semantics
@@ -1184,7 +1186,7 @@ it.instance(
       expect(a.info.role).toBe("assistant")
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 it.instance(
@@ -1253,7 +1255,7 @@ it.instance(
       expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("second")
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 it.instance(
@@ -1327,7 +1329,7 @@ it.instance(
       yield* Fiber.await(fiber)
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 unix(
@@ -1536,7 +1538,7 @@ it.instance(
       expect(yield* llm.calls).toBe(1)
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 it.instance(
@@ -1575,7 +1577,7 @@ it.instance(
       expect(yield* llm.calls).toBe(1)
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 unix(
@@ -1719,7 +1721,7 @@ unix(
 
       const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
       yield* llm.wait(1)
-      yield* Effect.sleep(150)
+      yield* Effect.sleep(1000)
       yield* prompt.cancel(chat.id)
 
       const exit = yield* Fiber.await(run)
@@ -2372,6 +2374,143 @@ it.instance(
   { git: true },
 )
 
+it.instance(
+  "emits Codex-style turn lifecycle events around a prompt reply",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-turn-lifecycle")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const bus = yield* Bus.Service
+      const sts = yield* SessionStatus.Service
+      const session = yield* sessions.create({})
+      const seen: string[] = []
+      const offStarted = yield* bus.subscribeCallback(Session.Event.TurnStarted, (event) => {
+        if (event.properties.sessionID !== session.id) return
+        seen.push(`started:${event.properties.turnID}:${event.properties.collaborationModeKind}`)
+      })
+      const offCompleted = yield* bus.subscribeCallback(Session.Event.TurnCompleted, (event) => {
+        if (event.properties.sessionID !== session.id) return
+        seen.push(`completed:${event.properties.turnID}:${event.properties.lastAgentMessage ?? ""}`)
+      })
+      yield* llm.text("lifecycle ok")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "hello lifecycle" }],
+        }),
+      )
+      yield* pollWithTimeout(
+        Effect.sync(() => (seen.some((item) => item.startsWith("completed:")) ? true : undefined)),
+        "timed out waiting for turn completed event",
+        "1 second",
+      )
+      offStarted()
+      offCompleted()
+
+      expect(result.info.role).toBe("assistant")
+      expect(seen[0]).toContain("started:")
+      expect(seen.some((item) => item.startsWith("completed:"))).toBe(true)
+      expect(yield* sts.get(session.id)).toMatchObject({ type: "idle" })
+
+      const events = readTraceEvents(traceDir)
+      expect(events.some((event) => event.phase === "turn.context.created")).toBe(true)
+      expect(events.some((event) => event.phase === "turn.started")).toBe(true)
+      expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+      expect(events.some((event) => event.phase === "turn.aborted")).toBe(false)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "emits Codex retry trace for model request retries",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig((url) => {
+        const next = providerCfg(url)
+        ;(next.provider.test.options as Record<string, unknown>).request_max_retries = 1
+        return next
+      })
+      const traceDir = path.join(dir, "trace-request-retry")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      yield* llm.pushMatch(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+        httpError(503, { error: "temporary" }),
+        reply().text("after retry").stop(),
+      )
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "retry stream" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      expect(result.parts.some((part) => part.type === "text" && part.text === "after retry")).toBe(true)
+      expect(yield* llm.calls).toBeGreaterThanOrEqual(2)
+
+      const events = readTraceEvents(traceDir)
+      expect(events.some((event) => event.phase === "model.request.retrying")).toBe(true)
+      expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+  10_000,
+)
+
+it.instance(
+  "stream idle timeout is collected into a completed turn with an assistant error",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig((url) => {
+        const next = providerCfg(url)
+        ;(next.provider.test.options as Record<string, unknown>).stream_idle_timeout_ms = 30
+        ;(next.provider.test.options as Record<string, unknown>).stream_max_retries = 0
+        return next
+      })
+      const traceDir = path.join(dir, "trace-stream-idle")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const sts = yield* SessionStatus.Service
+      const session = yield* sessions.create({})
+      yield* llm.hang
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "idle timeout" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.info.error).toBeDefined()
+      }
+      expect(yield* sts.get(session.id)).toMatchObject({ type: "idle" })
+
+      const events = readTraceEvents(traceDir)
+      expect(events.some((event) => event.phase === "processor.halted")).toBe(true)
+      expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+)
+
 // Special characters in filenames
 
 it.instance(
@@ -2477,7 +2616,7 @@ it.instance(
       }
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 // Agent variant

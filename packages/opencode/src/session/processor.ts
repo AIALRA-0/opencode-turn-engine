@@ -29,9 +29,26 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { AialraTurnTrace } from "./turn-trace"
+import { CodexTurn } from "./turn-context"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
+
+class StreamRetryableError extends Error {
+  constructor(
+    message: string,
+    readonly source?: unknown,
+  ) {
+    super(message)
+    this.name = "StreamRetryableError"
+  }
+}
+
+function isAbortLike(error: unknown) {
+  if (error instanceof DOMException && error.name === "AbortError") return true
+  if (!(error instanceof Error)) return false
+  return error.name === "AbortError" || error.message.toLowerCase().includes("abort")
+}
 
 export type Result = "compact" | "stop" | "continue"
 
@@ -838,6 +855,7 @@ export const layer = Layer.effect(
         slog.info("process")
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        const retry = streamInput.retry ?? CodexTurn.retryConfig({ modelOptions: streamInput.model.options })
         yield* AialraTurnTrace.emit({
           phase: "processor.process.started",
           turnID: ctx.assistantMessage.parentID,
@@ -851,21 +869,66 @@ export const layer = Layer.effect(
             messageCount: streamInput.messages.length,
             toolCount: Object.keys(streamInput.tools).length,
             toolChoice: streamInput.toolChoice,
+            request_max_retries: retry.request_max_retries,
+            stream_max_retries: retry.stream_max_retries,
+            stream_idle_timeout_ms: retry.stream_idle_timeout_ms,
           },
         })
 
         const result = yield* Effect.gen(function* () {
+          let lastRetryKind: "request" | "stream" = "request"
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
-            const stream = llm.stream(streamInput)
+            let sawTerminal = false
+            const stream = llm.stream({
+              ...streamInput,
+              retries: 0,
+            })
 
+            const turn = streamInput.turn
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) =>
+                Effect.gen(function* () {
+                  if (event.type === "finish" || event.type === "finish-step") sawTerminal = true
+                  if (
+                    event.type === "text-delta" ||
+                    event.type === "reasoning-delta" ||
+                    event.type === "tool-call" ||
+                    event.type === "tool-result"
+                  ) {
+                    if (turn && turn.timeToFirstTokenMs === undefined) {
+                      turn.timeToFirstTokenMs = Math.max(0, Date.now() - turn.startedAt)
+                    }
+                  }
+                  yield* handleEvent(event)
+                }),
+              ),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
+            if (!ctx.needsCompaction && !sawTerminal && !ctx.assistantMessage.error) {
+              throw new StreamRetryableError("Model stream closed before completion")
+            }
           }).pipe(
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterrupts(cause),
+              (cause) =>
+                Effect.gen(function* () {
+                  const error = Cause.squash(cause)
+                  const message = error instanceof Error ? error.message : String(error)
+                  if (error instanceof StreamRetryableError) return yield* Effect.fail(error)
+                  const shouldWrapStreamError =
+                    message.toLowerCase().includes("timeout") ||
+                    message.toLowerCase().includes("stream") ||
+                    message.toLowerCase().includes("connection")
+                  if (shouldWrapStreamError) {
+                    return yield* Effect.fail(new StreamRetryableError(message || "Model stream failed", error))
+                  }
+                  return yield* Effect.fail(error)
+                }),
+            ),
+          ).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
                 aborted = true
@@ -875,14 +938,25 @@ export const layer = Layer.effect(
               }),
             ),
             Effect.catchCauseIf(
-              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) => !Cause.hasInterrupts(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
             ),
             Effect.retry(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                maxAttempts: (error) => {
+                  if (isAbortLike(error)) return 0
+                  lastRetryKind = error instanceof StreamRetryableError ? "stream" : "request"
+                  return lastRetryKind === "stream" ? retry.stream_max_retries : retry.request_max_retries
+                },
+                retryableRaw: (error) => {
+                  if (!(error instanceof StreamRetryableError)) return undefined
+                  lastRetryKind = "stream"
+                  return { message: error.message }
+                },
                 set: (info) => {
+                  const kind = lastRetryKind
                   // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
                   const event = flags.experimentalEventSystem
                     ? events.publish(SessionEvent.Retried, {
@@ -896,6 +970,21 @@ export const layer = Layer.effect(
                       })
                     : Effect.void
                   return event.pipe(
+                    Effect.andThen(
+                      AialraTurnTrace.emit({
+                        phase: kind === "stream" ? "model.stream.retrying" : "model.request.retrying",
+                        turnID: ctx.assistantMessage.parentID,
+                        sessionID: ctx.sessionID,
+                        messageID: ctx.assistantMessage.id,
+                        data: {
+                          attempt: info.attempt,
+                          message: info.message,
+                          next: info.next,
+                          maxAttempts:
+                            kind === "stream" ? retry.stream_max_retries : retry.request_max_retries,
+                        },
+                      }),
+                    ),
                     Effect.andThen(
                       status.set(ctx.sessionID, {
                         type: "retry",

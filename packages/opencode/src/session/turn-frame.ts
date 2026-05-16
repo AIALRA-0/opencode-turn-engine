@@ -1,13 +1,14 @@
 import { MessageV2 } from "./message-v2"
+import type { MessageID, SessionID } from "./schema"
 
 export type TurnFrameRoute = "prompt" | "command" | "shell"
 
 export type TurnFrame = {
   version: "aialra.turn_frame.v1"
-  turnID: string
+  turnID: MessageID
   route: TurnFrameRoute
-  sessionID: string
-  messageID: string
+  sessionID: SessionID
+  messageID: MessageID
   agent: string
   model: {
     providerID: string

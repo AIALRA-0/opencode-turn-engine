@@ -1,5 +1,32 @@
 # AIALRA changelog
 
+## 2026-05-17
+
+- Added the first Codex-style turn lifecycle events to OpenCode prompt turns:
+  `turn.started`, `turn.completed`, and `turn.aborted`. These are emitted on
+  the session bus and mirrored into the AIALRA trace stream.
+- Added an internal `aialra.user_turn.v1` / `TurnContext` contract with Codex
+  field names for cwd, approval policy, sandbox policy, permission profile,
+  model, final output schema, collaboration mode, environments, and stream
+  retry limits. This remains internal and does not change the public SDK,
+  OpenAPI, prompt schema, or database schema.
+- Added the first permission-profile enforcement bridge: `approval_policy=never`
+  converts existing ask rules into deny rules, and read-only profiles deny
+  write/edit/shell/apply-patch style actions before tool execution.
+- Added Codex-compatible provider options:
+  `request_max_retries`, `stream_max_retries`, and `stream_idle_timeout_ms`.
+  `stream_idle_timeout_ms` takes precedence over legacy `chunkTimeout`, while
+  `chunkTimeout` remains supported for existing OpenCode configs.
+- Wired model processing to Codex-style retry accounting. Request failures use
+  `request_max_retries`; stream failures such as idle aborts, reset connections,
+  or streams that close without a terminal finish use `stream_max_retries` and
+  emit `model.stream.retrying`.
+- Ensured prompt turn terminal events set session status back to idle, so a
+  prompt turn should no longer remain in an endless "thinking" state without a
+  `turn.completed` or `turn.aborted` event.
+- Extended trace documentation and renderer samples to include `turn.context`,
+  lifecycle events, and stream/request retry events.
+
 ## 2026-05-16
 
 - Added the first Codex-style prompt intake frame for OpenCode turns. Each
