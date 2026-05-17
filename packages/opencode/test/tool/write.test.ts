@@ -256,6 +256,9 @@ describe("tool.write", () => {
         const readonlyPath = path.join(test.directory, "readonly.txt")
         yield* Effect.promise(() => fs.writeFile(readonlyPath, "test", "utf-8"))
         yield* Effect.promise(() => fs.chmod(readonlyPath, 0o444))
+        // Root can still write through mode bits, so this OS-level denial
+        // assertion is only meaningful for non-root test processes.
+        if (typeof process.getuid === "function" && process.getuid() === 0) return
         const exit = yield* run({ filePath: readonlyPath, content: "new content" }).pipe(Effect.exit)
         expect(exit._tag).toBe("Failure")
       }),

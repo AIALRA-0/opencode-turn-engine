@@ -22,6 +22,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { TurnSandbox, type ShellSandboxCommand } from "./turn-sandbox"
 
 export { Parameters } from "./shell/prompt"
 
@@ -286,7 +287,15 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan)
   })
 })
 
-function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv, sandbox?: ShellSandboxCommand) {
+  if (sandbox?.mode === "bwrap") {
+    return ChildProcess.make(sandbox.program, sandbox.args, {
+      cwd,
+      env,
+      stdin: "ignore",
+      detached: false,
+    })
+  }
   if (process.platform === "win32" && Shell.ps(shell)) {
     return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
       cwd,
@@ -429,6 +438,7 @@ export const ShellTool = Tool.define(
         env: NodeJS.ProcessEnv
         timeout: number
         description: string
+        sandbox?: ShellSandboxCommand
       },
       ctx: Tool.Context,
     ) {
@@ -479,7 +489,7 @@ export const ShellTool = Tool.define(
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
-          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env, input.sandbox))
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -611,8 +621,9 @@ export const ShellTool = Tool.define(
             Effect.gen(function* () {
               const executeInstance = yield* InstanceState.context
               const cwd = params.workdir
-                ? yield* resolvePath(params.workdir, executeInstance.directory, shell)
-                : executeInstance.directory
+                ? yield* resolvePath(params.workdir, ctx.turn?.cwd ?? executeInstance.directory, shell)
+                : (ctx.turn?.cwd ?? executeInstance.directory)
+              yield* TurnSandbox.assertShellAccess(ctx, { cwd, command: params.command })
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
@@ -637,6 +648,7 @@ export const ShellTool = Tool.define(
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
                   description: params.description,
+                  sandbox: yield* TurnSandbox.shellSandboxCommand(ctx, { shell, command: params.command, cwd }),
                 },
                 ctx,
               )

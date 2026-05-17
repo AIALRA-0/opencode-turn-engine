@@ -437,3 +437,17 @@ build
 部署 smoke：执行 `./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，网页登录页、登录代理、bootstrap、健康检查和 CLI 入口均通过。随后执行 `RUN_MODEL_CALL=1 ./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，真实模型短 prompt 成功完成。
 
 真实 trace 验证：最新 trace 文件为 `aialra/turn-observability/traces/ses_1cccabf2bffenkHjSsZDoffbqR.jsonl`，turnID 为 `msg_e33354184001w3x1hae6nnQ5hA`。该 trace 显示 `prompt.received -> turn.context.created -> turn.started -> model.stream.started -> prompt.completed -> turn.completed`，总耗时约 4.9 秒，`turn.context.created` 中能看到 cwd、approval_policy、sandbox_policy、permission_profile、model、collaboration_mode、environments、request_max_retries、stream_max_retries、stream_idle_timeout_ms。
+
+## 2026-05-17 实现记录：Codex Tool Executor Sandbox
+
+本次继续推进 tool executor 层。核心变化是：`Tool.Context` 现在会携带当前 `TurnContext`，模型实际调用 `read`、`write`、`edit`、`apply_patch`、`bash` 时，不再只看 session 级权限或工具自己的路径参数，而是先读取本轮的 cwd、permission_profile、sandbox_policy 和 approval_policy。
+
+文件类工具现在有统一的 turn sandbox 检查。相对路径以 `TurnContext.cwd` 为起点解析；写入前会判断目标路径是否在本轮可写根里；如果路径通过 symlink 指向工作区外，也会按真实路径拒绝；`.git`、`.agents`、`.codex` 在默认 workspace profile 下被当成 Codex 保护路径，允许读但不允许写。
+
+`bash` 工具在 Linux 上接入了 `bubblewrap`。在 managed workspace sandbox 下，命令进程看到的是只读的宿主根文件系统，只有本轮 workspace writable roots 和允许的 tmp roots 被重新绑定为可写。这样 `echo bad > /srv/outside` 这类命令不是靠模型自觉，也不是靠字符串提醒，而是被系统返回 read-only filesystem。
+
+新增 trace 事件为 `tool.sandbox.checked` 和 `tool.sandbox.denied`。前者说明某次工具访问已经被 TurnContext 门禁检查过；后者说明工具被本轮沙箱或权限配置拒绝。prompt 级测试已经验证模型通过 `write` 工具创建相对路径文件时会写入 TurnContext.cwd，同时模型尝试写工作区外路径时会生成 tool error，并且整轮仍然 `turn.completed` 收口。
+
+验证记录：新增 `test/tool/turn-sandbox.test.ts` 覆盖了相对路径 cwd、工作区外写入拒绝、symlink escape 拒绝、`.git` 元数据保护、read-only 写入拒绝、显式 glob deny、Linux bwrap shell 隔离。新增 prompt 级测试覆盖了模型工具调用真实读取 TurnContext，以及 sandbox deny 后的 turn completed。最初回归时，既有的 `tool.write > throws error when OS denies write access` 在 root 环境下失败，因为 root 可以覆盖 0444 文件；随后给这个 OS 权限测试加了 root 环境保护，避免把 root 权限特性误判成工具回归。
+
+最终验证记录：`test/tool/read.test.ts test/tool/write.test.ts test/tool/edit.test.ts test/tool/apply_patch.test.ts test/tool/shell.test.ts test/tool/turn-sandbox.test.ts` 共 138 个测试全部通过。`test/session/prompt.test.ts test/session/schema-decoding.test.ts` 共 89 个测试全部通过。`node --test aialra/turn-observability/tests/*.test.js` 通过。`bun run --cwd packages/opencode typecheck` 通过。`bun run --cwd packages/opencode build` 通过，并且构建产物的 x64 CLI smoke test 通过。`git diff --check` 通过。构建过程中再次生成过 `packages/core/src/models-snapshot.js` 快照差异，但这是构建副产物，已经恢复，不纳入提交。

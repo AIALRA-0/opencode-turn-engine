@@ -605,6 +605,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
       bypassAgentCheck: boolean
       messages: MessageV2.WithParts[]
+      turn?: TurnContext
     }) {
       using _ = log.time("resolveTools")
       const tools: Record<string, AITool> = {}
@@ -616,6 +617,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         abort: options.abortSignal!,
         messageID: input.processor.message.id,
         callID: options.toolCallId,
+        turn: input.turn,
         extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps },
         agent: input.agent.name,
         messages: input.messages,
@@ -657,6 +659,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             return run.promise(
               Effect.gen(function* () {
                 const ctx = context(args, options)
+                ctx.extra = { ...ctx.extra, tool: item.id }
                 yield* plugin.trigger(
                   "tool.execute.before",
                   { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
@@ -2179,6 +2182,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               processor: handle,
               bypassAgentCheck,
               messages: msgs,
+              turn: turn?.turnID === lastUser.id ? turn : undefined,
             })
             yield* AialraTurnTrace.emit({
               phase: "tools.resolved",

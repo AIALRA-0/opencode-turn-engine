@@ -3,6 +3,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { MessageV2 } from "../session/message-v2"
 import type { Permission } from "../permission"
 import type { SessionID, MessageID } from "../session/schema"
+import type { TurnContext } from "../session/turn-context"
 import * as Truncate from "./truncate"
 import { Agent } from "@/agent/agent"
 
@@ -20,6 +21,7 @@ export type Context<M extends Metadata = Metadata> = {
   abort: AbortSignal
   callID?: string
   extra?: { [key: string]: unknown }
+  turn?: TurnContext
   messages: MessageV2.WithParts[]
   metadata(input: { title?: string; metadata?: M }): Effect.Effect<void>
   ask(input: Omit<Permission.Request, "id" | "sessionID" | "tool">): Effect.Effect<void>

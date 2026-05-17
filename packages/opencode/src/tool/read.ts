@@ -7,6 +7,7 @@ import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
+import { TurnSandbox } from "./turn-sandbox"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { Reference } from "@/reference/reference"
@@ -198,13 +199,11 @@ export const ReadTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const instance = yield* InstanceState.context
-      let filepath = params.filePath
-      if (!path.isAbsolute(filepath)) {
-        filepath = path.resolve(instance.directory, filepath)
-      }
+      let filepath = TurnSandbox.resolvePath(ctx, params.filePath, instance.directory)
       if (process.platform === "win32") {
         filepath = AppFileSystem.normalizePath(filepath)
       }
+      yield* TurnSandbox.assertFileAccess(ctx, "read", filepath)
       yield* reference.ensure(filepath)
       const title = path.relative(instance.worktree, filepath)
 

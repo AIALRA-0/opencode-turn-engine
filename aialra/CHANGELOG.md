@@ -2,6 +2,22 @@
 
 ## 2026-05-17
 
+- Added Codex-style tool executor gates for turn-scoped filesystem and shell
+  execution. `read`, `write`, `edit`, `apply_patch`, and `bash` now receive the
+  active `TurnContext`; relative paths resolve from `TurnContext.cwd`, direct
+  filesystem writes are checked against the turn permission profile and sandbox
+  policy, symlink escapes are denied, and protected workspace metadata paths
+  such as `.git`, `.agents`, and `.codex` are read-only under the workspace
+  profile.
+- Added Linux `bubblewrap` execution for `bash` under managed turn sandboxes.
+  Shell commands run with the host root mounted read-only and only the turn's
+  writable roots bound writable, so shell writes outside the turn workspace are
+  blocked by the operating system instead of only by prompt-level permission
+  checks.
+- Added trace events `tool.sandbox.checked` and `tool.sandbox.denied`, plus
+  direct tool tests and prompt-level tool execution tests that verify
+  TurnContext cwd routing and sandbox denial behavior.
+
 - Added the first Codex-style turn lifecycle events to OpenCode prompt turns:
   `turn.started`, `turn.completed`, and `turn.aborted`. These are emitted on
   the session bus and mirrored into the AIALRA trace stream.

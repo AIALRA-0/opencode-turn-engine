@@ -327,6 +327,10 @@ const writeText = Effect.fn("test.writeText")(function* (file: string, text: str
   yield* fs.writeWithDirs(file, text)
 })
 
+function outsideRepoFile(label: string) {
+  return path.join(process.cwd(), `.turn-sandbox-${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+}
+
 const ensureDir = Effect.fn("test.ensureDir")(function* (dir: string) {
   const fs = yield* AppFileSystem.Service
   yield* fs.ensureDir(dir)
@@ -2509,6 +2513,98 @@ it.instance(
       yield* sessions.remove(session.id)
     }),
   { git: true },
+)
+
+it.instance(
+  "model tool execution uses TurnContext cwd and sandbox gates",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-turn-sandbox-allow")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool turn sandbox allow",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("write", { filePath: "turn-created.txt", content: "ok" })
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "create a file" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      expect(fs.readFileSync(path.join(dir, "turn-created.txt"), "utf8")).toBe("ok")
+      const events = readTraceEvents(traceDir)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.sandbox.checked" &&
+            event.data?.operation === "write" &&
+            String(event.data?.target ?? "").endsWith("turn-created.txt"),
+        ),
+      ).toBe(true)
+      expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+  10_000,
+)
+
+it.instance(
+  "model write tool cannot escape the TurnContext workspace",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-turn-sandbox-deny")
+      const outside = outsideRepoFile("prompt-write-denied")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool turn sandbox deny",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("write", { filePath: outside, content: "blocked" })
+      yield* llm.text("done")
+
+      try {
+        const result = yield* withTurnTrace(
+          traceDir,
+          prompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "try to write outside" }],
+          }),
+        )
+
+        expect(result.info.role).toBe("assistant")
+        expect(fs.existsSync(outside)).toBe(false)
+        const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+        const tool = msgs
+          .flatMap((msg) => msg.parts)
+          .find(
+            (part): part is ErrorToolPart =>
+              part.type === "tool" && part.tool === "write" && part.state.status === "error",
+          )
+        expect(tool?.state.error).toContain("Codex turn sandbox denied write access")
+
+        const events = readTraceEvents(traceDir)
+        expect(events.some((event) => event.phase === "tool.sandbox.denied")).toBe(true)
+        expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+      } finally {
+        fs.rmSync(outside, { force: true })
+        yield* sessions.remove(session.id)
+      }
+    }),
+  { git: true },
+  10_000,
 )
 
 // Special characters in filenames

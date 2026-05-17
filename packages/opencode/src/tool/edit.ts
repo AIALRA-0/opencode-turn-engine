@@ -17,6 +17,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { TurnSandbox } from "./turn-sandbox"
 import * as Bom from "@/util/bom"
 
 function normalizeLineEndings(text: string): string {
@@ -77,9 +78,8 @@ export const EditTool = Tool.define(
           }
 
           const instance = yield* InstanceState.context
-          const filePath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(instance.directory, params.filePath)
+          const filePath = TurnSandbox.resolvePath(ctx, params.filePath, instance.directory)
+          yield* TurnSandbox.assertWritableParentExists(ctx, filePath)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           let diff = ""

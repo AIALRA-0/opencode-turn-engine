@@ -14,6 +14,7 @@ import DESCRIPTION from "./apply_patch.txt"
 import { File } from "../file"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
+import { TurnSandbox } from "./turn-sandbox"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -70,7 +71,8 @@ export const ApplyPatchTool = Tool.define(
       let totalDiff = ""
 
       for (const hunk of hunks) {
-        const filePath = path.resolve(instance.directory, hunk.path)
+        const filePath = TurnSandbox.resolvePath(ctx, hunk.path, instance.directory)
+        yield* TurnSandbox.assertWritableParentExists(ctx, filePath)
         yield* assertExternalDirectoryEffect(ctx, filePath)
 
         switch (hunk.type) {
@@ -139,7 +141,8 @@ export const ApplyPatchTool = Tool.define(
               if (change.removed) deletions += change.count || 0
             }
 
-            const movePath = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
+            const movePath = hunk.move_path ? TurnSandbox.resolvePath(ctx, hunk.move_path, instance.directory) : undefined
+            if (movePath) yield* TurnSandbox.assertWritableParentExists(ctx, movePath)
             yield* assertExternalDirectoryEffect(ctx, movePath)
 
             fileChanges.push({

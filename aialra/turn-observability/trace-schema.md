@@ -77,6 +77,8 @@ The trace layer must not record:
 - `model.process.finished`
 - `model.request.retrying`
 - `model.stream.retrying`
+- `tool.sandbox.checked`
+- `tool.sandbox.denied`
 - `loop.step.finished`
 - `loop.finished`
 - `processor.created`

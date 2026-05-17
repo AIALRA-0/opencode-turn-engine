@@ -1,3 +1,4 @@
+import path from "node:path"
 import type { Permission } from "@/permission"
 import type { Provider } from "@/provider/provider"
 import type { MessageV2 } from "./message-v2"
@@ -49,7 +50,10 @@ export type PermissionProfile =
   | { type: "external"; network: "restricted" | "enabled" }
 
 export type PermissionProfileFileSystemEntry = {
-  path: { type: "special"; value: "root" | "workspace_roots" } | { type: "path"; path: string }
+  path:
+    | { type: "special"; value: "root" | "workspace_roots" | "tmpdir" | "slash_tmp" | "minimal" }
+    | { type: "path"; path: string }
+    | { type: "glob"; pattern: string }
   access: "read" | "write" | "none"
 }
 
@@ -160,12 +164,23 @@ export namespace CodexTurn {
     }
   }
 
-  export function workspacePermissionProfile(): PermissionProfile {
+  export function workspacePermissionProfile(cwd?: string): PermissionProfile {
+    const entries: PermissionProfileFileSystemEntry[] = [
+      { path: { type: "special", value: "root" }, access: "read" },
+      { path: { type: "special", value: "workspace_roots" }, access: "write" },
+      { path: { type: "special", value: "slash_tmp" }, access: "write" },
+      { path: { type: "special", value: "tmpdir" }, access: "write" },
+    ]
+    if (cwd) {
+      for (const name of [".git", ".agents", ".codex"]) {
+        entries.push({ path: { type: "path", path: path.join(cwd, name) }, access: "read" })
+      }
+    }
     return {
       type: "managed",
       file_system: {
         type: "restricted",
-        entries: [{ path: { type: "special", value: "workspace_roots" }, access: "write" }],
+        entries,
       },
       network: "restricted",
     }
@@ -204,7 +219,7 @@ export namespace CodexTurn {
     personality?: string
     environments?: TurnEnvironment[]
   }): TurnContext {
-    const permissionProfile = input.permissionProfile ?? workspacePermissionProfile()
+    const permissionProfile = input.permissionProfile ?? workspacePermissionProfile(input.cwd)
     return {
       version: "aialra.user_turn.v1",
       turnID: input.frame.turnID,
