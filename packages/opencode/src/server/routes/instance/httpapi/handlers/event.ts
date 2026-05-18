@@ -28,6 +28,15 @@ function publicEventData(data: PublicEvent): Sse.Event {
   }
 }
 
+function publicEventPing(): Sse.Event {
+  return {
+    _tag: "Event",
+    event: "ping",
+    id: undefined,
+    data: JSON.stringify({ type: "ping", ts: new Date().toISOString() }),
+  }
+}
+
 function eventResponse(bus: Bus.Interface) {
   return Effect.gen(function* () {
     const context = yield* Effect.context()
@@ -90,12 +99,18 @@ function publicEventResponse(input: {
       return Stream.fromIterable(next)
     }),
   )
+  const heartbeat = Stream.tick("20 seconds").pipe(Stream.drop(1), Stream.map(publicEventPing))
 
   log.info("public event connected", { sessionID: input.sessionID })
   return HttpServerResponse.stream(
-    Stream.fromIterable(replay).pipe(
-      Stream.concat(live),
-      Stream.map(publicEventData),
+    Stream.make(publicEventPing()).pipe(
+      Stream.concat(
+        Stream.fromIterable(replay).pipe(
+          Stream.concat(live),
+          Stream.map(publicEventData),
+          Stream.merge(heartbeat, { haltStrategy: "left" }),
+        ),
+      ),
       Stream.pipeThroughChannel(Sse.encode()),
       Stream.encodeText,
       Stream.ensuring(Effect.sync(() => log.info("public event disconnected", { sessionID: input.sessionID }))),

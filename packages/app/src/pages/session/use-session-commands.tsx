@@ -475,7 +475,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       : []),
     viewCommand({
       id: "turnInspector.toggle",
-      title: "Toggle Turn Inspector",
+      title: "切换回合检查器",
       onSelect: () => layout.turnInspector.toggle(),
     }),
     viewCommand({

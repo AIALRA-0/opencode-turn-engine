@@ -7,7 +7,7 @@ Codex, what is still missing, and how a user can test the behavior directly.
 
 | 编号 | 事项 | 当前状态 | 人话结论 | 证据/位置 |
 | --- | --- | --- | --- | --- |
-| 1 | Public event stream（公共事件流） | 已实现 MVP 并部署 | 现在不是只能看内部 trace；前端和测试都可以消费稳定公共事件。 | `GET /event/public`、`GET /session/:sessionID/events/public`、`aialra.public_event.v1` |
+| 1 | Public event stream（公共事件流） | 已实现 MVP、已修复静默断流 524 | 现在不是只能看内部 trace；前端和测试都可以消费稳定公共事件。SSE 空闲时会发 ping，不会因为长时间没事件被 Cloudflare 掐掉。 | `GET /event/public`、`GET /session/:sessionID/events/public`、`aialra.public_event.v1`、`event: ping` |
 | 2 | Codex exec-server 研究/迁移 | 已完成源码研究和路线设计，尚未接入执行器 | 已知道 Codex exec-server 怎么分层，但 OpenCode 还没真正用 Rust sidecar 执行 bash/fs。 | `public-event-stream-and-exec-server-roadmap.md` 第 6-7 节 |
 | 3 | Linux bwrap / Landlock parity | 部分实现 | bash 已有 Linux bwrap 系统隔离；但还没有 Codex `codex-linux-sandbox` helper、seccomp/no_new_privs、Landlock 评估落地。 | tool executor 测试、roadmap 第 8-9 节 |
 | 4 | debug1 原版 OpenCode A/B | 未实现 | 还没有部署原版 OpenCode 到 `debug1.aialra.online`，三方自动对比也还没跑起来。 | 下一阶段待办 |
@@ -15,7 +15,21 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | 6 | 只优先 Linux 沙箱 | 已遵守 | 当前实现和验收只承诺 Linux，不做 macOS/Windows 沙箱。 | 计划边界 |
 | 7 | Approval UI 和 TurnContext 审计绑定 | 已实现 MVP | 审批请求会带 turnID、approval policy、permission profile、sandbox policy，并映射到公共事件。 | `approval.requested` / `approval.resolved` |
 | 8 | Profile parity 测试表 | 部分设计，未全量自动化 | 已有 profile 预期表和关键 sandbox 测试，但还没覆盖每个 profile x 每个工具 x 网络/审批/失败表现的完整矩阵。 | roadmap 第 10 节 |
-| 9 | Turn Inspector 面板 | 已实现 MVP 并部署 | UI 右侧已有 Turn Inspector 按钮和面板，可看 turn/model/tool/file/command/approval/final 事件。 | session header 右侧按钮、Turn Inspector panel |
+| 9 | Turn Inspector 面板 | 已实现 MVP、已完成中文体验修复并部署 | UI 右侧已有回合检查器按钮和面板，可看 turn/model/tool/file/command/approval/final 事件；面板文案、筛选、状态、按钮和命令入口已中文化。 | session header 右侧按钮、Turn Inspector panel |
+
+## 0.1 2026-05-18 网站体验修复验收矩阵
+
+| 问题 | 原表现 | 当前处理 | 验收结果 |
+| --- | --- | --- | --- |
+| Turn Inspector 全是英文 | 用户看到 `Turn Inspector`、`All`、`Raw`、`Loading raw payload` 这类英文。 | 面板标题、连接状态、筛选、事件标题、状态、Raw 按钮、关闭 tooltip、顶部按钮 tooltip、命令面板入口都改成中文。 | Playwright 打开线上靶场 session，面板显示“回合检查器 / 等待事件 / 全部 / 错误 / 工具 / 文件 / 命令 / 审批”。 |
+| Raw 一直 loading | Raw 请求没有超时保护，如果代理或鉴权卡住，按钮会一直转圈。 | Raw 请求增加 12 秒 AbortController 超时；失败显示中文错误；成功后仍只展示当前事件 raw payload，不走 SSE 推送完整原文。 | 本机 raw endpoint 已返回 `aialra.public_event_raw_response.v1`；UI 失败路径不再无限 loading。 |
+| 输出不会按底部状态自动滚动 | 新事件来了不会区分用户是否在底部。 | 回合检查器记录滚动视口是否距离底部小于 48px；只有用户已经在底部时，新事件才自动滚到底；用户手动往上看时不会打断阅读。 | app typecheck/build 通过，逻辑在 `turn-inspector.tsx`。 |
+| 不同 turn 混在一起 | 所有事件平铺，多个回合不容易分辨。 | 按连续 turnID 插入“回合 xxx / N 条”分隔线；没有 turnID 的事件显示为“全局事件”。 | UI 已渲染分段结构。 |
+| Public event stream 524 | session public event stream 没事件时不发字节，Cloudflare 会把长连接关成 524。 | SSE 连接立即发 `event: ping`，之后每 20 秒发 ping；前端和测试忽略非 public-event schema 的 ping。 | 本机 curl 已看到首帧 `event: ping`，随后是真实 public event。 |
+| worker 被 CSP 拦截 | CSP 只有 `worker-src blob:`，同源 `/assets/worker-*.js` 被拒。 | OpenCode UI CSP 和登录代理 CSP 都加入 `worker-src 'self' blob:` 与 `child-src 'self' blob:`。 | 登录后首页 CSP header 已包含该配置；Playwright 复测无 worker CSP 错误。 |
+| Cloudflare beacon 被 CSP 拦截 | Cloudflare 注入脚本被 `script-src` 拒绝，控制台报错。 | `script-src` 加入 `https://static.cloudflareinsights.com`。 | 登录后首页 CSP header 已包含该域名。 |
+| manifest 语法错误 | 未登录或登录代理路径下，`/site.webmanifest` 可能拿到 HTML/登录页。 | 登录代理对 manifest 和常见 favicon/icon 路径直接代理到 OpenCode 静态资源，不再先要求登录。 | `https://opencode.aialra.online/site.webmanifest` 返回 `application/manifest+json` 和 JSON 开头。 |
+| 浏览器页面报资源错误 | 重启期间动态 chunk 可能短暂 502；之前 worker/manifest/event stream 错误混在一起。 | CSP、manifest、SSE 已修；部署后 Playwright 登录并打开靶场 session，控制台无 warning/error。 | Playwright 结果：`warningsAndErrors: []`。 |
 
 ## 1. 已实现能力验收矩阵
 

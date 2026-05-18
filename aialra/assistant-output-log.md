@@ -539,3 +539,25 @@ Approval audit 已和 TurnContext 绑定。`Permission.Request` 新增可选 `tu
 用户要求确认 9 个事项哪些已实现、哪些未实现，以及能力矩阵是否更新。本次确认：`public-event-stream-and-exec-server-roadmap.md` 和 changelog 已经更新，但 `harness-status-and-test-playbook.md` 仍停留在旧状态，里面还写着 public event 和 Turn Inspector 尚未实现。本次已直接更新 `aialra/turn-observability/harness-status-and-test-playbook.md`。
 
 更新后的结论：Public event stream 已实现 MVP 并部署；Turn Inspector 已实现 MVP 并部署；approval audit 已和 TurnContext 绑定并进入公共事件；Linux-only 范围已遵守；Codex exec-server 已完成源码研究和路线设计，但尚未接入 OpenCode 执行器；bwrap 已有 Linux 系统隔离但未达到 Codex 1:1；debug1 原版 OpenCode A/B 尚未部署；Kimi/弱模型循环诊断只有观测能力，尚未加入 budget/detector；profile parity 只有关键测试和设计表，尚未完成全量矩阵自动化。
+
+## 2026-05-18 实现记录：网站体验修复和 Turn Inspector 中文化
+
+用户报告线上页面有一批可见问题：Turn Inspector 全是英文；Raw 一直 loading；输出到底部后不会按用户滚动位置自动跟随；浏览器控制台出现 Cloudflare beacon CSP、manifest 语法错误、worker-src CSP、public event stream 524、动态资源 502、pty 404 等错误；不同 turn 没有清晰分段。同时用户再次要求推进所有未完成的大项，包括 exec-server、bwrap/Landlock、debug1 A/B、Kimi/弱模型诊断、profile parity 和能力矩阵更新。
+
+本次优先处理用户正在浏览器里直接遇到的体验问题。Turn Inspector 面板已中文化：标题改为“回合检查器”，连接状态改为“正在接收公共事件流/等待事件”，筛选按钮改为“全部、错误、工具、文件、命令、审批”，事件标题和状态改为中文，Raw 按钮改为“原始/收起”，加载提示改为“正在加载原始内容”，顶部按钮 tooltip 和命令面板入口也改为“回合检查器/切换回合检查器”。事件列表现在按 turnID 分段，显示“回合 xxx / N 条”，没有 turnID 的事件显示“全局事件”。
+
+Raw 一直 loading 的根因是前端请求 raw endpoint 没有超时保护。本次给 raw 请求加入 12 秒 AbortController 超时，失败会显示“原始内容加载超时，请稍后重试”或 HTTP 状态错误，不会无限 loading。raw 内容仍然只通过 `GET /session/:sessionID/events/:eventID/raw` 按当前认证用户拉取，不通过 SSE 推完整原文。
+
+Public event stream 524 的根因是 session public SSE 在没有新事件时可能长时间不输出任何字节，Cloudflare 会关闭这个长连接。本次后端在 public SSE 建立时立即发送 `event: ping`，之后每 20 秒发送一次 ping；前端和测试都会忽略没有 `aialra.public_event.v1` schema 的 ping，只处理真正的公共事件。本机 curl 已验证 `/event/public` 首帧能看到 `event: ping`，随后继续返回真实 public event。
+
+滚动行为已改成“贴底才自动滚动”。回合检查器会记录滚动视口距离底部是否小于 48px；如果用户已经在底部，新事件来时自动滚到底；如果用户向上翻旧事件，新事件不会把视图强行拉回底部。这个修复只影响 Turn Inspector 事件面板，不改变聊天主时间线。
+
+浏览器资源问题已处理三类。第一，OpenCode UI CSP 和登录代理 CSP 都加入 `worker-src 'self' blob:` 和 `child-src 'self' blob:`，解决同源 `/assets/worker-*.js` 被 `worker-src blob:` 拒绝的问题。第二，`script-src` 加入 `https://static.cloudflareinsights.com`，解决 Cloudflare beacon 被 CSP 拦截的问题。第三，登录代理对 `/site.webmanifest`、manifest icon 和 favicon 路径直接代理到 OpenCode 静态资源，不再在未登录时返回 HTML 登录页，所以 manifest 不再出现 JSON 语法错误。`/site.webmanifest` 已验证返回 `application/manifest+json` 和 JSON 内容。
+
+验证记录：`bun run typecheck` 在 `packages/app` 通过；`bun run typecheck` 在 `packages/opencode` 通过；`bun test test/server/httpapi-public-event.test.ts test/permission/approval-audit.test.ts --timeout 30000` 通过；`node --test aialra/turn-observability/tests/*.test.js` 通过；`bun run build` 在 `packages/app` 通过；`bun run build --single --skip-install` 在 `packages/opencode` 通过，并完成 Linux x64 CLI smoke。随后用部署脚本构建线上 runtime，最终部署版本为 `0.0.0-dev-202605181852`。
+
+部署记录：重启了 `aialra-opencode-web.service` 和 `aialra-opencode-login.service`，并确认 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-opencode-sensenova.service` 均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，显示线上版本 `0.0.0-dev-202605181852`。登录后首页 CSP header 已验证包含 `https://static.cloudflareinsights.com`、`worker-src 'self' blob:`、`child-src 'self' blob:`。本机 raw endpoint 已验证能返回 `aialra.public_event_raw_response.v1`。
+
+浏览器验收记录：使用 Playwright 通过真实 Chrome 登录 `https://opencode.aialra.online`，打开 `/srv/aialra/turn-harness-target` 对应 session 页面，点击“切换回合检查器”。面板文本显示“回合检查器 / 等待事件 / 全部 / 错误 / 工具 / 文件 / 命令 / 审批 / 这个会话还没有公共事件。”，控制台 `warningsAndErrors` 为空。
+
+能力矩阵更新：`aialra/turn-observability/harness-status-and-test-playbook.md` 已新增“网站体验修复验收矩阵”，记录中文化、Raw 超时、贴底滚动、turn 分段、SSE ping、CSP worker、Cloudflare beacon、manifest 和浏览器 Playwright 验收结果。更大的未完成项仍保持真实状态：Codex Rust exec-server 尚未接入执行器；bwrap 尚未达到 Codex 1:1，Landlock 尚未落地；debug1 原版 OpenCode A/B 尚未部署；Kimi/弱模型循环还只有观测能力，尚未加入 budget/detector；profile parity 仍未完成全量自动化矩阵。

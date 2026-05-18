@@ -11,6 +11,18 @@ const MAX_BODY_BYTES = 32 * 1024;
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const BOOTSTRAP_SCRIPT_PATH = "/__aialra/opencode-bootstrap.js";
+const PUBLIC_UI_PATHS = new Set([
+  "/site.webmanifest",
+  "/web-app-manifest-192x192.png",
+  "/web-app-manifest-512x512.png",
+  "/favicon-96x96-v3.png",
+  "/favicon-v3.ico",
+  "/favicon-v3.svg",
+  "/favicon.ico",
+  "/favicon.svg",
+  "/apple-touch-icon.png",
+  "/apple-touch-icon-v3.png",
+]);
 
 function requiredEnv(name) {
   const value = process.env[name];
@@ -480,7 +492,11 @@ function patchContentSecurityPolicy(value) {
   // The upstream CSP's `connect-src *` does not allow `data:` in browsers.
   addToken("connect-src", "data:");
   addToken("connect-src", "blob:");
+  addToken("script-src", "https://static.cloudflareinsights.com");
+  addToken("worker-src", "'self'");
   addToken("worker-src", "blob:");
+  addToken("child-src", "'self'");
+  addToken("child-src", "blob:");
   addToken("script-src", "'sha256-QI23YWMJrD/tljM6/82tpL8EwqdBoptwZfycFHA9IiQ='");
 
   return Array.from(directives.entries())
@@ -663,6 +679,10 @@ function createServer(config) {
           "cache-control": "no-store",
         });
         res.end(body);
+        return;
+      }
+      if (req.method === "GET" && PUBLIC_UI_PATHS.has(url.pathname)) {
+        proxyRequest(req, res, config);
         return;
       }
       if (req.method === "GET" && url.pathname === "/login") {

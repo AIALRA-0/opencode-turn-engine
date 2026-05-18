@@ -31,16 +31,27 @@ async function readChunk(reader: ReadableStreamDefaultReader<Uint8Array>) {
 async function readEvent(response: Response) {
   if (!response.body) throw new Error("missing response body")
   const reader = response.body.getReader()
+  let buffer = ""
   try {
-    const result = await readChunk(reader)
-    if (result.done || !result.value) throw new Error("event stream closed")
-    const text = new TextDecoder().decode(result.value)
-    const data = text
-      .split(/\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
-      .join("\n")
-    return JSON.parse(data)
+    while (true) {
+      const result = await readChunk(reader)
+      if (result.done || !result.value) throw new Error("event stream closed")
+      buffer += new TextDecoder().decode(result.value)
+      const cut = buffer.lastIndexOf("\n\n")
+      if (cut === -1) continue
+      const ready = buffer.slice(0, cut + 2)
+      buffer = buffer.slice(cut + 2)
+      for (const block of ready.split(/\n\n+/)) {
+        const data = block
+          .split(/\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
+          .join("\n")
+        if (!data.trim()) continue
+        const parsed = JSON.parse(data)
+        if (parsed?.schema === "aialra.public_event.v1") return parsed
+      }
+    }
   } finally {
     await reader.cancel()
   }

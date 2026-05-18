@@ -493,12 +493,12 @@ export function SessionHeader() {
                     </TooltipKeybind>
                   </Show>
 
-                  <Tooltip value="Turn Inspector">
+                  <Tooltip value="回合检查器">
                     <Button
                       variant="ghost"
                       class="titlebar-icon w-8 h-6 p-0 box-border"
                       onClick={() => layout.turnInspector.toggle()}
-                      aria-label="Toggle Turn Inspector"
+                      aria-label="切换回合检查器"
                       aria-expanded={layout.turnInspector.opened()}
                       aria-controls="turn-inspector-panel"
                     >

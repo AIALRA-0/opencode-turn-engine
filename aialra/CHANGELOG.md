@@ -2,6 +2,20 @@
 
 ## 2026-05-18
 
+- Turn Inspector user experience fix: localized the panel, filters, statuses,
+  button tooltip, and command palette action into Chinese; grouped events by
+  turn with visible separators; added bottom-pinned auto-scroll that only
+  follows new output when the user is already at the bottom; and added a
+  12-second timeout plus Chinese error text for raw payload expansion.
+- Public event stream reliability fix: session/public SSE now emits an
+  immediate `ping` event and periodic 20-second pings so Cloudflare does not
+  close quiet streams with 524. Tests now skip ping frames and wait for the
+  first real `aialra.public_event.v1` event.
+- Browser/CSP fix: UI CSP now allows same-origin workers via
+  `worker-src 'self' blob:` and allows the Cloudflare beacon script. The login
+  proxy applies the same worker/child-src allowances and lets manifest/icon
+  files pass through without showing the login HTML, so `/site.webmanifest`
+  returns valid JSON before and after login.
 - Implemented the first public turn event stream. Added
   `aialra.public_event.v1`, replay buffers, `GET /event/public`,
   `GET /session/:sessionID/events/public`, and
