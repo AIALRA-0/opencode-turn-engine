@@ -1,5 +1,20 @@
 # AIALRA changelog
 
+## 2026-05-18
+
+- Added a next-stage public event stream and exec-server roadmap. The design
+  maps the current internal trace/bus events into a user-readable and
+  machine-consumable event model, then uses that model as the data source for a
+  Turn Inspector UI.
+- Documented the Codex exec-server protocol, process model, filesystem sandbox
+  model, environment abstraction, and Linux sandbox differences based on the
+  local Codex source tree. The recommended migration path is a Rust exec-server
+  sidecar with a TypeScript adapter and the current Node/Bun executor as a
+  temporary fallback.
+- Added the next validation plan for approval auditing, profile parity tests,
+  Linux bwrap parity, Landlock evaluation, debug1 original-OpenCode A/B
+  benchmarking, and Kimi/weak-model loop diagnosis.
+
 ## 2026-05-17
 
 - Added Codex-style tool executor gates for turn-scoped filesystem and shell

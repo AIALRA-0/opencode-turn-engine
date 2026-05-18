@@ -495,3 +495,15 @@ trace 结果：最新两份 trace 是 `ses_1c43ed3b3ffeGqk5CvHSRKdnsT.jsonl` 和
 边界观察：在 `ses_1c43fedd...` 的后续自查中，模型多次用 bash/read 查看 trace 和脚本，cwd 显示为 `/srv/aialra/turn-harness-target`，但部分 bash 工具的 `target` 是 `/srv/aialra/apps/opencode-turn-engine`。这是因为当前 workspace-write 策略是“工作区可写，全局只读”，所以读取仓库文件和在仓库目录中只读执行命令是允许的；写入仍只允许靶场目录和 tmp roots。这一点符合当前实现，但如果希望“工作区外连读都不允许”，下一阶段需要新增更严格的 read-confined profile。
 
 服务状态：`aialra-opencode-web.service` 仍为 active。后台未发现 systemd web service 错误日志。
+
+## 2026-05-18 设计记录：Public Event Stream、Turn Inspector、exec-server 路线
+
+用户提出下一阶段 9 个优先事项：完整设计 OpenCode public event stream；深入研究 Codex exec-server；继续对齐 Linux bwrap 并评估 Landlock；在 `debug1.aialra.online` 部署原版 OpenCode 做三方对比；修复 Kimi/类似模型卡住循环；暂不考虑 macOS/Windows 沙箱；把 approval UI 和 TurnContext 强绑定；做 profile parity 测试表；做 Turn Inspector 侧栏。
+
+本次先做设计和源码研究，不把设计伪装成已实现功能。OpenCode 侧确认：当前已有 `/event` SSE 事件流，但它吐的是内部 bus event，不是用户可读、机器可稳定消费的公共事件模型；session UI 右侧已有 review/files panel，layout 中已有 fileTree/review/terminal 状态，适合新增 `turnInspector` 状态和侧栏按钮；审批入口在 `permission.asked`、`permission.replied`、`SessionPermissionDock`，下一步可以加 turnID 并映射成 `approval.requested/resolved`。
+
+Codex 侧确认：exec-server 是独立执行服务，不只是 bash wrapper。它的协议包括 `initialize`、`initialized`、`process/start`、`process/read`、`process/write`、`process/terminate`、`process/output`、`process/exited`、`process/closed`、`fs/readFile`、`fs/writeFile`、`fs/createDirectory`、`fs/getMetadata`、`fs/readDirectory`、`fs/remove`、`fs/copy`、`http/request`、`http/request/bodyDelta`。进程输出有 seq、replay buffer、Exited 和 Closed 两阶段；文件系统操作可以带 sandbox context，并可通过 sandboxed FS helper 在系统沙箱里执行；EnvironmentManager 把 local/remote/disabled 环境统一成 exec backend、filesystem、http client。
+
+本次新增文档 `aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md`。文档把 9 个诉求合成下一阶段路线：先做 public event stream，再做 Turn Inspector MVP，再做 approval audit，再做 exec-server adapter PoC，然后推进 profile parity、bwrap parity、debug1 三方 A/B benchmark 和 Kimi 循环诊断。文档也列出 trace phase 到 public event 的映射、公共事件字段、脱敏规则、UI 面板内容、Codex exec-server 协议表、进程/文件系统/环境模型、bwrap/Landlock 差距和验收标准。
+
+本次同时更新 `aialra/turn-observability/README.md`、`aialra/turn-observability/trace-schema.md` 和 `aialra/CHANGELOG.md`，让后续可以从 README 和 trace schema 追到这份路线图。

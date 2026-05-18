@@ -48,6 +48,24 @@ The trace layer must not record:
 - raw system prompts or model messages.
 - usernames, passwords, API keys, or provider tokens.
 
+## Public event stream target
+
+The trace schema is an internal observation surface. It is useful for debugging,
+but it is not the final user-facing protocol.
+
+The next user-facing layer is documented in:
+
+```text
+aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md
+```
+
+That design maps trace phases and OpenCode bus events into stable public
+events such as `turn.started`, `model.retrying`, `tool.call.started`,
+`tool.sandbox.denied`, `approval.requested`, `approval.resolved`, and
+`final.output`. The public stream keeps the same redaction rule: show structure,
+state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
+model text, full tool output, or secrets.
+
 ## Current phases
 
 - `prompt.received`

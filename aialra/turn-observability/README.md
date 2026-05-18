@@ -74,3 +74,11 @@ target prompts, A/B benchmark advice, and user-visible transparency roadmap, see
 ```text
 aialra/turn-observability/harness-status-and-test-playbook.md
 ```
+
+For the next-stage design that turns internal traces into a user-visible public
+event stream, adds the Turn Inspector UI, and plans the Codex exec-server/Linux
+sandbox migration, see:
+
+```text
+aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md
+```
