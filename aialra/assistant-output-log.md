@@ -507,3 +507,21 @@ Codex 侧确认：exec-server 是独立执行服务，不只是 bash wrapper。�
 本次新增文档 `aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md`。文档把 9 个诉求合成下一阶段路线：先做 public event stream，再做 Turn Inspector MVP，再做 approval audit，再做 exec-server adapter PoC，然后推进 profile parity、bwrap parity、debug1 三方 A/B benchmark 和 Kimi 循环诊断。文档也列出 trace phase 到 public event 的映射、公共事件字段、脱敏规则、UI 面板内容、Codex exec-server 协议表、进程/文件系统/环境模型、bwrap/Landlock 差距和验收标准。
 
 本次同时更新 `aialra/turn-observability/README.md`、`aialra/turn-observability/trace-schema.md` 和 `aialra/CHANGELOG.md`，让后续可以从 README 和 trace schema 追到这份路线图。
+
+## 2026-05-18 实现记录：Public Event Stream、Turn Inspector、Approval Audit
+
+用户要求“全量端到端完全执行”上一阶段计划：先落地公共事件流和 Turn Inspector，再把 approval UI 和 TurnContext 审计绑定，exec-server 继续作为后续主线。
+
+本次实际实现了 `aialra.public_event.v1` 公共事件模型。它不是替换旧 `/event`，而是新增并行用户可见协议：`GET /event/public`、`GET /session/:sessionID/events/public`、`GET /session/:sessionID/events/:eventID/raw`。旧 `/event` 仍然照常给前端 global sync 使用。
+
+公共事件有两层。第一层是安全外壳，进入 SSE 和 Turn Inspector，只放事件类型、turnID、messageID、toolCallID、标题、摘要、状态和脱敏后的结构字段。第二层是 raw payload，完整 trace/bus 源载荷不走 SSE，只通过 `rawRef` 指向 raw endpoint。配置 `AIALRA_EVENT_AUDIT_KEY` 时 raw payload 用 AES-256-GCM 加密落盘；未配置时只保留在内存里，默认每条 raw payload 最多 64 KiB，可用 `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES` 调整，并发出 `audit.encryption.unavailable` warning event。`aialra/turn-observability/audit/` 已加入 `.gitignore`。
+
+事件来源有两条。第一条是 `AialraTurnTrace.emit`，现在即使 JSONL tracing 没开，也会把可映射 phase 写入 public event log，例如 `turn.input.received`、`turn.context.created`、`turn.started`、`model.request.started`、`model.stream.started`、`model.retrying`、`tool.call.started`、`tool.sandbox.denied`、`final.output`、`turn.completed`。第二条是 OpenCode bus，主要映射 `permission.asked`、`permission.replied` 和 tool part 更新，用来生成 approval、file、command 相关公共事件；turn lifecycle 只走 trace 映射，避免 UI 里同一个开始/结束重复显示。
+
+Turn Inspector 已接入 session 页面右侧。标题栏文件树按钮右边新增一个状态图标按钮；点击后打开右侧 Turn Inspector 面板。面板支持 All、Errors、Tools、Files、Commands、Approvals 过滤，展示 turn/model/tool/file/command/approval/final 等事件摘要。当前认证用户可以点 `Raw` 展开某条事件的原始载荷；raw 展开走 raw endpoint，不走 SSE。
+
+Approval audit 已和 TurnContext 绑定。`Permission.Request` 新增可选 `turnID`、`approvalPolicy`、`permissionProfile`、`sandboxPolicy`。工具触发 `ctx.ask` 时会从当前 `Tool.Context.turn` 填入这些字段。`permission.asked` 会映射为 `approval.requested`，`permission.replied` 会映射为 `approval.resolved`，所以之后 UI 和审计都能知道“哪一轮、哪个工具、哪个权限策略触发了审批”。
+
+已完成验证：`bun --cwd packages/opencode test test/server/httpapi-public-event.test.ts test/permission/approval-audit.test.ts --timeout 30000` 通过，覆盖 public SSE replay、raw endpoint、safe event 不携带完整长 prompt/authorization、跨 session raw 拒绝、trace disabled 时 public event 仍记录、permission bus 到 approval event 映射。`AIALRA_PUBLIC_EVENT_REPLAY_LIMIT=20 AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES=8192 bun --cwd packages/opencode test test/session/prompt.test.ts --timeout 30000` 通过，64 个 prompt 回归全过；普通默认内存上限下该长测试在本机曾被 SIGKILL，因此后续 CI 应该显式设置测试用 replay/raw 上限。`bun --cwd packages/opencode test test/session/schema-decoding.test.ts --timeout 30000` 通过。`node --test aialra/turn-observability/tests/*.test.js` 通过。`bun run --cwd packages/opencode typecheck` 通过。`bun run --cwd packages/app typecheck` 通过。`bun run --cwd packages/app build` 通过。`bun run --cwd packages/opencode build --single --skip-install` 通过，并完成 x64 CLI smoke test。`bun run --cwd packages/opencode build` 默认会构建 12 个平台，本机在多架构阶段被 SIGKILL，所以本次用 `--single` 验证当前 Linux 部署产物。构建过程会重新生成 `packages/core/src/models-snapshot.js`，该构建副产物已恢复，不纳入提交。
+
+当前边界：exec-server 尚未替换 Node/Bun executor；command output 现在主要来自工具完成后的摘要，尚不是 Codex exec-server 那种实时 stdout/stderr seq 流；debug1 原版 OpenCode A/B 还未部署；bwrap/Landlock parity 仍在下一阶段。

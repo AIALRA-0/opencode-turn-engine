@@ -18,6 +18,7 @@ const DEFAULT_SIDEBAR_WIDTH = 344
 const DEFAULT_FILE_TREE_WIDTH = 200
 const DEFAULT_SESSION_WIDTH = 600
 const DEFAULT_TERMINAL_HEIGHT = 280
+const DEFAULT_TURN_INSPECTOR_WIDTH = 360
 export type AvatarColorKey = (typeof AVATAR_COLOR_KEYS)[number]
 
 export function getAvatarColors(key?: string) {
@@ -249,6 +250,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           opened: false,
           width: DEFAULT_FILE_TREE_WIDTH,
           tab: "changes" as "changes" | "all",
+        },
+        turnInspector: {
+          opened: false,
+          width: DEFAULT_TURN_INSPECTOR_WIDTH,
         },
         session: {
           width: DEFAULT_SESSION_WIDTH,
@@ -656,6 +661,38 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
             return
           }
           setStore("fileTree", "width", width)
+        },
+      },
+      turnInspector: {
+        opened: createMemo(() => store.turnInspector?.opened ?? false),
+        width: createMemo(() => store.turnInspector?.width ?? DEFAULT_TURN_INSPECTOR_WIDTH),
+        open() {
+          if (!store.turnInspector) {
+            setStore("turnInspector", { opened: true, width: DEFAULT_TURN_INSPECTOR_WIDTH })
+            return
+          }
+          setStore("turnInspector", "opened", true)
+        },
+        close() {
+          if (!store.turnInspector) {
+            setStore("turnInspector", { opened: false, width: DEFAULT_TURN_INSPECTOR_WIDTH })
+            return
+          }
+          setStore("turnInspector", "opened", false)
+        },
+        toggle() {
+          if (!store.turnInspector) {
+            setStore("turnInspector", { opened: true, width: DEFAULT_TURN_INSPECTOR_WIDTH })
+            return
+          }
+          setStore("turnInspector", "opened", (x) => !x)
+        },
+        resize(width: number) {
+          if (!store.turnInspector) {
+            setStore("turnInspector", { opened: true, width })
+            return
+          }
+          setStore("turnInspector", "width", width)
         },
       },
       session: {

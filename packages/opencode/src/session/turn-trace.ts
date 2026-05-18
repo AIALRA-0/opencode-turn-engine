@@ -2,6 +2,7 @@ import fs from "fs"
 import os from "os"
 import path from "path"
 import { Effect } from "effect"
+import { PublicEventLog } from "./public-event"
 
 type TraceData = Record<string, unknown>
 
@@ -53,6 +54,7 @@ export namespace AialraTurnTrace {
   }
 
   export function emit(input: TraceInput): Effect.Effect<void> {
+    PublicEventLog.recordTrace(input)
     if (!enabled()) return Effect.void
     return Effect.try({
       try: () => {

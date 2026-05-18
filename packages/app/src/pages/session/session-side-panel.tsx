@@ -27,6 +27,7 @@ import { FileTabContent } from "@/pages/session/file-tabs"
 import { createOpenSessionFileTab, createSessionTabs, getTabReorderIndex, type Sizing } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import { TurnInspectorPanel } from "@/pages/session/turn-inspector"
 
 type RenderDiff = (SnapshotFileDiff & { file: string }) | VcsFileDiff
 
@@ -55,7 +56,7 @@ export function SessionSidePanel(props: {
   const language = useLanguage()
   const command = useCommand()
   const dialog = useDialog()
-  const { sessionKey, tabs, view } = useSessionLayout()
+  const { params, sessionKey, tabs, view } = useSessionLayout()
 
   const isDesktop = createMediaQuery("(min-width: 768px)")
   const shown = createMemo(
@@ -67,12 +68,15 @@ export function SessionSidePanel(props: {
 
   const reviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
   const fileOpen = createMemo(() => isDesktop() && shown() && layout.fileTree.opened())
-  const open = createMemo(() => reviewOpen() || fileOpen())
+  const inspectorOpen = createMemo(() => isDesktop() && layout.turnInspector.opened())
+  const open = createMemo(() => reviewOpen() || fileOpen() || inspectorOpen())
   const reviewTab = createMemo(() => isDesktop())
   const panelWidth = createMemo(() => {
     if (!open()) return "0px"
     if (reviewOpen()) return `calc(100% - ${layout.session.width()}px)`
-    return `${layout.fileTree.width()}px`
+    const fileWidth = fileOpen() ? layout.fileTree.width() : 0
+    const inspectorWidth = inspectorOpen() ? layout.turnInspector.width() : 0
+    return `${fileWidth + inspectorWidth}px`
   })
   const treeWidth = createMemo(() => (fileOpen() ? `${layout.fileTree.width()}px` : "0px"))
 
@@ -453,6 +457,10 @@ export function SessionSidePanel(props: {
                   </div>
                 </Show>
               </div>
+            </Show>
+
+            <Show when={inspectorOpen()}>
+              <TurnInspectorPanel sessionID={params.id} active={inspectorOpen()} />
             </Show>
           </div>
         </Show>

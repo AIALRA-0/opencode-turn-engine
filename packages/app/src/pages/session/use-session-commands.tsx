@@ -474,6 +474,11 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
         ]
       : []),
     viewCommand({
+      id: "turnInspector.toggle",
+      title: "Toggle Turn Inspector",
+      onSelect: () => layout.turnInspector.toggle(),
+    }),
+    viewCommand({
       id: "input.focus",
       title: language.t("command.input.focus"),
       keybind: "ctrl+l",

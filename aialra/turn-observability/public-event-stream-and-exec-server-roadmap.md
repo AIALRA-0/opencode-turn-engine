@@ -4,6 +4,35 @@
 
 这里所有 Codex 结论都来自本机源码 `/srv/aialra/apps/codex-turn-engine`，不是猜测。
 
+## 0. 2026-05-18 实现状态
+
+本路线图的第一批用户可见能力已经落地：
+
+- 已新增 `aialra.public_event.v1` 公共事件模型。
+- 已新增 `GET /event/public`、`GET /session/:sessionID/events/public`、
+  `GET /session/:sessionID/events/:eventID/raw`。
+- 已把 `AialraTurnTrace.emit` 映射到 public event log。即使 JSONL trace
+  没开，Turn Inspector 也能看到事件。
+- 已把 OpenCode bus 的 `permission.asked`、`permission.replied` 和 tool
+  part 更新映射到公共事件。turn lifecycle 由 trace 映射，避免同一轮开始/结束
+  重复显示。
+- 已新增加密 raw audit。配置 `AIALRA_EVENT_AUDIT_KEY` 时 raw payload
+  使用 AES-256-GCM 落盘；未配置时只短期存在内存，并发出
+  `audit.encryption.unavailable` warning event。内存 fallback 默认每条 raw
+  payload 上限为 64 KiB，可用 `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES` 调整。
+- 已新增 Turn Inspector 右侧面板，按钮在文件树按钮右侧，支持
+  All/Errors/Tools/Files/Commands/Approvals 过滤和 raw payload 展开。
+- 已给 `Permission.Request` 增加 turn 相关审计字段，并在工具触发审批时
+  从 `Tool.Context.turn` 填入。
+
+仍未完成的部分：
+
+- Codex Rust exec-server 尚未替换当前 Node/Bun executor。
+- command 输出目前主要来自工具完成后的摘要；exec-server 接入后才能做到
+  Codex 风格的实时 stdout/stderr seq 分片。
+- debug1 原版 OpenCode A/B 部署还未执行。
+- bwrap/Landlock parity 仍在后续阶段。
+
 ## 1. 下一阶段优先级
 
 | 顺序 | 事项 | 人话解释 | 为什么排这里 | 交付物 |
@@ -71,11 +100,11 @@ packages/app/src/context/global-sync/event-reducer.ts
 | 字段 | 中文意思 | 说明 |
 | --- | --- | --- |
 | `schema` | 协议版本 | 固定从 `aialra.public_event.v1` 开始。 |
-| `eventID` | 事件编号 | 每条事件唯一。 |
-| `seq` | 顺序号 | 同一个 session 内单调递增，UI 用它排序。 |
+| `id` | 事件编号 | 每条事件唯一。 |
+| `sequence` | 顺序号 | 进程内单调递增，UI 用它排序和断线续传。 |
 | `type` | 事件类型 | 例如 `turn.started`、`tool.call.started`。 |
-| `time` | 时间 | ISO 时间字符串。 |
-| `level` | 严重级别 | `info`、`warning`、`error`。 |
+| `ts` | 时间 | ISO 时间字符串。 |
+| `severity` | 严重级别 | `info`、`warning`、`error`。 |
 | `sessionID` | 会话编号 | 对应 OpenCode session。 |
 | `turnID` | 回合编号 | 用户一次请求的编号。 |
 | `messageID` | 消息编号 | 对应 OpenCode message。 |
@@ -84,7 +113,7 @@ packages/app/src/context/global-sync/event-reducer.ts
 | `summary` | 摘要 | 给用户读的简短解释。 |
 | `status` | 状态 | `started`、`running`、`completed`、`denied`、`failed`。 |
 | `data` | 机器字段 | 稳定、脱敏后的结构化数据。 |
-| `redaction` | 脱敏说明 | 告诉 UI 哪些内容被省略。 |
+| `rawRef` | 原始载荷引用 | 有权限时可通过 raw endpoint 解密或读取，不走 SSE。 |
 
 红线：公共事件默认不能暴露完整用户 prompt、完整模型回复、完整工具输出、密钥、账号密码、原始系统提示词。
 
@@ -209,7 +238,8 @@ MVP 只做 6 组：
 | Command | 命令摘要、cwd、退出码、输出长度。 |
 | Approval | 请求原因、用户选择、对应工具。 |
 
-MVP 不显示完整 prompt 和完整工具输出。只显示摘要和可展开的安全字段。
+MVP 默认不显示完整 prompt 和完整工具输出。默认列表只显示摘要；当前认证用户可以点
+`Raw` 通过 raw endpoint 展开原始载荷，原始载荷不经 SSE 推送。
 
 ### 4.3 完整版显示内容
 

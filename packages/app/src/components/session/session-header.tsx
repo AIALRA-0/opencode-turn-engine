@@ -492,6 +492,28 @@ export function SessionHeader() {
                       </Button>
                     </TooltipKeybind>
                   </Show>
+
+                  <Tooltip value="Turn Inspector">
+                    <Button
+                      variant="ghost"
+                      class="titlebar-icon w-8 h-6 p-0 box-border"
+                      onClick={() => layout.turnInspector.toggle()}
+                      aria-label="Toggle Turn Inspector"
+                      aria-expanded={layout.turnInspector.opened()}
+                      aria-controls="turn-inspector-panel"
+                    >
+                      <div class="relative flex items-center justify-center size-4">
+                        <Icon
+                          size="small"
+                          name={layout.turnInspector.opened() ? "status-active" : "status"}
+                          classList={{
+                            "text-icon-strong": layout.turnInspector.opened(),
+                            "text-icon-weak": !layout.turnInspector.opened(),
+                          }}
+                        />
+                      </div>
+                    </Button>
+                  </Tooltip>
                 </div>
               </div>
             </div>

@@ -6,6 +6,7 @@ import { GlobalBus } from "./global"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
 import { Identifier } from "@/id/id"
+import { PublicEventLog } from "@/session/public-event"
 
 const log = Log.create({ service: "bus" })
 
@@ -97,6 +98,17 @@ export const layer = Layer.effect(
         const dir = yield* InstanceState.directory
         const context = yield* InstanceState.context
         const workspace = yield* InstanceState.workspaceID
+
+        PublicEventLog.recordBus({
+          directory: dir,
+          project: context.project.id,
+          workspace,
+          event: payload as {
+            id: string
+            type: string
+            properties: Record<string, unknown>
+          },
+        })
 
         GlobalBus.emit("event", {
           directory: dir,

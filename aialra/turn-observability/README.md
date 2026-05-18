@@ -1,12 +1,34 @@
 # AIALRA turn observability
 
 This layer records the OpenCode turn workflow from user prompt entry through
-loop orchestration, model streaming, and tool execution. It is intentionally
-off by default and writes only structural metadata: phase names, IDs, counts,
-turn IDs, model names, tool names, token totals, cost, and finish states.
+loop orchestration, model streaming, and tool execution.
 
-It does not write prompt text, generated text, tool arguments, tool output, API
-tokens, usernames, or passwords.
+There are now two surfaces:
+
+- Internal JSONL traces are intentionally off by default and write only
+  structural metadata: phase names, IDs, counts, turn IDs, model names, tool
+  names, token totals, cost, and finish states.
+- The public event stream is always available to authenticated OpenCode clients
+  through `GET /event/public` and
+  `GET /session/:sessionID/events/public`. It powers the Turn Inspector UI and
+  keeps raw payloads behind `rawRef`.
+
+The internal JSONL trace does not write prompt text, generated text, tool
+arguments, tool output, API tokens, usernames, or passwords.
+
+The public safe event stream also does not push full prompt text, full model
+text, or full tool output over SSE. If raw inspection is needed, the current
+authenticated user can expand a single event through:
+
+```text
+GET /session/:sessionID/events/:eventID/raw
+```
+
+When `AIALRA_EVENT_AUDIT_KEY` is configured as a 32-byte base64 key, raw
+payloads are encrypted with AES-256-GCM under
+`aialra/turn-observability/audit/`. Without that key, raw payloads are only kept
+in memory, capped by `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES` with a 64 KiB
+default, and a public warning event is emitted.
 
 ## Enable traces
 
@@ -75,9 +97,8 @@ target prompts, A/B benchmark advice, and user-visible transparency roadmap, see
 aialra/turn-observability/harness-status-and-test-playbook.md
 ```
 
-For the next-stage design that turns internal traces into a user-visible public
-event stream, adds the Turn Inspector UI, and plans the Codex exec-server/Linux
-sandbox migration, see:
+For the public event stream, Turn Inspector UI, and Codex exec-server/Linux
+sandbox migration roadmap, see:
 
 ```text
 aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md

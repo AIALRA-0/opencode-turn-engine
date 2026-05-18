@@ -640,6 +640,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             .ask({
               ...req,
               sessionID: input.session.id,
+              turnID: input.turn?.turnID,
+              approvalPolicy: input.turn?.approval_policy,
+              permissionProfile: input.turn?.active_permission_profile ?? input.turn?.permission_profile,
+              sandboxPolicy: input.turn?.sandbox_policy,
               tool: { messageID: input.processor.message.id, callID: options.toolCallId },
               ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
             })
@@ -871,6 +875,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               .ask({
                 ...req,
                 sessionID,
+                turnID: assistantMessage.parentID,
                 ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
               })
               .pipe(Effect.orDie),

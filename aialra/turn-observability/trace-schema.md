@@ -48,23 +48,38 @@ The trace layer must not record:
 - raw system prompts or model messages.
 - usernames, passwords, API keys, or provider tokens.
 
-## Public event stream target
+## Public event stream
 
 The trace schema is an internal observation surface. It is useful for debugging,
 but it is not the final user-facing protocol.
 
-The next user-facing layer is documented in:
+The first user-facing layer is now implemented as `aialra.public_event.v1` and
+documented in:
 
 ```text
 aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md
 ```
 
-That design maps trace phases and OpenCode bus events into stable public
+That layer maps trace phases and OpenCode bus events into stable public
 events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `tool.sandbox.denied`, `approval.requested`, `approval.resolved`, and
 `final.output`. The public stream keeps the same redaction rule: show structure,
 state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
 model text, full tool output, or secrets.
+
+Implemented endpoints:
+
+- `GET /event/public`
+- `GET /session/:sessionID/events/public`
+- `GET /session/:sessionID/events/:eventID/raw`
+
+Safe public events use `id`, `sequence`, `ts`, `type`, `severity`,
+`sessionID`, `turnID`, `messageID`, `toolCallID`, `title`, `summary`,
+`status`, `data`, and optional `rawRef`. Full raw payloads are not sent over
+SSE; the raw endpoint decrypts or reads the referenced payload after the
+existing OpenCode server auth check. If `AIALRA_EVENT_AUDIT_KEY` is missing,
+raw payloads use a bounded in-memory fallback with a 64 KiB default per payload
+via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 
 ## Current phases
 

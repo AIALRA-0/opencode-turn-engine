@@ -4,6 +4,9 @@ import { WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 
 export const EventPaths = {
   event: "/event",
+  publicEvent: "/event/public",
+  sessionPublicEvents: "/session/:sessionID/events/public",
+  sessionPublicEventRaw: "/session/:sessionID/events/:eventID/raw",
 } as const
 
 export const EventApi = HttpApi.make("event").add(
@@ -17,6 +20,38 @@ export const EventApi = HttpApi.make("event").add(
           identifier: "event.subscribe",
           summary: "Subscribe to events",
           description: "Get events",
+        }),
+      ),
+      HttpApiEndpoint.get("subscribePublic", EventPaths.publicEvent, {
+        query: WorkspaceRoutingQuery,
+        success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/event-stream" })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "event.subscribePublic",
+          summary: "Subscribe to public turn events",
+          description: "Get user-readable public turn events.",
+        }),
+      ),
+      HttpApiEndpoint.get("sessionPublic", EventPaths.sessionPublicEvents, {
+        params: { sessionID: Schema.String },
+        query: WorkspaceRoutingQuery,
+        success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/event-stream" })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "event.sessionPublic",
+          summary: "Subscribe to public session events",
+          description: "Get user-readable public turn events for one session.",
+        }),
+      ),
+      HttpApiEndpoint.get("sessionPublicRaw", EventPaths.sessionPublicEventRaw, {
+        params: { sessionID: Schema.String, eventID: Schema.String },
+        query: WorkspaceRoutingQuery,
+        success: Schema.Any,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "event.sessionPublicRaw",
+          summary: "Read encrypted raw event payload",
+          description: "Read the raw payload for one public event after auth checks.",
         }),
       ),
     )

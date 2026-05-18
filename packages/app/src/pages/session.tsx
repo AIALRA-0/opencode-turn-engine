@@ -402,11 +402,14 @@ export default function Page() {
   const size = createSizing()
   const desktopReviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
   const desktopFileTreeOpen = createMemo(() => isDesktop() && layout.fileTree.opened())
-  const desktopSidePanelOpen = createMemo(() => desktopReviewOpen() || desktopFileTreeOpen())
+  const desktopTurnInspectorOpen = createMemo(() => isDesktop() && layout.turnInspector.opened())
+  const desktopSidePanelOpen = createMemo(() => desktopReviewOpen() || desktopFileTreeOpen() || desktopTurnInspectorOpen())
   const sessionPanelWidth = createMemo(() => {
     if (!desktopSidePanelOpen()) return "100%"
     if (desktopReviewOpen()) return `${layout.session.width()}px`
-    return `calc(100% - ${layout.fileTree.width()}px)`
+    const fileWidth = desktopFileTreeOpen() ? layout.fileTree.width() : 0
+    const inspectorWidth = desktopTurnInspectorOpen() ? layout.turnInspector.width() : 0
+    return `calc(100% - ${fileWidth + inspectorWidth}px)`
   })
   const centered = createMemo(() => isDesktop() && !desktopReviewOpen())
 

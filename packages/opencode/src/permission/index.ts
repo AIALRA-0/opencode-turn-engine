@@ -36,6 +36,10 @@ export class Request extends Schema.Class<Request>("PermissionRequest")({
   patterns: Schema.Array(Schema.String),
   metadata: Schema.Record(Schema.String, Schema.Unknown),
   always: Schema.Array(Schema.String),
+  turnID: Schema.optional(MessageID),
+  approvalPolicy: Schema.optional(Schema.Unknown),
+  permissionProfile: Schema.optional(Schema.Unknown),
+  sandboxPolicy: Schema.optional(Schema.Unknown),
   tool: Schema.optional(
     Schema.Struct({
       messageID: MessageID,

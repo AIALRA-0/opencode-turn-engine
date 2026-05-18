@@ -2,6 +2,29 @@
 
 ## 2026-05-18
 
+- Implemented the first public turn event stream. Added
+  `aialra.public_event.v1`, replay buffers, `GET /event/public`,
+  `GET /session/:sessionID/events/public`, and
+  `GET /session/:sessionID/events/:eventID/raw`. Internal turn traces now feed
+  the public event log even when JSONL tracing is disabled, while the legacy
+  `/event` stream remains unchanged.
+- Added encrypted raw event audit support. Safe public events contain only
+  summaries and bounded structured fields; raw trace/bus payloads are stored via
+  `rawRef`, encrypted with `AIALRA_EVENT_AUDIT_KEY` when configured, or kept
+  in bounded memory with an `audit.encryption.unavailable` warning when the key
+  is missing. The memory fallback defaults to 64 KiB per raw payload via
+  `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`, and the audit directory is ignored by
+  git.
+- Added Turn Inspector UI in the session right panel. The header now has a
+  Turn Inspector toggle next to the file tree toggle, layout state persists
+  `layout.turnInspector.opened` and `layout.turnInspector.width`, and the panel
+  displays turn/model/tool/file/command/approval/final events with filters and
+  authenticated raw payload expansion.
+- Bound approval audit events to turn context. `Permission.Request` now accepts
+  optional `turnID`, `approvalPolicy`, `permissionProfile`, and `sandboxPolicy`;
+  tool-triggered permission asks fill these fields from the active
+  `TurnContext`, and permission bus events map to
+  `approval.requested/resolved` public events.
 - Added a next-stage public event stream and exec-server roadmap. The design
   maps the current internal trace/bus events into a user-readable and
   machine-consumable event model, then uses that model as the data source for a
