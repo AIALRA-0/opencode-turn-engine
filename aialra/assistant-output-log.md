@@ -533,3 +533,9 @@ Approval audit 已和 TurnContext 绑定。`Permission.Request` 新增可选 `tu
 线上验收：`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过。`RUN_MODEL_CALL=1 ./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，真实模型短请求完成。公共事件流 `GET /event/public` 已返回真实事件，第一批事件包括 `turn.input.received`、`turn.context.created`、`turn.started`、`model.request.started`；事件里的 `rawRef` 显示 `encrypted: true`、`persisted: true`。当前审计目录 `aialra/turn-observability/audit/` 已生成 9 个加密 raw 文件。
 
 线上 trace 验证：最新真实模型 trace 文件为 `aialra/turn-observability/traces/ses_1c3bd5324ffeTQkQg1zwnT02IJ.jsonl`，turnID 为 `msg_e3c42adeb001A91POQzrAICKPb`。该 trace 显示 `prompt.received -> turn.context.created -> turn.started -> model.stream.started -> prompt.completed -> turn.completed`，总耗时约 4.3 秒，并且 `turn.context.created` 里能看到本轮 cwd、approval_policy、sandbox_policy、permission_profile、model、collaboration_mode、retry 等字段。
+
+## 2026-05-18 矩阵更新记录：九项路线状态
+
+用户要求确认 9 个事项哪些已实现、哪些未实现，以及能力矩阵是否更新。本次确认：`public-event-stream-and-exec-server-roadmap.md` 和 changelog 已经更新，但 `harness-status-and-test-playbook.md` 仍停留在旧状态，里面还写着 public event 和 Turn Inspector 尚未实现。本次已直接更新 `aialra/turn-observability/harness-status-and-test-playbook.md`。
+
+更新后的结论：Public event stream 已实现 MVP 并部署；Turn Inspector 已实现 MVP 并部署；approval audit 已和 TurnContext 绑定并进入公共事件；Linux-only 范围已遵守；Codex exec-server 已完成源码研究和路线设计，但尚未接入 OpenCode 执行器；bwrap 已有 Linux 系统隔离但未达到 Codex 1:1；debug1 原版 OpenCode A/B 尚未部署；Kimi/弱模型循环诊断只有观测能力，尚未加入 budget/detector；profile parity 只有关键测试和设计表，尚未完成全量矩阵自动化。
