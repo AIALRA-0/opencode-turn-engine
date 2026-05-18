@@ -483,3 +483,15 @@ build
 本次同时更新 `aialra/turn-observability/README.md`，从入口文档链接到该 playbook。服务器上已创建靶场目录 `/srv/aialra/turn-harness-target`，包含 `README.md` 和 `src/app.js`，并清理了 `/srv/aialra/outside-turn-test.txt` 与 `/srv/aialra/outside-bash-test.txt`，方便用户直接用 Web 或 CLI 进行体感测试。
 
 建议结论：先做行为型 A/B，而不是马上跑大型 SWE-bench。把原版 OpenCode 部署到 `debug1.aialra.online`，当前 fork 用 `opencode.aialra.online`，同模型、同靶场、同 prompt，对比是否卡死、cwd 是否正确、外部写入是否被拒绝、bash 是否被系统隔离、取消后是否恢复、trace 是否完整。大型 SWE-bench 放在后面，用来评估产出质量，不适合作为底层 harness 稳定性和安全性的第一验收。
+
+## 2026-05-18 后台核查记录：靶场手动测试结果
+
+用户在 `/srv/aialra/turn-harness-target` 靶场目录做了多轮简单测试后，要求检查后台是否符合预期。本次核查了文件系统、最新两份 trace 和服务状态。
+
+文件系统结果：靶场内存在 `result-inside.txt`，内容为 `AIALRA_INSIDE_OK`；存在 `bash-inside.txt`，内容为 `INSIDE`；存在 `report.md`，其中记录了项目总结和“尝试写入 `/srv/aialra/outside-turn-test.txt` 被拒绝”。工作区外的 `/srv/aialra/outside-turn-test.txt` 和 `/srv/aialra/outside-bash-test.txt` 均不存在，符合预期。
+
+trace 结果：最新两份 trace 是 `ses_1c43ed3b3ffeGqk5CvHSRKdnsT.jsonl` 和 `ses_1c43fedd4ffeOJpT6L2DGsBF9C.jsonl`。两份 trace 合计 8 个 turn，每个 turn 都有 `turn.started` 和 `turn.completed`，没有发现缺少终态的 turn。`ses_1c43ed...` 覆盖了读取 README、工作区外写入拒绝、`.git/config` 写入拒绝、复杂混合任务；其中出现了 `tool.sandbox.checked` 和 `tool.sandbox.denied`，外部写入和 `.git/config` 写入均被拒绝。`ses_1c43fedd...` 覆盖了普通回复、工作区内写入、bash 写入和后续自查；第一轮 Kimi 流曾出现一次 `model.stream.retrying`，原因是 socket connection closed，随后重试成功并 `turn.completed`；这验证了 stream retry 收口能力。
+
+边界观察：在 `ses_1c43fedd...` 的后续自查中，模型多次用 bash/read 查看 trace 和脚本，cwd 显示为 `/srv/aialra/turn-harness-target`，但部分 bash 工具的 `target` 是 `/srv/aialra/apps/opencode-turn-engine`。这是因为当前 workspace-write 策略是“工作区可写，全局只读”，所以读取仓库文件和在仓库目录中只读执行命令是允许的；写入仍只允许靶场目录和 tmp roots。这一点符合当前实现，但如果希望“工作区外连读都不允许”，下一阶段需要新增更严格的 read-confined profile。
+
+服务状态：`aialra-opencode-web.service` 仍为 active。后台未发现 systemd web service 错误日志。
