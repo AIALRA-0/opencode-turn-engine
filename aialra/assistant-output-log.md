@@ -457,3 +457,29 @@ build
 部署记录：执行 `./aialra/opencode-deployment/scripts/build-opencode.sh`，生成并 smoke 通过的 fork runtime 版本为 `0.0.0-dev-202605170639`。随后重启 `aialra-opencode-web.service`，并确认 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-opencode-sensenova.service` 均为 active。部署后执行 `./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过；再执行 `RUN_MODEL_CALL=1 ./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，真实模型短请求完成。
 
 线上 trace 验证：最新真实模型 trace 文件为 `aialra/turn-observability/traces/ses_1cb54d04bffel7HJDQG801AF9t.jsonl`，turnID 为 `msg_e34ab3042001456QxH4jyKFVlG`。该 trace 显示 `prompt.received -> turn.context.created -> turn.started -> model.stream.started -> prompt.completed -> turn.completed`，总耗时约 3.8 秒。`turn.context.created` 中能看到本轮 cwd、approval_policy、sandbox_policy、permission_profile、active_permission_profile、model、collaboration_mode、environment cwd、request_max_retries、stream_max_retries、stream_idle_timeout_ms。由于这轮真实 smoke prompt 没有触发工具调用，所以线上 trace 没有 `tool.sandbox.checked`；工具门禁的真实调用路径由 prompt 级 mock-model 测试和 tool executor 回归测试覆盖。
+
+## 2026-05-17 解释记录：当前 Codex 化范围、人话版差异和下一步
+
+用户要求把当前实现逐句翻译成人话，并解释目前改了什么、和原 OpenCode 有什么区别、和真 Codex CLI 有什么区别、如何做用户体感测试、下一步应该做什么。
+
+核心解释：现在的 `turn` 可以理解成“用户发出一次请求后，服务端给这次请求开的工单”。`turn.started` 是开工，`turn.completed` 是不管成功还是错误都收工，`turn.aborted` 是用户取消或请求被替换。`UserTurn` 是这张工单上的规则，`TurnContext` 是代码实际执行时随身携带的规则包，不只是给模型看的文字。
+
+已经完成的变化分四层。第一层是观测层：trace 能把一次请求从收到 prompt 追到最终结束。第二层是生命周期层：每次 prompt 都必须有开始和终态，避免前端一直“思考中”。第三层是模型流层：请求失败、流中断、流空闲、流没正常 finish 都能按 Codex 同名参数重试或收口。第四层是工具执行层：read/write/edit/apply_patch/bash 都会读取 TurnContext，文件路径按本轮 cwd 解析，写入要过 permission_profile 和 sandbox_policy，symlink 逃逸会被拒绝，bash 在 Linux 下使用 bubblewrap 做系统级隔离。
+
+和原 OpenCode 的主要区别：原 OpenCode 更像“收到用户消息后直接进入模型和工具循环”，权限、cwd、失败收口比较分散。现在更像“先建一张本轮工单，再让模型和工具按这张工单执行”。所以现在不仅能查“发生了什么”，也开始能控制“允许发生什么”。
+
+和真 Codex CLI 的主要区别：我们已经合并了 Codex 风格的 turn 生命周期、重试命名、TurnContext 字段、工具门禁和 Linux bubblewrap 隔离，但还没有把 Codex 的 Rust 执行器底座完整移植过来。本地 Codex 源码里存在独立的 `exec-server`、`sandboxing`、`linux-sandbox`、`windows-sandbox-rs` 等模块；Codex 的完整能力不是只有一段 TypeScript 检查，而是有独立执行服务和多平台沙箱后端。当前 OpenCode 仍然是在 Node/Bun 工具执行器里加入强门禁，bash 用 Linux bubblewrap 做系统隔离；macOS seatbelt、Windows sandbox、Rust exec-server、远程/多环境文件系统抽象还没有完整 1:1 落地。
+
+用户体感测试建议：普通请求应该不会卡死；让模型读相对路径文件时，应该按当前工作区读取；让模型写工作区内文件应该成功；让模型尝试写工作区外文件应该被拒绝且整轮正常结束；让模型跑 bash 写工作区外文件时，Linux bubblewrap 应该让外部写入失败。观察方式是看最新 trace 文件并用 `aialra/turn-observability/scripts/render-trace.js` 渲染，重点找 `turn.started`、`turn.completed`、`tool.sandbox.checked`、`tool.sandbox.denied`。
+
+下一步建议：如果目标是继续逼近“真 Codex CLI”，下一阶段不要先做 DAG 或自定义规划器，而应该做 Codex exec-server/sandbox runtime 移植。具体是先研究 Codex Rust `exec-server` 协议和 sandboxing crate，再让 OpenCode 工具层通过适配器调用这个执行底座，逐步替换 Node/Bun 直接 fs/process 执行。Linux 先对齐 bwrap/Landlock，之后再对齐 macOS seatbelt 和 Windows sandbox。并行可以把 Codex 的 thread/turn/item 公共事件模型映射到 OpenCode UI，让用户不用翻 trace 也能看到工具被允许、拒绝、完成或失败。
+
+## 2026-05-18 解释记录：验收矩阵、差距矩阵、靶场测试和透明化路线
+
+用户要求把已实现能力写成验收矩阵，把未实现能力和 Codex 差距写成矩阵，给出真实提示词和靶场文件夹，说明如何比较原版 OpenCode 与当前 fork，并设计用户可见的 agent 执行日志。
+
+本次新增文档 `aialra/turn-observability/harness-status-and-test-playbook.md`。文档包含四块：第一，已实现能力验收矩阵，把 turn lifecycle、UserTurn/TurnContext、retry、trace、read/write/edit/apply_patch/bash 门禁、bubblewrap、symlink 拒绝、保护目录、tool.sandbox trace 等能力逐项列出。第二，Codex 差距矩阵，列出 public Thread/Turn/Item 事件、Rust exec-server、Linux Landlock、bundled bwrap、macOS Seatbelt、Windows sandbox、remote/multi-environment execution、approval reviewer、permission profile parity、final output schema、用户可见 Turn Inspector、A/B benchmark 等仍需吸收的能力。第三，靶场测试手册，指定 `/srv/aialra/turn-harness-target` 为安全靶场目录，并给出从普通收尾、相对路径读取、工作区内写入、工作区外拒绝、bash 内外写入、保护目录写入拒绝到复杂混合任务的真实 prompt。第四，透明化路线，建议新增 Turn Inspector，把 Intake、Turn context、Model request、Tool execution、Sandbox decision、Retry、Final 等阶段展示给用户。
+
+本次同时更新 `aialra/turn-observability/README.md`，从入口文档链接到该 playbook。服务器上已创建靶场目录 `/srv/aialra/turn-harness-target`，包含 `README.md` 和 `src/app.js`，并清理了 `/srv/aialra/outside-turn-test.txt` 与 `/srv/aialra/outside-bash-test.txt`，方便用户直接用 Web 或 CLI 进行体感测试。
+
+建议结论：先做行为型 A/B，而不是马上跑大型 SWE-bench。把原版 OpenCode 部署到 `debug1.aialra.online`，当前 fork 用 `opencode.aialra.online`，同模型、同靶场、同 prompt，对比是否卡死、cwd 是否正确、外部写入是否被拒绝、bash 是否被系统隔离、取消后是否恢复、trace 是否完整。大型 SWE-bench 放在后面，用来评估产出质量，不适合作为底层 harness 稳定性和安全性的第一验收。

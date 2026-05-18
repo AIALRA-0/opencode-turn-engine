@@ -65,3 +65,12 @@ planning, tool governance, retry behavior, and final response handling.
 Events that belong to a user turn carry the same top-level `turnID`, so a
 single prompt can be followed through intake, loop, model, processor, and final
 response without reading prompt text.
+
+## Status and manual tests
+
+For the current Codex-harness acceptance matrix, remaining gap matrix, manual
+target prompts, A/B benchmark advice, and user-visible transparency roadmap, see:
+
+```text
+aialra/turn-observability/harness-status-and-test-playbook.md
+```
