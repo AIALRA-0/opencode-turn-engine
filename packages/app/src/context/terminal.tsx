@@ -38,6 +38,15 @@ function numberFromTitle(title: string) {
   return titleNumber(title, MAX_TERMINAL_SESSIONS)
 }
 
+function isNotFoundError(error: unknown) {
+  const status = record(error) ? num(error.status) ?? num(error.statusCode) : undefined
+  if (status === 404) return true
+  const response = record(error) ? error.response : undefined
+  if (record(response) && num(response.status) === 404) return true
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : ""
+  return /\b404\b|not found|session not found/i.test(message)
+}
+
 function pty(value: unknown): LocalPTY | undefined {
   if (!record(value)) return
 
@@ -226,6 +235,10 @@ function createWorkspaceTerminalSession(
         size: pty.cols && pty.rows ? { rows: pty.rows, cols: pty.cols } : undefined,
       })
       .catch((error: unknown) => {
+        if (isNotFoundError(error)) {
+          removeExited(pty.id)
+          return
+        }
         if (previous) {
           const currentIndex = store.all.findIndex((item) => item.id === pty.id)
           if (currentIndex >= 0) setStore("all", currentIndex, previous)
@@ -364,6 +377,7 @@ function createWorkspaceTerminalSession(
       }
 
       await sdk.client.pty.remove({ ptyID: id }).catch((error: unknown) => {
+        if (isNotFoundError(error)) return
         console.error("Failed to close terminal", error)
       })
     },

@@ -15,6 +15,7 @@ import { File } from "../file"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { TurnSandbox } from "./turn-sandbox"
+import { CodexFs } from "./codex-fs"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -73,7 +74,7 @@ export const ApplyPatchTool = Tool.define(
       for (const hunk of hunks) {
         const filePath = TurnSandbox.resolvePath(ctx, hunk.path, instance.directory)
         yield* TurnSandbox.assertWritableParentExists(ctx, filePath)
-        yield* assertExternalDirectoryEffect(ctx, filePath)
+        yield* assertExternalDirectoryEffect(ctx, filePath, { access: "write" })
 
         switch (hunk.type) {
           case "add": {
@@ -114,7 +115,7 @@ export const ApplyPatchTool = Tool.define(
               )
             }
 
-            const source = yield* Bom.readFile(afs, filePath)
+            const source = yield* CodexFs.readBomFile(ctx, afs, filePath)
             const oldContent = source.text
             let newContent = oldContent
             let bom = source.bom
@@ -143,7 +144,7 @@ export const ApplyPatchTool = Tool.define(
 
             const movePath = hunk.move_path ? TurnSandbox.resolvePath(ctx, hunk.move_path, instance.directory) : undefined
             if (movePath) yield* TurnSandbox.assertWritableParentExists(ctx, movePath)
-            yield* assertExternalDirectoryEffect(ctx, movePath)
+            yield* assertExternalDirectoryEffect(ctx, movePath, { access: "write" })
 
             fileChanges.push({
               filePath,
@@ -162,15 +163,7 @@ export const ApplyPatchTool = Tool.define(
           }
 
           case "delete": {
-            const source = yield* Bom.readFile(afs, filePath).pipe(
-              Effect.catch((error) =>
-                Effect.fail(
-                  new Error(
-                    `apply_patch verification failed: ${error instanceof Error ? error.message : String(error)}`,
-                  ),
-                ),
-              ),
-            )
+            const source = yield* CodexFs.readBomFile(ctx, afs, filePath)
             const contentToDelete = source.text
             const deleteDiff = trimDiff(createTwoFilesPatch(filePath, filePath, contentToDelete, ""))
 
@@ -226,12 +219,12 @@ export const ApplyPatchTool = Tool.define(
           case "add":
             // Create parent directories (recursive: true is safe on existing/root dirs)
 
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+            yield* CodexFs.writeWithDirs(ctx, afs, change.filePath, Bom.join(change.newContent, change.bom))
             updates.push({ file: change.filePath, event: "add" })
             break
 
           case "update":
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+            yield* CodexFs.writeWithDirs(ctx, afs, change.filePath, Bom.join(change.newContent, change.bom))
             updates.push({ file: change.filePath, event: "change" })
             break
 
@@ -239,22 +232,22 @@ export const ApplyPatchTool = Tool.define(
             if (change.movePath) {
               // Create parent directories (recursive: true is safe on existing/root dirs)
 
-              yield* afs.writeWithDirs(change.movePath!, Bom.join(change.newContent, change.bom))
-              yield* afs.remove(change.filePath)
+              yield* CodexFs.writeWithDirs(ctx, afs, change.movePath!, Bom.join(change.newContent, change.bom))
+              yield* CodexFs.remove(ctx, afs, change.filePath)
               updates.push({ file: change.filePath, event: "unlink" })
               updates.push({ file: change.movePath, event: "add" })
             }
             break
 
           case "delete":
-            yield* afs.remove(change.filePath)
+            yield* CodexFs.remove(ctx, afs, change.filePath)
             updates.push({ file: change.filePath, event: "unlink" })
             break
         }
 
         if (edited) {
           if (yield* format.file(edited)) {
-            yield* Bom.syncFile(afs, edited, change.bom)
+            yield* CodexFs.syncBomFile(ctx, afs, edited, change.bom)
           }
           yield* bus.publish(File.Event.Edited, { file: edited })
         }

@@ -25,6 +25,7 @@ import { WriteTool } from "../../src/tool/write"
 import { CodexTurn, type TurnContext } from "../../src/session/turn-context"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { probeLinuxSandboxCapability } from "../../src/tool/linux-sandbox-capability"
+import { TurnSandbox } from "../../src/tool/turn-sandbox"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -305,6 +306,52 @@ describe("Codex turn sandbox tool gates", () => {
     }),
   )
 
+  it.instance("allows disabled profile to bypass file sandbox checks", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      const outside = outsideRepoFile("disabled")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const active = turn(cwd, {
+        sandbox_policy: { type: "danger-full-access" },
+        permission_profile: { type: "disabled" },
+        active_permission_profile: { id: "disabled" },
+      })
+      const write = yield* initWrite()
+
+      try {
+        yield* write.execute({ filePath: outside, content: "allowed-disabled" }, ctx(active))
+        expect(yield* Effect.promise(() => fs.readFile(outside, "utf8"))).toBe("allowed-disabled")
+      } finally {
+        yield* Effect.promise(() => fs.rm(outside, { force: true }))
+      }
+    }),
+  )
+
+  it.instance("external profile still honors the active workspace sandbox boundary", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      const outside = outsideRepoFile("external")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const active = turn(cwd, {
+        permission_profile: { type: "external", network: "restricted" },
+        active_permission_profile: { id: "external" },
+      })
+      const write = yield* initWrite()
+
+      try {
+        yield* expectFailure(
+          write.execute({ filePath: outside, content: "blocked-external" }, ctx(active)),
+          "Codex turn sandbox denied write access",
+        )
+        expect(fssync.existsSync(outside)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => fs.rm(outside, { force: true }))
+      }
+    }),
+  )
+
   it.instance("honors explicit glob deny entries in the turn permission profile", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -356,6 +403,61 @@ describe("Codex turn sandbox tool gates", () => {
         expect(result.metadata.exit).not.toBe(0)
       } finally {
         yield* Effect.promise(() => fs.rm(outside, { force: true }))
+      }
+    }),
+  )
+
+  it.instance("adds network isolation to bwrap when the turn network policy is restricted", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const sandbox = yield* TurnSandbox.shellSandboxCommand(ctx(turn(cwd)), {
+        shell: "bash",
+        command: "true",
+        cwd,
+      })
+      try {
+        expect(sandbox?.mode).toBe("bwrap")
+        expect(sandbox?.args).toContain("--unshare-net")
+      } finally {
+        yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
+      }
+    }),
+  )
+
+  it.instance("does not add network isolation to bwrap when the turn network policy is enabled", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const workspaceProfile = CodexTurn.workspacePermissionProfile(cwd)
+      const active = turn(cwd, {
+        sandbox_policy: {
+          type: "workspace-write",
+          writable_roots: [cwd],
+          network_access: true,
+          exclude_tmpdir_env_var: false,
+          exclude_slash_tmp: false,
+        },
+        permission_profile: {
+          type: "managed",
+          file_system: workspaceProfile.type === "managed" ? workspaceProfile.file_system : { type: "unrestricted" },
+          network: "enabled",
+        },
+      })
+      const sandbox = yield* TurnSandbox.shellSandboxCommand(ctx(active), {
+        shell: "bash",
+        command: "true",
+        cwd,
+      })
+      try {
+        expect(sandbox?.mode).toBe("bwrap")
+        expect(sandbox?.args).not.toContain("--unshare-net")
+      } finally {
+        yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
       }
     }),
   )

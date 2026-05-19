@@ -166,6 +166,7 @@ function localizedSummary(event: PublicEvent) {
   const provider = textValue(data.providerID)
   const reason = textValue(data.reason)
   const reply = localizedStatus(textValue(data.reply))
+  const method = textValue(data.method)
   const outputChars = numberValue(data.outputChars)
   const durationMs = numberValue(data.durationMs)
   const message = textValue(data.message)
@@ -192,9 +193,13 @@ function localizedSummary(event: PublicEvent) {
     case "model.request.finished":
       return event.severity === "error" ? "模型请求以错误收尾" : "模型请求已结束"
     case "executor.started":
-      return "Codex exec-server 已接管本次进程启动"
+      return method?.startsWith("fs/")
+        ? `Codex exec-server 已接管文件操作：${method}${path ? `，路径：${path}` : ""}`
+        : "Codex exec-server 已接管本次进程启动"
     case "executor.finished":
-      return "Codex exec-server 进程已收尾"
+      return method?.startsWith("fs/")
+        ? `Codex exec-server 文件操作已收尾：${method}${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
+        : "Codex exec-server 进程已收尾"
     case "executor.fallback":
       return "Codex exec-server 不可用，已回退到当前 Node/Bun 执行器"
     case "tool.call.started":

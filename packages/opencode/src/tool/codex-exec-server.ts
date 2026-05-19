@@ -1,6 +1,7 @@
 import { AialraTurnTrace } from "@/session/turn-trace"
 import type * as Tool from "./tool"
 import type { ShellSandboxCommand } from "./turn-sandbox"
+import type { PermissionProfileFileSystemEntry, TurnContext } from "@/session/turn-context"
 import { Effect } from "effect"
 
 type JsonRecord = Record<string, unknown>
@@ -31,6 +32,10 @@ type ProcessReadResponse = {
   failure: string | null
 }
 
+type FsReadFileResponse = {
+  dataBase64: string
+}
+
 type ManagedServer = {
   child: ReturnType<typeof Bun.spawn>
   url: string
@@ -48,6 +53,18 @@ type RunProcessInput = {
 
 const decoder = new TextDecoder()
 const encoder = new TextEncoder()
+
+export class CodexExecServerRpcError extends Error {
+  readonly code: number
+  readonly data?: unknown
+
+  constructor(input: { code: number; message: string; data?: unknown }) {
+    super(input.message)
+    this.name = "CodexExecServerRpcError"
+    this.code = input.code
+    this.data = input.data
+  }
+}
 
 function jsonEnv(env: NodeJS.ProcessEnv) {
   const out: Record<string, string> = {}
@@ -158,7 +175,13 @@ export class CodexExecServerClient {
     if (!pending) return
     this.#pending.delete(parsed.id)
     if (parsed.error) {
-      pending.reject(new Error(`codex exec-server rejected ${parsed.id}: ${parsed.error.message}`))
+      pending.reject(
+        new CodexExecServerRpcError({
+          code: parsed.error.code,
+          message: `codex exec-server rejected ${parsed.id}: ${parsed.error.message}`,
+          data: parsed.error.data,
+        }),
+      )
       return
     }
     pending.resolve(parsed.result)
@@ -202,6 +225,65 @@ export class CodexExecServerClient {
   }
 }
 
+function codexSpecialPath(value: PermissionProfileFileSystemEntry["path"] & { type: "special" }) {
+  switch (value.value) {
+    case "root":
+      return { type: "special", value: { kind: "root" } }
+    case "workspace_roots":
+      return { type: "special", value: { kind: "project_roots", subpath: null } }
+    case "tmpdir":
+      return { type: "special", value: { kind: "tmpdir" } }
+    case "slash_tmp":
+      return { type: "special", value: { kind: "slash_tmp" } }
+    case "minimal":
+      return { type: "special", value: { kind: "minimal" } }
+  }
+}
+
+function codexPermissionEntry(entry: PermissionProfileFileSystemEntry) {
+  const p = entry.path
+  const nextPath =
+    p.type === "path"
+      ? { type: "path", path: p.path }
+      : p.type === "glob"
+        ? { type: "glob_pattern", pattern: p.pattern }
+        : codexSpecialPath(p)
+  return { path: nextPath, access: entry.access }
+}
+
+function codexPermissionProfile(turn: TurnContext) {
+  const profile = turn.permission_profile
+  if (profile.type === "disabled") return { type: "disabled" }
+  if (profile.type === "external") return { type: "external", network: profile.network }
+  if (profile.file_system.type === "unrestricted") {
+    return {
+      type: "managed",
+      file_system: { type: "unrestricted" },
+      network: profile.network,
+    }
+  }
+  return {
+    type: "managed",
+    file_system: {
+      type: "restricted",
+      entries: profile.file_system.entries.map(codexPermissionEntry),
+      ...(profile.file_system.glob_scan_max_depth ? { glob_scan_max_depth: profile.file_system.glob_scan_max_depth } : {}),
+    },
+    network: profile.network,
+  }
+}
+
+function sandboxContext(turn?: TurnContext) {
+  if (!turn) return undefined
+  return {
+    permissions: codexPermissionProfile(turn),
+    cwd: turn.cwd,
+    windowsSandboxLevel: "disabled",
+    windowsSandboxPrivateDesktop: false,
+    useLegacyLandlock: false,
+  }
+}
+
 async function startManagedServer(): Promise<ManagedServer> {
   const codex = process.env.AIALRA_CODEX_EXEC_SERVER_BIN || Bun.which("codex")
   if (!codex) throw new Error("AIALRA_EXEC_BACKEND=codex requires `codex` on PATH")
@@ -211,6 +293,16 @@ async function startManagedServer(): Promise<ManagedServer> {
   })
   const url = await firstLine(child.stdout)
   return { child, url }
+}
+
+async function withClient<T>(fn: (client: CodexExecServerClient) => Promise<T>) {
+  const url = process.env.AIALRA_CODEX_EXEC_SERVER_URL
+  const client = await CodexExecServerClient.connect(url ? { url } : undefined)
+  try {
+    return await fn(client)
+  } finally {
+    await client.close()
+  }
 }
 
 export async function runProcess(input: RunProcessInput) {
@@ -283,11 +375,132 @@ export async function runProcess(input: RunProcessInput) {
   }
 }
 
+async function readFile(input: { path: string; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/readFile", path: input.path },
+    }))
+    const result = await withClient((client) =>
+      client.request("fs/readFile", {
+        path: input.path,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    ) as FsReadFileResponse
+    return Buffer.from(result.dataBase64, "base64")
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/readFile", path: input.path, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
+async function writeFile(input: { path: string; data: string | Uint8Array; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/writeFile", path: input.path },
+    }))
+    const bytes = typeof input.data === "string" ? encoder.encode(input.data) : input.data
+    await withClient((client) =>
+      client.request("fs/writeFile", {
+        path: input.path,
+        dataBase64: Buffer.from(bytes).toString("base64"),
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    )
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/writeFile", path: input.path, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
+async function createDirectory(input: { path: string; recursive?: boolean; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/createDirectory", path: input.path },
+    }))
+    await withClient((client) =>
+      client.request("fs/createDirectory", {
+        path: input.path,
+        recursive: input.recursive ?? true,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    )
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/createDirectory", path: input.path, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
+async function remove(input: { path: string; recursive?: boolean; force?: boolean; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/remove", path: input.path },
+    }))
+    await withClient((client) =>
+      client.request("fs/remove", {
+        path: input.path,
+        recursive: input.recursive ?? false,
+        force: input.force ?? false,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    )
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/remove", path: input.path, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
 export const CodexExecServer = {
   enabled: CodexExecServerClient.enabled,
   connect: CodexExecServerClient.connect,
   runProcess,
+  readFile,
+  writeFile,
+  createDirectory,
+  remove,
   jsonEnv,
+  isRpcError(error: unknown): error is CodexExecServerRpcError {
+    return error instanceof CodexExecServerRpcError
+  },
   encodeBase64(input: string) {
     return Buffer.from(encoder.encode(input)).toString("base64")
   },

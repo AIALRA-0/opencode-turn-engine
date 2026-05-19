@@ -627,3 +627,37 @@ Turn Inspector 历史 turn 折叠已实现。新 turn 默认展开，旧 turn �
 测试和构建记录：`node --test aialra/turn-observability/tests/*.test.js` 通过；`bun --cwd packages/app typecheck` 通过；`bun run --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app build` 通过；`bun run --cwd packages/opencode build --single` 通过并完成 Linux x64 CLI smoke。exec-server + sandbox live 测试通过。`git diff --check` 通过。`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 在完整大套件里仍有 shell 取消/并发相关单个用例偶发 30 秒超时；单独重跑失败用例通过，`bun --cwd packages/opencode test test/session/prompt.test.ts -t "shell" --timeout 30000` 15 个 shell 相关用例全部通过。这说明逻辑路径可收口，但完整大套件在当前机器上还有 shell 取消类 flake，不能把它说成 30 秒全绿。
 
 当前仍未完成并且不能冒充完成：`read/write/edit/apply_patch` 还没有走 Codex exec-server FS API；Landlock 仍只是能力评估，没有内核级 enforce；exec-server 还没有独立 systemd sidecar 化；network profile parity、approval never/on-request 的全矩阵还没有全部自动化；Turn Inspector 还没有虚拟列表，超长历史会话后还需要进一步优化。
+
+## 2026-05-19 实现记录：exec-server FS、systemd sidecar、profile parity、测试 flake 收口
+
+用户要求继续端到端推进，优先修复 `prompt.test.ts` / `schema-decoding` 全量 30 秒测试中的 shell 取消/并发 flake，然后把 read/write/edit/apply_patch 接入 Codex exec-server FS API，把 exec-server 推进成稳定 sidecar，深化 Linux sandbox，补 profile parity，继续 Kimi/弱模型诊断，跑 A/B，并修复页面报错。
+
+测试 flake 先处理。完整套件之前的卡住点不是 Codex exec-server fallback，也不是 session idle 收尾坏掉，而是测试在取消 shell 或断言 retry/stream/tool trace 时等待条件太粗，偶发在 shell tool 尚未真正进入 running 状态时就取消，或在 trace 尚未 flush 到目标 phase 时就读取。现在 `prompt.test.ts` 增加 `waitForRunningTool` 和 `waitForTracePhase`，取消/并发类测试先等真实 running tool 出现，retry/idle/tool 场景先等 `turn.completed` 或 `processor.halted`。验收结果：`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 全量通过，90 pass，0 fail。
+
+Codex exec-server FS API 已接入文件工具。新增 `packages/opencode/src/tool/codex-fs.ts`，在 `AIALRA_EXEC_BACKEND=codex` 且工具上下文里有 TurnContext 时，文件内容读取/写入/删除优先走 Codex exec-server：`fs/readFile`、`fs/writeFile`、`fs/createDirectory`、`fs/remove`。OpenCode 的 TurnContext 门禁仍然先执行，所以 cwd、permission profile、sandbox policy、approval policy 不会丢。exec-server 连接失败、sidecar 不可用等传输级问题会发 `exec_server.fallback`，再回退到现有 Node/Bun 文件系统；但 Codex RPC 明确拒绝的 sandbox 错误不会静默 fallback。`read.ts`、`write.ts`、`edit.ts`、`apply_patch.ts` 已改用这个通道。
+
+exec-server sidecar 已产品化第一版。新增系统服务 `aialra-codex-exec-server.service`，监听 `ws://127.0.0.1:12650`，日志路径 `/srv/aialra/logs/codex-exec-server/service.log`，当前为 enabled + active。`curl http://127.0.0.1:12650/readyz` 通过。AIALRA OpenCode 的环境配置增加 `AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650`，因此默认连接长期运行的 sidecar，而不是每个工具调用临时托管一个进程。这个环境文件在仓库外，不会提交。
+
+Turn Inspector 可见性也跟上。`exec_server.fs.started` 和 `exec_server.fs.finished` 会映射为 public event 的 `executor.started` / `executor.finished`，UI 中文摘要会说明是 `fs/readFile`、`fs/writeFile`、`fs/createDirectory` 还是 `fs/remove`，并显示路径摘要和耗时。这样用户能看见“文件工具确实走了 Codex exec-server”，而不是只能相信后端改了。
+
+Linux sandbox 探测进一步落地。`probe-linux-sandbox.mjs` 不再只按内核版本猜 Landlock，而是读取 `/boot/config-6.8.0-106-generic`，确认 `CONFIG_SECURITY_LANDLOCK=y`，LSM 顺序包含 `landlock,lockdown,yama,integrity,apparmor`。脚本还真实运行 Codex Linux sandbox workspace 写入探测：在 `/srv/aialra/tmp/.../workspace` 内写入成功，尝试写同级 workspace 外文件失败，stderr 为只读文件系统，`enforcedWorkspaceWrite=true`。这说明当前主机上 Codex Linux sandbox helper 路线能硬挡工作区外写入；但 Node/Bun 工具层本身仍没有直接调用 Landlock syscall，所以不能说 Landlock 已在 OpenCode 工具层 1:1 enforce。
+
+profile parity 继续扩展。`turn-sandbox.test.ts` 新增 disabled profile 外部写允许、external profile 仍遵守 workspace sandbox 边界、bash 网络 restricted 时 bwrap args 包含 `--unshare-net`、网络 enabled 时不包含 `--unshare-net`。连同原有 read-only、workspace-write、full-access、symlink escape、protected metadata、bwrap workspace 测试，当前 live 命令 `AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts --timeout 30000` 通过，19 pass。
+
+A/B harness 已扩展。原来默认 5 个强约束 prompt；现在默认 7 个，新增一个口语化真实任务和一个情绪化越界恢复任务。报告生成逻辑也升级：每个场景会自动写“本场最佳是谁、为什么”，整体结论会按完成、不卡死、不等待审批、有 turn 终态、越界写入被拒绝、过程可解释等指标打分。部署本批代码后会重新跑三方 A/B，生成新的 `ab-comparison-*.md`。
+
+页面零散错误修复新增一项：stale PTY 404。之前如果终端 session 已经被后端删除，前端还会继续请求 connect-token 和 WebSocket，控制台反复出现 404 / Session not found。现在 `terminal.tsx` 遇到 404 会抛出可识别的“terminal session not found”，`terminal.tsx` context 会把这个 stale PTY 从本地列表移除，并避免重复报错。`tabs:outgoing.message.ready` 在当前源码中没有对应 listener 字符串，后续浏览器 smoke 需要继续确认它是否来自浏览器扩展或外部注入脚本。
+
+当前真实边界：目录列举还没有接 Codex `fs/readDirectory`；Codex remote environment、HTTP API、实时 stdout/stderr seq 分片 UI 还没完成；Landlock 还没有在 Node/Bun 工具层 syscall enforce；approval reviewer 语义还没做到 Codex 1:1；Turn Inspector 超长历史还没有虚拟列表。
+
+## 2026-05-19 追加实现记录：外部路径审批收口、线上部署、A/B 复跑
+
+本轮在第一次 A/B 复跑里发现一个真实缺口：AIALRA 已经把工作区外写入挡住了，文件也没有被创建，但模型随后为了确认文件不存在，调用 `read` 读取了同一个工作区外路径。OpenCode 旧逻辑把“工作区外读取”当成 `external_directory` 审批，于是脚本看到等待审批并中断。这不是安全破口，而是 Codex 化 turn harness 和 OpenCode legacy permission 之间的重复门禁。
+
+修复方式：当工具上下文里已经有 TurnContext 时，外部路径是否允许由本轮 TurnContext sandbox 决定，不再额外弹 OpenCode legacy `external_directory` 审批。结果是：工作区外写入仍然按 workspace-write 被拒绝；工作区外只读确认可以继续完成，从而让这轮请求正常给用户解释“写入被拒绝，文件不存在”，而不是卡在审批。无 TurnContext 的旧调用路径仍保留原 external-directory 行为。
+
+新增验证：`test/tool/external-directory.test.ts` 增加两项测试，确认 TurnContext 下可读外部路径不再弹审批、外部写入仍由 sandbox 拒绝且不弹审批。完整相关命令 `AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 通过，26 pass。`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 通过，90 pass，0 fail。`node --test aialra/turn-observability/tests/*.test.js` 通过。`bun run --cwd packages/opencode typecheck`、`bun run --cwd packages/app typecheck`、`bun --cwd packages/app build`、`bun run --cwd packages/opencode build --single` 均通过。
+
+部署记录：执行 `./aialra/opencode-deployment/scripts/build-opencode.sh`，构建版本 `0.0.0-dev-202605191525`，Linux x64 CLI smoke 通过。重启 `aialra-opencode-web.service` 和 `aialra-opencode-login.service` 后，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-opencode-sensenova.service`、`aialra-codex-exec-server.service` 均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过。页面 502 对应的本地认证 API `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200。Playwright CLI wrapper 本机 `open` 阶段这次卡住，已清理卡住进程；因此本次最终浏览器证据不把 wrapper 结果伪装成通过，只记录 API 和部署 smoke 结果。
+
+三方 A/B 已重跑，最新报告为 `aialra/turn-observability/ab-reports/ab-comparison-20260519153559.md`。结果：Codex CLI 7/7 成功，AIALRA OpenCode fork 7/7 成功，debug1 原版 OpenCode 4/7 成功。AIALRA 在 7 个场景中 0 卡死、0 等待审批、0 越界写入、7/7 turn 终态、7/7 可解释；第 4 个越界写入、第 5 个混合任务、第 7 个情绪化越界恢复任务均不再等待审批。debug1 原版 OpenCode 在这三个场景仍停在审批等待且缺少 turn 终态。Codex CLI 和 AIALRA 在这组行为指标上同分；真实差距仍是 AIALRA 未接 `fs/readDirectory`、remote environment、完整 Codex item lifecycle、Node/Bun 层 Landlock syscall、approval reviewer 1:1 语义和超长 Inspector 虚拟列表。

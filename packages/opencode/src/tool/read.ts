@@ -1,4 +1,4 @@
-import { Effect, Option, Schema, Scope, Stream } from "effect"
+import { Effect, Schema, Scope } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as path from "path"
 import * as Tool from "./tool"
@@ -11,6 +11,7 @@ import { TurnSandbox } from "./turn-sandbox"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { Reference } from "@/reference/reference"
+import { CodexFs } from "./codex-fs"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -89,63 +90,37 @@ export const ReadTool = Tool.define(
       yield* lsp.touchFile(filepath).pipe(Effect.ignore, Effect.forkIn(scope))
     })
 
-    const readSample = Effect.fn("ReadTool.readSample")(function* (
-      filepath: string,
-      fileSize: number,
-      sampleSize: number,
-    ) {
-      if (fileSize === 0) return new Uint8Array()
-
-      return yield* Effect.scoped(
-        Effect.gen(function* () {
-          const file = yield* fs.open(filepath, { flag: "r" })
-          return Option.getOrElse(yield* file.readAlloc(Math.min(sampleSize, fileSize)), () => new Uint8Array())
-        }),
-      )
-    })
-
-    const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
+    const lines = (bytes: Uint8Array, opts: { limit: number; offset: number }) => {
       const start = opts.offset - 1
       const raw: string[] = []
       const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
+      const text = new TextDecoder("utf-8").decode(bytes)
 
-      // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
-      // ends without flushing, decodeText drops the final unterminated line. We also
-      // avoid Stream.runForEachWhile (it currently swallows the final unterminated
-      // line of the upstream splitLines pipeline) and instead toggle a `done` flag
-      // and ignore subsequent lines.
-      const decoder = new TextDecoder("utf-8")
-      yield* fs.stream(filepath).pipe(
-        Stream.map((bytes) => decoder.decode(bytes, { stream: true })),
-        Stream.splitLines,
-        Stream.runForEach((text) =>
-          Effect.sync(() => {
-            if (flags.done) return
-            flags.count += 1
-            if (flags.count <= start) return
+      for (const textLine of text.split(/\r?\n/)) {
+        if (flags.done) break
+        flags.count += 1
+        if (flags.count <= start) continue
 
-            if (raw.length >= opts.limit) {
-              flags.more = true
-              return
-            }
+        if (raw.length >= opts.limit) {
+          flags.more = true
+          continue
+        }
 
-            const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
-            const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
-            if (flags.bytes + size > MAX_BYTES) {
-              flags.cut = true
-              flags.more = true
-              flags.done = true
-              return
-            }
+        const line = textLine.length > MAX_LINE_LENGTH ? textLine.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : textLine
+        const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
+        if (flags.bytes + size > MAX_BYTES) {
+          flags.cut = true
+          flags.more = true
+          flags.done = true
+          break
+        }
 
-            raw.push(line)
-            flags.bytes += size
-          }),
-        ),
-      )
+        raw.push(line)
+        flags.bytes += size
+      }
 
       return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
-    })
+    }
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
       const ext = path.extname(filepath).toLowerCase()
@@ -257,13 +232,13 @@ export const ReadTool = Tool.define(
       }
 
       const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
-      const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
+      const bytes = yield* CodexFs.readFile(ctx, fs, filepath)
+      const sample = bytes.slice(0, Math.min(SAMPLE_BYTES, bytes.length))
 
       const mime = sniffAttachmentMime(sample, AppFileSystem.mimeType(filepath))
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
       if (isImage || isPdfAttachment(mime)) {
-        const bytes = yield* fs.readFile(filepath)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
         return {
           title,
@@ -287,7 +262,7 @@ export const ReadTool = Tool.define(
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
-      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
+      const file = lines(bytes, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),

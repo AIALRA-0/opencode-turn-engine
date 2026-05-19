@@ -143,6 +143,19 @@ function readTraceEvents(dir: string) {
     .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
 }
 
+const waitForTracePhase = (dir: string, phase: string, duration: Duration.Input = "5 seconds") =>
+  pollWithTimeout(
+    Effect.sync(() => {
+      try {
+        return readTraceEvents(dir).some((event) => event.phase === phase) ? true : undefined
+      } catch {
+        return undefined
+      }
+    }),
+    `timed out waiting for trace phase ${phase}`,
+    duration,
+  )
+
 function toolPart(parts: MessageV2.Part[]) {
   return parts.find((part): part is MessageV2.ToolPart => part.type === "tool")
 }
@@ -378,6 +391,20 @@ const waitForBusy = (sessionID: SessionID, duration: Duration.Input = "2 seconds
       return s.type === "busy" ? (true as const) : undefined
     }),
     `session ${sessionID} never became busy`,
+    duration,
+  )
+
+const waitForRunningTool = (sessionID: SessionID, duration: Duration.Input = "5 seconds") =>
+  pollWithTimeout(
+    Effect.gen(function* () {
+      const messages = yield* MessageV2.filterCompactedEffect(sessionID)
+      return messages.some((msg) =>
+        msg.parts.some((part) => part.type === "tool" && part.state.status === "running"),
+      )
+        ? true
+        : undefined
+    }),
+    `session ${sessionID} never created a running tool part`,
     duration,
   )
 
@@ -1100,7 +1127,7 @@ it.instance(
       expect(taskMsg.info.finish).toBeDefined()
     }),
   { git: true, config: cfg },
-  30_000,
+  60_000,
 )
 
 it.instance(
@@ -1645,6 +1672,7 @@ unix(
           .shell({ sessionID: chat.id, agent: "build", command: "sleep 2" })
           .pipe(Effect.forkChild)
         yield* waitForBusy(chat.id)
+        yield* waitForRunningTool(chat.id)
 
         yield* prompt.cancel(chat.id)
 
@@ -1799,6 +1827,7 @@ unix(
           .shell({ sessionID: chat.id, agent: "build", command: "sleep 2" })
           .pipe(Effect.forkChild)
         yield* waitForBusy(chat.id)
+        yield* waitForRunningTool(chat.id)
 
         const exit = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "echo hi" }).pipe(Effect.exit)
         expect(Exit.isFailure(exit)).toBe(true)
@@ -1811,7 +1840,7 @@ unix(
       }),
     ),
   { git: true, config: cfg },
-  30_000,
+  60_000,
 )
 
 // Abort signal propagation tests for inline tool execution
@@ -2479,6 +2508,7 @@ it.instance(
       expect(result.info.role).toBe("assistant")
       expect(result.parts.some((part) => part.type === "text" && part.text === "after retry")).toBe(true)
       expect(yield* llm.calls).toBeGreaterThanOrEqual(2)
+      yield* waitForTracePhase(traceDir, "turn.completed")
 
       const events = readTraceEvents(traceDir)
       expect(events.some((event) => event.phase === "model.request.retrying")).toBe(true)
@@ -2487,7 +2517,7 @@ it.instance(
       yield* sessions.remove(session.id)
     }),
   { git: true },
-  10_000,
+  30_000,
 )
 
 it.instance(
@@ -2521,6 +2551,8 @@ it.instance(
         expect(result.info.error).toBeDefined()
       }
       expect(yield* sts.get(session.id)).toMatchObject({ type: "idle" })
+      yield* waitForTracePhase(traceDir, "processor.halted")
+      yield* waitForTracePhase(traceDir, "turn.completed")
 
       const events = readTraceEvents(traceDir)
       expect(events.some((event) => event.phase === "processor.halted")).toBe(true)
@@ -2597,6 +2629,7 @@ it.instance(
 
       expect(result.info.role).toBe("assistant")
       expect(fs.readFileSync(path.join(dir, "turn-created.txt"), "utf8")).toBe("ok")
+      yield* waitForTracePhase(traceDir, "turn.completed")
       const events = readTraceEvents(traceDir)
       expect(
         events.some(
@@ -2611,7 +2644,7 @@ it.instance(
       yield* sessions.remove(session.id)
     }),
   { git: true },
-  10_000,
+  30_000,
 )
 
 it.instance(

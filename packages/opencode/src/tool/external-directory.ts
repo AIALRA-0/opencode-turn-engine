@@ -5,12 +5,14 @@ import { InstanceState } from "@/effect/instance-state"
 import type * as Tool from "./tool"
 import { containsPath } from "../project/instance-context"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { TurnSandbox } from "./turn-sandbox"
 
 type Kind = "file" | "directory"
 
 type Options = {
   bypass?: boolean
   kind?: Kind
+  access?: "read" | "write"
 }
 
 export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirectory")(function* (
@@ -25,6 +27,11 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
   const ins = yield* InstanceState.context
   const full = process.platform === "win32" ? AppFileSystem.normalizePath(target) : target
   if (containsPath(full, ins)) return
+
+  if (ctx.turn) {
+    yield* TurnSandbox.assertFileAccess(ctx, options?.access ?? "read", full)
+    return
+  }
 
   const kind = options?.kind ?? "file"
   const dir = kind === "directory" ? full : path.dirname(full)

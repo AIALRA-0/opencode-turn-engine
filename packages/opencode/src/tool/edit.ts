@@ -19,6 +19,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { TurnSandbox } from "./turn-sandbox"
 import * as Bom from "@/util/bom"
+import { CodexFs } from "./codex-fs"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -80,7 +81,7 @@ export const EditTool = Tool.define(
           const instance = yield* InstanceState.context
           const filePath = TurnSandbox.resolvePath(ctx, params.filePath, instance.directory)
           yield* TurnSandbox.assertWritableParentExists(ctx, filePath)
-          yield* assertExternalDirectoryEffect(ctx, filePath)
+          yield* assertExternalDirectoryEffect(ctx, filePath, { access: "write" })
 
           let diff = ""
           let contentOld = ""
@@ -89,7 +90,7 @@ export const EditTool = Tool.define(
             Effect.gen(function* () {
               if (params.oldString === "") {
                 const existed = yield* afs.existsSafe(filePath)
-                const source = existed ? yield* Bom.readFile(afs, filePath) : { bom: false, text: "" }
+                const source = existed ? yield* CodexFs.readBomFile(ctx, afs, filePath) : { bom: false, text: "" }
                 const next = Bom.split(params.newString)
                 const desiredBom = source.bom || next.bom
                 contentOld = source.text
@@ -104,9 +105,9 @@ export const EditTool = Tool.define(
                     diff,
                   },
                 })
-                yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
+                yield* CodexFs.writeWithDirs(ctx, afs, filePath, Bom.join(contentNew, desiredBom))
                 if (yield* format.file(filePath)) {
-                  contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
+                  contentNew = yield* CodexFs.syncBomFile(ctx, afs, filePath, desiredBom)
                 }
                 yield* bus.publish(File.Event.Edited, { file: filePath })
                 yield* bus.publish(FileWatcher.Event.Updated, {
@@ -119,7 +120,7 @@ export const EditTool = Tool.define(
               const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (!info) throw new Error(`File ${filePath} not found`)
               if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
-              const source = yield* Bom.readFile(afs, filePath)
+              const source = yield* CodexFs.readBomFile(ctx, afs, filePath)
               contentOld = source.text
 
               const ending = detectLineEnding(contentOld)
@@ -148,9 +149,9 @@ export const EditTool = Tool.define(
                 },
               })
 
-              yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
+              yield* CodexFs.writeWithDirs(ctx, afs, filePath, Bom.join(contentNew, desiredBom))
               if (yield* format.file(filePath)) {
-                contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
+                contentNew = yield* CodexFs.syncBomFile(ctx, afs, filePath, desiredBom)
               }
               yield* bus.publish(File.Event.Edited, { file: filePath })
               yield* bus.publish(FileWatcher.Event.Updated, {

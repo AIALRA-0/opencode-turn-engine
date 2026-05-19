@@ -15,6 +15,7 @@ import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { TurnSandbox } from "./turn-sandbox"
 import * as Bom from "@/util/bom"
+import { CodexFs } from "./codex-fs"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -41,10 +42,10 @@ export const WriteTool = Tool.define(
           const instance = yield* InstanceState.context
           const filepath = TurnSandbox.resolvePath(ctx, params.filePath, instance.directory)
           yield* TurnSandbox.assertWritableParentExists(ctx, filepath)
-          yield* assertExternalDirectoryEffect(ctx, filepath)
+          yield* assertExternalDirectoryEffect(ctx, filepath, { access: "write" })
 
           const exists = yield* fs.existsSafe(filepath)
-          const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "" }
+          const source = exists ? yield* CodexFs.readBomFile(ctx, fs, filepath) : { bom: false, text: "" }
           const next = Bom.split(params.content)
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
@@ -61,9 +62,9 @@ export const WriteTool = Tool.define(
             },
           })
 
-          yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
+          yield* CodexFs.writeWithDirs(ctx, fs, filepath, Bom.join(contentNew, desiredBom))
           if (yield* format.file(filepath)) {
-            yield* Bom.syncFile(fs, filepath, desiredBom)
+            yield* CodexFs.syncBomFile(ctx, fs, filepath, desiredBom)
           }
           yield* bus.publish(File.Event.Edited, { file: filepath })
           yield* bus.publish(FileWatcher.Event.Updated, {

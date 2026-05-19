@@ -2,13 +2,57 @@
 
 ## 2026-05-19
 
+- Stabilized the full `prompt.test.ts` + `schema-decoding.test.ts` regression
+  command. The previous shell cancel/concurrency failures were caused by test
+  readiness timing and hard timeout windows, not by exec-server fallback or
+  session idle cleanup. The full 90-test command now passes under the required
+  30-second per-test timeout.
+- Connected `read`, `write`, `edit`, and `apply_patch` file content paths to
+  the Codex exec-server filesystem API when `AIALRA_EXEC_BACKEND=codex` and a
+  turn context is present. The OpenCode TurnContext gates still run first, and
+  exec-server transport failures emit fallback events before using the existing
+  Node/Bun filesystem executor. Codex RPC sandbox rejections do not silently
+  fallback.
+- Added a stable Codex exec-server systemd sidecar:
+  `aialra-codex-exec-server.service`, listening on `ws://127.0.0.1:12650`,
+  with logs under `/srv/aialra/logs/codex-exec-server/service.log`. The AIALRA
+  OpenCode service now connects to this sidecar by default and keeps Node/Bun
+  fallback for availability.
+- Added public event mappings and Chinese Turn Inspector summaries for
+  exec-server filesystem operations, so users can see when Codex exec-server
+  handled `fs/readFile`, `fs/writeFile`, `fs/createDirectory`, or `fs/remove`.
+- Expanded profile parity tests to cover `disabled`, `external`, and bash
+  network isolation behavior in addition to read-only, workspace-write,
+  full-access, protected metadata, symlink escape, and bwrap behavior.
+- Upgraded the Linux sandbox probe from kernel-only Landlock guessing to an
+  actual Codex Linux sandbox write test. The current host has Landlock compiled
+  in and ordered in the LSM list; Codex's Linux sandbox helper can enforce
+  workspace-write on this host, while this Node probe still does not itself
+  apply Landlock syscalls.
+- Reduced stale terminal 404 noise in the Web UI. If a PTY session is already
+  gone, the terminal client now removes it locally instead of repeatedly trying
+  to open WebSockets for a missing session.
+- Expanded the A/B harness from five strict prompts to seven prompts by adding
+  colloquial and emotional real-use cases. Reports now include per-case and
+  overall "who is better and why" conclusions, not only raw tables.
+- Re-ran the seven-prompt A/B harness after deploying the exec-server FS and
+  sandbox changes. The latest report
+  `ab-comparison-20260519153559.md` shows Codex CLI and AIALRA both at 7/7
+  success with 0 stuck turns, 0 approval waits, 0 outside writes, and 7/7 turn
+  terminals. debug1 original OpenCode remains 4/7 because it waits for
+  approval and lacks terminal turn evidence in the outside-write and mixed
+  scenarios.
+- Routed legacy external-directory checks through TurnContext sandbox decisions
+  when a turn context is present. This keeps workspace-write outside writes
+  denied, but lets safe read-only verification of an outside path finish
+  without hanging the turn on an OpenCode legacy `external_directory` approval.
 - Deployed an isolated original OpenCode control group at
   `debug1.aialra.online`. It uses independent ports, systemd services, data
   directories, environment file, logs, nginx vhost, TLS certificate, login
   proxy, and Sensenova bridge, so AIALRA fork behavior can be compared against
   upstream behavior without sharing runtime state.
 - Added a three-way A/B comparison harness for original Codex CLI, debug1
-  original OpenCode, and the AIALRA OpenCode fork. The harness runs five fixed
+  original OpenCode, and the AIALRA OpenCode fork. The harness runs fixed
   prompts under `/srv/aialra/turn-harness-target`, records stuck/approval/turn
   terminal/cwd/sandbox/tool-count/duration/explainability metrics, and writes
   Markdown reports under `aialra/turn-observability/ab-reports/`.

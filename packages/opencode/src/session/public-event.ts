@@ -498,6 +498,26 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         status: "finished",
         data,
       }
+    case "exec_server.fs.started":
+      return {
+        ...base,
+        type: "executor.started",
+        severity: "info",
+        title: "Codex exec-server file operation started",
+        summary: short(`${data.method ?? "fs"} ${data.path ?? ""}`),
+        status: "started",
+        data,
+      }
+    case "exec_server.fs.finished":
+      return {
+        ...base,
+        type: "executor.finished",
+        severity: "info",
+        title: "Codex exec-server file operation finished",
+        summary: short(`${data.method ?? "fs"} ${data.path ?? ""}`),
+        status: "finished",
+        data,
+      }
     case "exec_server.fallback":
       return {
         ...base,

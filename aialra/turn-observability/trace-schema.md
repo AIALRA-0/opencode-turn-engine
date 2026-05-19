@@ -114,6 +114,8 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `model.stream.retrying`
 - `exec_server.process.started`
 - `exec_server.process.finished`
+- `exec_server.fs.started`
+- `exec_server.fs.finished`
 - `exec_server.fallback`
 - `tool.sandbox.capability`
 - `tool.sandbox.checked`

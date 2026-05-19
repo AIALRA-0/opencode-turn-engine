@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import path from "path"
-import { Effect } from "effect"
+import { Effect, Exit } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import type { Tool } from "@/tool/tool"
 import { assertExternalDirectoryEffect } from "../../src/tool/external-directory"
@@ -9,6 +9,7 @@ import { provideInstance, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
+import { CodexTurn } from "../../src/session/turn-context"
 
 const it = testEffect(CrossSpawnSpawner.defaultLayer)
 
@@ -35,6 +36,20 @@ function makeCtx() {
       }),
   }
   return { requests, ctx }
+}
+
+function makeTurn(cwd: string) {
+  return {
+    turnID: baseCtx.messageID,
+    startedAt: Date.now(),
+    sessionID: baseCtx.sessionID,
+    messageID: baseCtx.messageID,
+    cwd,
+    sandbox_policy: CodexTurn.defaultSandboxPolicy(cwd),
+    permission_profile: CodexTurn.workspacePermissionProfile(cwd),
+    active_permission_profile: { id: ":workspace" },
+    environments: [{ environmentID: "default", cwd }],
+  } as Tool.Context["turn"]
 }
 
 describe("tool.assertExternalDirectory", () => {
@@ -101,6 +116,34 @@ describe("tool.assertExternalDirectory", () => {
 
         yield* assertExternalDirectoryEffect(ctx, "/tmp/outside/file.txt", { bypass: true })
 
+        expect(requests.length).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("uses turn sandbox instead of prompting for readable external paths", () =>
+    provideInstance("/tmp/project")(
+      Effect.gen(function* () {
+        const { requests, ctx } = makeCtx()
+        ctx.turn = makeTurn("/tmp/project")
+
+        yield* assertExternalDirectoryEffect(ctx, "/tmp/outside/file.txt")
+
+        expect(requests.length).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("uses turn sandbox to deny external writes without prompting", () =>
+    provideInstance("/tmp/project")(
+      Effect.gen(function* () {
+        const { requests, ctx } = makeCtx()
+        ctx.turn = makeTurn("/tmp/project")
+
+        const target = path.join("/srv", `external-directory-test-${Date.now()}`, "file.txt")
+        const result = yield* Effect.exit(assertExternalDirectoryEffect(ctx, target, { access: "write" }))
+
+        expect(Exit.isFailure(result)).toBe(true)
         expect(requests.length).toBe(0)
       }),
     ),
