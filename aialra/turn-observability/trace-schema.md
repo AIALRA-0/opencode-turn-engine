@@ -94,6 +94,8 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `prompt.completed`
 - `turn.completed`
 - `turn.aborted`
+- `turn.budget_limited`
+- `turn.repeated_tool.warning`
 - `loop.started`
 - `loop.step.started`
 - `loop.exit_condition.met`
@@ -110,6 +112,10 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `model.process.finished`
 - `model.request.retrying`
 - `model.stream.retrying`
+- `exec_server.process.started`
+- `exec_server.process.finished`
+- `exec_server.fallback`
+- `tool.sandbox.capability`
 - `tool.sandbox.checked`
 - `tool.sandbox.denied`
 - `loop.step.finished`

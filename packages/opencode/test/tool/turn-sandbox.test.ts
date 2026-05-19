@@ -8,19 +8,23 @@ import { Bus } from "../../src/bus"
 import { Config } from "../../src/config/config"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Format } from "../../src/format"
+import { Instruction } from "../../src/session/instruction"
 import { LSP } from "../../src/lsp/lsp"
 import { Plugin } from "../../src/plugin"
+import { Reference } from "../../src/reference/reference"
 import { Shell } from "../../src/shell/shell"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { EditTool } from "../../src/tool/edit"
+import { ReadTool } from "../../src/tool/read"
 import { ShellTool } from "../../src/tool/shell"
 import { Tool } from "../../src/tool/tool"
 import { Truncate } from "../../src/tool/truncate"
 import { WriteTool } from "../../src/tool/write"
 import { CodexTurn, type TurnContext } from "../../src/session/turn-context"
 import { MessageID, SessionID } from "../../src/session/schema"
+import { probeLinuxSandboxCapability } from "../../src/tool/linux-sandbox-capability"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -31,8 +35,10 @@ const layer = Layer.mergeAll(
   Config.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
   Format.defaultLayer,
+  Instruction.defaultLayer,
   LSP.defaultLayer,
   Plugin.defaultLayer,
+  Reference.defaultLayer,
   RuntimeFlags.defaultLayer,
   Truncate.defaultLayer,
 )
@@ -93,6 +99,11 @@ function outsideRepoFile(name: string) {
 
 const initWrite = Effect.fn("TurnSandboxTest.initWrite")(function* () {
   const info = yield* WriteTool
+  return yield* info.init()
+})
+
+const initRead = Effect.fn("TurnSandboxTest.initRead")(function* () {
+  const info = yield* ReadTool
   return yield* info.init()
 })
 
@@ -228,6 +239,72 @@ describe("Codex turn sandbox tool gates", () => {
     }),
   )
 
+  it.instance("allows read but denies write/edit/apply_patch under a read-only profile", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      const file = path.join(cwd, "readable.txt")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      yield* Effect.promise(() => fs.writeFile(file, "read-ok", "utf8"))
+      const active = turn(cwd, {
+        sandbox_policy: { type: "read-only", network_access: false },
+        permission_profile: CodexTurn.readOnlyPermissionProfile(),
+        active_permission_profile: { id: ":read-only" },
+      })
+
+      const read = yield* initRead()
+      const readResult = yield* read.execute({ filePath: "readable.txt" }, ctx(active))
+      expect(readResult.output).toContain("read-ok")
+
+      const write = yield* initWrite()
+      yield* expectFailure(
+        write.execute({ filePath: "blocked.txt", content: "blocked" }, ctx(active)),
+        "Codex turn sandbox denied write access",
+      )
+
+      const edit = yield* initEdit()
+      yield* expectFailure(
+        edit.execute({ filePath: "readable.txt", oldString: "read-ok", newString: "bad" }, ctx(active)),
+        "Codex turn sandbox denied write access",
+      )
+
+      const patch = yield* initPatch()
+      yield* expectFailure(
+        patch.execute(
+          {
+            patchText: ["*** Begin Patch", "*** Update File: readable.txt", "@@", "-read-ok", "+bad", "*** End Patch"].join(
+              "\n",
+            ),
+          },
+          ctx(active),
+        ),
+        "Codex turn sandbox denied write access",
+      )
+    }),
+  )
+
+  it.instance("allows full-access profile to write outside the workspace", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      const outside = outsideRepoFile("full-access")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const active = turn(cwd, {
+        sandbox_policy: { type: "danger-full-access" },
+        permission_profile: CodexTurn.fullAccessPermissionProfile(),
+        active_permission_profile: { id: ":danger-full-access" },
+      })
+      const write = yield* initWrite()
+
+      try {
+        yield* write.execute({ filePath: outside, content: "allowed" }, ctx(active))
+        expect(yield* Effect.promise(() => fs.readFile(outside, "utf8"))).toBe("allowed")
+      } finally {
+        yield* Effect.promise(() => fs.rm(outside, { force: true }))
+      }
+    }),
+  )
+
   it.instance("honors explicit glob deny entries in the turn permission profile", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -280,6 +357,28 @@ describe("Codex turn sandbox tool gates", () => {
       } finally {
         yield* Effect.promise(() => fs.rm(outside, { force: true }))
       }
+    }),
+  )
+
+  it.instance("prevents bash from creating missing protected metadata directories", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      Shell.acceptable.reset()
+      const tool = yield* initShell()
+
+      const result = yield* tool.execute(
+        {
+          command: "mkdir -p .git && echo unsafe > .git/config",
+          description: "attempt metadata create",
+        },
+        ctx(turn(cwd)),
+      )
+
+      expect(fssync.existsSync(path.join(cwd, ".git"))).toBe(false)
+      expect(result.metadata.exit).not.toBe(0)
     }),
   )
 })

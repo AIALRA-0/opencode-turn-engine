@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Cause, Effect, Exit, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -23,6 +23,8 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { TurnSandbox, type ShellSandboxCommand } from "./turn-sandbox"
+import { CodexExecServer } from "./codex-exec-server"
+import { AialraTurnTrace } from "@/session/turn-trace"
 
 export { Parameters } from "./shell/prompt"
 
@@ -486,9 +488,10 @@ export const ShellTool = Tool.define(
         },
       })
 
-      const code: number | null = yield* Effect.scoped(
+      const runWithChildProcess = Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
+          yield* Effect.addFinalizer(() => TurnSandbox.cleanupShellSandboxCommand(input.sandbox))
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env, input.sandbox))
 
           yield* Effect.forkScoped(
@@ -567,6 +570,58 @@ export const ShellTool = Tool.define(
           return exit.kind === "exit" ? exit.code : null
         }),
       ).pipe(Effect.orDie)
+
+      const runWithCodexExecServer = Effect.gen(function* () {
+        const result = yield* Effect.promise(() =>
+          CodexExecServer.runProcess({
+            argv: [input.shell, ...Shell.args(input.shell, input.command, input.cwd)],
+            cwd: input.cwd,
+            env: CodexExecServer.jsonEnv(input.env),
+            sandbox: input.sandbox,
+            timeoutMs: input.timeout,
+            ctx,
+            onOutput(chunk) {
+              const size = Buffer.byteLength(chunk.text, "utf-8")
+              list.push({ text: chunk.text, size })
+              used += size
+              while (used > keep && list.length > 1) {
+                const item = list.shift()
+                if (!item) break
+                used -= item.size
+                cut = true
+              }
+              last = preview(last + chunk.text)
+            },
+          }),
+        ).pipe(Effect.ensuring(TurnSandbox.cleanupShellSandboxCommand(input.sandbox)))
+
+        if (result.timedOut) expired = true
+        if (result.failure && result.failure !== "timeout") {
+          last = preview(last + `\n<exec_server_failure>${result.failure}</exec_server_failure>`)
+        }
+        return result.exitCode
+      })
+
+      let code: number | null
+      if (CodexExecServer.enabled()) {
+        const execExit = yield* Effect.exit(runWithCodexExecServer)
+        if (Exit.isSuccess(execExit)) {
+          code = execExit.value
+        } else {
+          yield* AialraTurnTrace.emit({
+            phase: "exec_server.fallback",
+            turnID: ctx.turn?.turnID,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            data: {
+              reason: Cause.pretty(execExit.cause),
+            },
+          })
+          code = yield* runWithChildProcess
+        }
+      } else {
+        code = yield* runWithChildProcess
+      }
 
       const meta: string[] = []
       if (expired) {

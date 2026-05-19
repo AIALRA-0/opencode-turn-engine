@@ -561,3 +561,25 @@ Public event stream 524 的根因是 session public SSE 在没有新事件时可
 浏览器验收记录：使用 Playwright 通过真实 Chrome 登录 `https://opencode.aialra.online`，打开 `/srv/aialra/turn-harness-target` 对应 session 页面，点击“切换回合检查器”。面板文本显示“回合检查器 / 等待事件 / 全部 / 错误 / 工具 / 文件 / 命令 / 审批 / 这个会话还没有公共事件。”，控制台 `warningsAndErrors` 为空。
 
 能力矩阵更新：`aialra/turn-observability/harness-status-and-test-playbook.md` 已新增“网站体验修复验收矩阵”，记录中文化、Raw 超时、贴底滚动、turn 分段、SSE ping、CSP worker、Cloudflare beacon、manifest 和浏览器 Playwright 验收结果。更大的未完成项仍保持真实状态：Codex Rust exec-server 尚未接入执行器；bwrap 尚未达到 Codex 1:1，Landlock 尚未落地；debug1 原版 OpenCode A/B 尚未部署；Kimi/弱模型循环还只有观测能力，尚未加入 budget/detector；profile parity 仍未完成全量自动化矩阵。
+
+## 2026-05-19 实现记录：Linux 沙箱强化、exec-server 适配器、弱模型循环硬收口
+
+用户要求继续“全量实现所有未实现功能”，包括 bwrap 与 Codex 接近、Codex exec-server 接入执行器、完善 Linux 沙箱、修复 Kimi/弱模型卡死、profile parity 测试表、能力矩阵更新和后续产品化规划。本次实现优先落地可在当前 Node/Bun OpenCode 执行器中真实运行的部分，并明确记录无法冒充完成的边界。
+
+Linux 沙箱方面，新增 `probeLinuxSandboxCapability()` 和 `aialra/turn-observability/scripts/probe-linux-sandbox.mjs`。探测结果会检查 Linux 内核版本、Landlock 可能性、bubblewrap 路径和版本、`--new-session`、`--die-with-parent`、`--unshare-user`、`--unshare-pid`、`--unshare-net`、`--proc`、`--dev` 等能力，也会检查本机 `codex exec-server` 和 `codex-linux-sandbox` 是否可用。本机探测显示内核为 `6.8.0-106-generic`，Landlock 从内核版本看应可用，bwrap 为 `/usr/bin/bwrap` 版本 `0.9.0`，user namespace 可用，但在当前容器里 bwrap 挂载 `/proc` 会被拒绝，所以运行时会自动跳过 `--proc /proc`。
+
+bwrap 执行路径已强化。bash 工具在 Linux sandbox 下会记录 `tool.sandbox.capability` 事件，并尽量使用更接近 Codex 的 bwrap 参数：根文件系统只读绑定、`--new-session`、`--die-with-parent`、`--unshare-user`、`--unshare-pid`、`--unshare-ipc`，网络关闭时加 `--unshare-net`，并按本轮 TurnContext 的 cwd 和 writable roots 开放写入。`.git`、`.agents`、`.codex` 即使原本不存在，也会用只读空目录覆盖，防止命令在工作区里偷偷创建这些受保护目录。命令结束后会清理临时覆盖目录。
+
+Codex exec-server 方面，新增 `packages/opencode/src/tool/codex-exec-server.ts`。它实现了一个 TypeScript 适配器，支持启动或连接 Codex exec-server，并实现 `initialize`、`initialized`、`process/start`、`process/read`、`process/terminate` 的基本 JSON-RPC/WebSocket 客户端逻辑。bash 工具新增可选后端：当 `AIALRA_EXEC_BACKEND=codex` 时优先尝试 exec-server，失败时记录 `exec_server.fallback` 并回退到现有 Node/Bun executor。默认仍使用现有 executor，避免线上因为 sidecar 协议不稳定直接不可用。
+
+exec-server 的真实边界：本机安装的 `codex-cli 0.125.0-alpha.3` 能启动 `codex exec-server --listen ws://127.0.0.1:0` 并打印监听地址，`ss` 也能看到端口，但 Node 和 Bun 的 WebSocket 客户端连接该地址时收到非 101 handshake / network error。因此本次不能诚实地宣布“Codex exec-server 已全量替换执行器”。当前完成的是兼容适配器、可选后端、失败回退和事件记录；后续要么定位 Codex exec-server 的握手协议差异，要么通过 Rust sidecar/stdio bridge 做真正接入。
+
+弱模型/Kimi 卡死方面，新增第一批硬收口。每轮 turn 现在有默认 step budget，默认最大 80 步，可用 `AIALRA_TURN_MAX_STEPS=0` 关闭或用数字覆盖。超过预算时会写入 assistant error，记录 `turn.budget_limited`，再发 `turn.aborted`，reason 为 Codex 已有的 `budget_limited`，并把 session status 收回 idle。重复工具调用也会被观测：同一个工具、同一个输入、同一个结果连续重复达到阈值时记录 `turn.repeated_tool.warning`，第一版只警告不拦截，避免误杀正常重试。
+
+公共事件和 Turn Inspector 已跟进新增事件。`tool.sandbox.capability`、`turn.warning`、`executor.started`、`executor.finished`、`executor.fallback` 已加入公共事件类型和中文 UI 文案。后续用户在 Turn Inspector 里能看到沙箱能力检查、重复工具警告、exec-server 尝试和回退，而不是只能从后端 trace 文件里查。
+
+profile parity 测试继续扩展。`packages/opencode/test/tool/turn-sandbox.test.ts` 新增 read-only profile 下 read 允许、write/edit/apply_patch 拒绝；full-access profile 下工作区外写入允许；以及 `.git` 缺失时 bash 也不能创建 `.git/config` 的 protected-create 测试。新增 `packages/opencode/test/tool/codex-exec-server.test.ts`，覆盖 exec-server 适配器环境变量序列化；真实 sidecar 测试默认跳过，需要 `AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1` 显式开启。
+
+测试和构建结果：`bun --cwd packages/opencode test test/tool/turn-sandbox.test.ts test/tool/codex-exec-server.test.ts --timeout 30000` 通过，11 个通过、1 个 exec-server live 测试按设计跳过。`bun --cwd packages/opencode test test/session/schema-decoding.test.ts --timeout 30000` 通过，25 个通过。`node --test aialra/turn-observability/tests/*.test.js` 通过。`bun --cwd packages/opencode test test/session/prompt.test.ts --timeout 30000` 通过，65 个通过。`bun run --cwd packages/opencode typecheck` 通过。`bun run --cwd packages/app typecheck` 通过。`bun run --cwd packages/app build` 通过。`bun run --cwd packages/opencode build` 通过并完成 x64 CLI smoke。prompt 测试中几个只用于制造 running 状态的 `sleep 30` 被缩短到 `sleep 2`，忽略 TERM 的升级终止测试保留 `sleep 10`，这样测试语义不变但不会靠 30 秒自然结束兜底。
+
+能力矩阵已更新到 `aialra/turn-observability/harness-status-and-test-playbook.md`。真实完成项包括 Linux 沙箱能力探测、bwrap protected-create、Turn Inspector 新事件中文展示、弱模型 step budget、重复工具 warning、exec-server 可选适配器和更完整的 profile parity 测试。仍未完成项包括：Codex exec-server 还不是默认全量执行器；read/write/edit/apply_patch 尚未走 Codex FS API；Landlock 只有探测/评估，未做 syscall 级 enforce；debug1 原版 OpenCode A/B 尚未部署；网络访问 profile parity 还未完成自动化；Public event/Approval UI/Turn Inspector 的产品化增强仍需继续迭代。

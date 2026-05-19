@@ -1,5 +1,30 @@
 # AIALRA changelog
 
+## 2026-05-19
+
+- Strengthened the Linux bash sandbox. OpenCode now records bwrap/Codex
+  helper/Landlock capability details, uses more Codex-like bwrap flags, skips
+  `/proc` mounting in containers that reject it, and protects missing
+  `.git`, `.agents`, and `.codex` paths with read-only synthetic mounts so bash
+  cannot create those metadata directories.
+- Added `tool.sandbox.capability`, `turn.budget_limited`,
+  `turn.repeated_tool.warning`, and exec-server adapter trace/public-event
+  mappings so Turn Inspector can explain sandbox capability checks, weak-model
+  loop budgets, repeated tool patterns, and executor fallback.
+- Added a Codex exec-server compatibility adapter with initialize/initialized,
+  process start/read/terminate support, an optional `AIALRA_EXEC_BACKEND=codex`
+  shell path, and fallback to the current Node/Bun executor when the sidecar is
+  unavailable. The local installed Codex CLI currently advertises exec-server
+  but fails WebSocket handshake, so this backend is not enabled by default.
+- Added first-pass weak-model loop protection. Turns now have a default hard
+  agent-loop budget of 80 steps, configurable with `AIALRA_TURN_MAX_STEPS`;
+  exceeding it writes an assistant error, emits Codex reason `budget_limited`,
+  and returns the session to idle.
+- Added Linux sandbox capability probing via
+  `aialra/turn-observability/scripts/probe-linux-sandbox.mjs` and expanded
+  profile parity tests for read-only, workspace, full-access, protected
+  metadata, and bwrap behavior.
+
 ## 2026-05-18
 
 - Turn Inspector user experience fix: localized the panel, filters, statuses,

@@ -57,14 +57,19 @@ const typeLabels: Record<string, string> = {
   "turn.input.received": "收到用户输入",
   "turn.context.created": "创建回合上下文",
   "turn.started": "回合开始",
+  "turn.warning": "回合警告",
   "turn.completed": "回合完成",
   "turn.aborted": "回合中断",
   "model.request.started": "开始请求模型",
   "model.stream.started": "模型流开始",
   "model.retrying": "模型重试",
   "model.request.finished": "模型请求结束",
+  "executor.started": "执行器开始",
+  "executor.finished": "执行器结束",
+  "executor.fallback": "执行器回退",
   "tool.call.started": "工具开始执行",
   "tool.call.finished": "工具执行结束",
+  "tool.sandbox.capability": "沙箱能力检查",
   "tool.sandbox.checked": "沙箱检查通过",
   "tool.sandbox.denied": "沙箱拒绝访问",
   "file.read": "读取文件",
@@ -106,6 +111,7 @@ const typeGroup = (type: string): Filter | "turn" | "model" | "final" => {
   if (type.startsWith("tool.")) return "tool"
   if (type.startsWith("file.")) return "file"
   if (type.startsWith("command.")) return "command"
+  if (type.startsWith("executor.")) return "command"
   if (type.startsWith("approval.")) return "approval"
   if (type.startsWith("model.")) return "model"
   if (type.startsWith("final.")) return "final"
@@ -171,6 +177,8 @@ function localizedSummary(event: PublicEvent) {
       return `本轮目录：${cwd ?? "未记录"}${model ? `，模型：${model}` : ""}`
     case "turn.started":
       return `本轮开始执行${cwd ? `，目录：${cwd}` : ""}`
+    case "turn.warning":
+      return event.status === "budget_limited" ? "本轮达到步骤预算，已停止继续循环" : "本轮出现需要关注的执行模式"
     case "turn.completed":
       return `本轮正常收尾${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
     case "turn.aborted":
@@ -183,10 +191,18 @@ function localizedSummary(event: PublicEvent) {
       return `模型调用正在重试${message ? `：${message}` : ""}`
     case "model.request.finished":
       return event.severity === "error" ? "模型请求以错误收尾" : "模型请求已结束"
+    case "executor.started":
+      return "Codex exec-server 已接管本次进程启动"
+    case "executor.finished":
+      return "Codex exec-server 进程已收尾"
+    case "executor.fallback":
+      return "Codex exec-server 不可用，已回退到当前 Node/Bun 执行器"
     case "tool.call.started":
       return `工具开始执行${tool ? `：${tool}` : ""}`
     case "tool.call.finished":
       return `工具执行结束${tool ? `：${tool}` : ""}${status ? `，状态：${status}` : ""}`
+    case "tool.sandbox.capability":
+      return `已检查 Linux 沙箱能力${event.data?.backend ? `：${event.data.backend}` : ""}`
     case "tool.sandbox.checked":
       return `沙箱允许本次访问${path ? `：${path}` : ""}`
     case "tool.sandbox.denied":

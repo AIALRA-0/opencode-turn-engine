@@ -85,6 +85,25 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 
 const log = Log.create({ service: "session.prompt" })
 const elog = EffectLogger.create({ service: "session.prompt" })
+const DEFAULT_AIALRA_TURN_MAX_STEPS = 80
+const REPEATED_TOOL_WARNING_THRESHOLD = 3
+
+function turnMaxSteps(agentSteps: number | undefined) {
+  if (agentSteps !== undefined) return agentSteps
+  const raw = process.env.AIALRA_TURN_MAX_STEPS
+  if (raw === "0" || raw === "false") return Infinity
+  const parsed = raw === undefined ? DEFAULT_AIALRA_TURN_MAX_STEPS : Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_AIALRA_TURN_MAX_STEPS
+  return Math.max(1, Math.min(1_000, Math.trunc(parsed)))
+}
+
+function toolLoopSignature(part: MessageV2.Part) {
+  if (part.type !== "tool") return
+  const state = part.state
+  if (state.status !== "completed" && state.status !== "error") return
+  const input = state.input === undefined ? "" : JSON.stringify(state.input).slice(0, 500)
+  return `${part.tool}:${input}:${state.status}`
+}
 
 type ReferencePromptMetadata = {
   name: string
@@ -1952,6 +1971,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const slog = elog.with({ sessionID })
         let structured: unknown
         let step = 0
+        const repeatedToolCalls = new Map<string, number>()
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
         yield* AialraTurnTrace.emit({
           phase: "loop.started",
@@ -1985,6 +2005,29 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           // provider's stream (e.g. DWS Agent Platform) and don't need a re-loop.
           const hasToolCalls =
             lastAssistantMsg?.parts.some((part) => part.type === "tool" && !part.metadata?.providerExecuted) ?? false
+
+          if (lastAssistantMsg) {
+            for (const part of lastAssistantMsg.parts) {
+              const signature = toolLoopSignature(part)
+              if (!signature) continue
+              const count = (repeatedToolCalls.get(signature) ?? 0) + 1
+              repeatedToolCalls.set(signature, count)
+              if (count === REPEATED_TOOL_WARNING_THRESHOLD) {
+                yield* AialraTurnTrace.emit({
+                  phase: "turn.repeated_tool.warning",
+                  turnID: lastUser.id,
+                  sessionID,
+                  messageID: lastAssistantMsg.info.id,
+                  step,
+                  data: {
+                    threshold: REPEATED_TOOL_WARNING_THRESHOLD,
+                    tool: part.type === "tool" ? part.tool : undefined,
+                    status: part.type === "tool" ? part.state.status : undefined,
+                  },
+                })
+              }
+            }
+          }
 
           if (
             lastAssistant?.finish &&
@@ -2121,7 +2164,44 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
-          const maxSteps = agent.steps ?? Infinity
+          const maxSteps = turnMaxSteps(agent.steps)
+          if (step > maxSteps) {
+            const msg: MessageV2.Assistant = {
+              id: MessageID.ascending(),
+              parentID: lastUser.id,
+              role: "assistant",
+              mode: agent.name,
+              agent: agent.name,
+              variant: lastUser.model.variant,
+              path: { cwd: turn?.cwd ?? ctx.directory, root: ctx.worktree },
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              modelID: model.id,
+              providerID: model.providerID,
+              time: { created: Date.now(), completed: Date.now() },
+              sessionID,
+              finish: "stop",
+              error: MessageV2.fromError(
+                new Error(`Turn step budget exceeded after ${maxSteps} steps. Stopping this run to prevent an infinite tool loop.`),
+                { providerID: model.providerID },
+              ),
+            }
+            yield* sessions.updateMessage(msg)
+            yield* AialraTurnTrace.emit({
+              phase: "turn.budget_limited",
+              turnID: lastUser.id,
+              sessionID,
+              messageID: msg.id,
+              step,
+              data: {
+                maxSteps,
+                agent: agent.name,
+              },
+            })
+            if (turn?.turnID === lastUser.id) yield* emitTurnAborted(turn, "budget_limited")
+            yield* status.set(sessionID, { type: "idle" })
+            return { info: msg, parts: [] }
+          }
           const isLastStep = step >= maxSteps
           msgs = yield* insertReminders({ messages: msgs, agent, session })
 

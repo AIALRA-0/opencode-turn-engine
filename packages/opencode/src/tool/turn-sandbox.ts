@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises"
+import { mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
@@ -12,6 +12,7 @@ import type {
 import type * as Tool from "./tool"
 import { Shell } from "@/shell/shell"
 import { Wildcard } from "@/util/wildcard"
+import { probeLinuxSandboxCapability } from "./linux-sandbox-capability"
 
 type FileAccess = "read" | "write" | "none"
 
@@ -19,6 +20,7 @@ export type ShellSandboxCommand = {
   program: string
   args: string[]
   mode: "none" | "bwrap"
+  cleanupPaths?: string[]
 }
 
 const PROTECTED_WORKSPACE_NAMES = [".git", ".agents", ".codex"] as const
@@ -256,10 +258,11 @@ function networkAllowed(turn: TurnContext) {
   return turn.sandbox_policy.network_access
 }
 
-function canUseBubblewrap() {
-  if (process.platform !== "linux") return false
-  const result = Bun.spawnSync(["/usr/bin/bwrap", "--version"], { stdout: "ignore", stderr: "ignore" })
-  return result.exitCode === 0
+function bubblewrapProgram() {
+  if (process.platform !== "linux") return
+  const capability = probeLinuxSandboxCapability()
+  if (!capability.bwrap.available) return
+  return capability.bwrap.path
 }
 
 function bindExisting(args: string[], mode: "--bind" | "--ro-bind", source: string, dest = source) {
@@ -269,6 +272,28 @@ function bindExisting(args: string[], mode: "--bind" | "--ro-bind", source: stri
     // Missing read-only carveouts are enforced by direct file checks. bwrap can
     // only overmount paths that exist at spawn time.
   }
+}
+
+async function protectedMetadataMounts(turn: TurnContext) {
+  const mounts: Array<{ source: string; dest: string; cleanup?: string[] }> = []
+  for (const root of workspaceRoots(turn)) {
+    for (const name of PROTECTED_WORKSPACE_NAMES) {
+      const dest = path.join(root, name)
+      const exists = Bun.spawnSync(["test", "-e", dest], { stdout: "ignore", stderr: "ignore" }).exitCode === 0
+      if (exists) {
+        mounts.push({ source: dest, dest })
+        continue
+      }
+
+      // Codex protects missing .git/.agents/.codex with protected-create
+      // targets. Plain bwrap has no direct protected-create primitive, so we
+      // mount an empty read-only directory over the missing path. This prevents
+      // sandboxed bash from creating that metadata path during the command.
+      const source = await mkdtemp(path.join(os.tmpdir(), "aialra-protected-metadata-"))
+      mounts.push({ source, dest, cleanup: [source, dest] })
+    }
+  }
+  return mounts
 }
 
 function writableRoots(turn: TurnContext) {
@@ -292,7 +317,41 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
   if (turn.permission_profile.type === "disabled" || turn.sandbox_policy.type === "danger-full-access") {
     return undefined
   }
-  if (!canUseBubblewrap()) {
+  const capability = probeLinuxSandboxCapability()
+  const bwrap = bubblewrapProgram()
+  yield* AialraTurnTrace.emit({
+    phase: "tool.sandbox.capability",
+    turnID: turn.turnID,
+    sessionID: turn.sessionID,
+    messageID: ctx.messageID,
+    data: {
+      tool: "bash",
+      backend: "bwrap",
+      bwrap: {
+        available: capability.bwrap.available,
+        path: capability.bwrap.path,
+        version: capability.bwrap.version,
+        supports: capability.bwrap.supports,
+        userNamespace: {
+          available: capability.bwrap.userNamespaceProbe.available,
+          error: capability.bwrap.userNamespaceProbe.error,
+        },
+        mountProc: {
+          available: capability.bwrap.mountProcProbe.available,
+          error: capability.bwrap.mountProcProbe.error,
+        },
+      },
+      codex: {
+        cli: capability.codex.cli.available,
+        execServer: capability.codex.execServer.available,
+        linuxSandbox: capability.codex.linuxSandbox.available,
+      },
+      landlock: capability.kernel,
+      notes: capability.notes,
+    },
+  })
+
+  if (!bwrap) {
     if (turn.approval_policy === "never") {
       return yield* Effect.die(new Error("Codex turn sandbox requires bubblewrap on Linux, but bwrap is unavailable."))
     }
@@ -300,7 +359,9 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
   }
 
   const args = [
+    "--new-session",
     "--die-with-parent",
+    "--unshare-user",
     "--unshare-pid",
     "--unshare-ipc",
     "--ro-bind",
@@ -308,23 +369,20 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
     "/",
     "--dev",
     "/dev",
-    "--proc",
-    "/proc",
-    "--tmpfs",
-    "/tmp",
   ]
+  if (capability.bwrap.mountProcProbe.available) args.push("--proc", "/proc")
   if (!networkAllowed(turn)) args.splice(3, 0, "--unshare-net")
 
   for (const root of writableRoots(turn)) {
     bindExisting(args, "--bind", root)
   }
-  for (const root of workspaceRoots(turn)) {
-    for (const name of PROTECTED_WORKSPACE_NAMES) {
-      bindExisting(args, "--ro-bind", path.join(root, name))
-    }
+
+  const protectedMounts = yield* Effect.promise(() => protectedMetadataMounts(turn))
+  for (const mount of protectedMounts) {
+    args.push("--ro-bind", mount.source, mount.dest)
   }
 
-  args.push("--chdir", input.cwd, input.shell, ...Shell.args(input.shell, input.command, input.cwd))
+  args.push("--chdir", input.cwd, "--", input.shell, ...Shell.args(input.shell, input.command, input.cwd))
   yield* AialraTurnTrace.emit({
     phase: "tool.sandbox.checked",
     turnID: turn.turnID,
@@ -337,9 +395,26 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
       sandbox: "bwrap",
       network: networkAllowed(turn) ? "enabled" : "restricted",
       writableRoots: writableRoots(turn),
+      protectedMetadataMounts: protectedMounts.map((mount) => ({
+        dest: mount.dest,
+        synthetic: !!mount.cleanup,
+      })),
     },
   })
-  return { program: "/usr/bin/bwrap", args, mode: "bwrap" } satisfies ShellSandboxCommand
+  return {
+    program: bwrap,
+    args,
+    mode: "bwrap",
+    cleanupPaths: protectedMounts.flatMap((mount) => mount.cleanup ?? []),
+  } satisfies ShellSandboxCommand
+})
+
+export const cleanupShellSandboxCommand = Effect.fn("TurnSandbox.cleanupShellSandboxCommand")(function* (
+  sandbox: ShellSandboxCommand | undefined,
+) {
+  for (const item of sandbox?.cleanupPaths ?? []) {
+    yield* Effect.promise(() => rm(item, { recursive: true, force: true })).pipe(Effect.ignore)
+  }
 })
 
 export function protectableMetadataPath(turn: TurnContext, target: string) {

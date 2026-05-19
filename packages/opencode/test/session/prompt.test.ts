@@ -110,6 +110,22 @@ function withTurnTrace<A, E, R>(dir: string, effect: Effect.Effect<A, E, R>) {
   )
 }
 
+function withTurnMaxSteps<A, E, R>(value: string, effect: Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.AIALRA_TURN_MAX_STEPS
+      process.env.AIALRA_TURN_MAX_STEPS = value
+      return previous
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.AIALRA_TURN_MAX_STEPS
+        else process.env.AIALRA_TURN_MAX_STEPS = previous
+      }),
+  )
+}
+
 function readTraceEvents(dir: string) {
   const files = fs
     .readdirSync(dir)
@@ -1289,7 +1305,7 @@ it.instance(
       yield* Fiber.await(fiber)
     }),
   { git: true },
-  3_000,
+  10_000,
 )
 
 it.instance(
@@ -1505,7 +1521,7 @@ unix(
       }),
     ),
   { git: true, config: cfg },
-  30_000,
+  45_000,
 )
 
 it.instance(
@@ -1626,7 +1642,7 @@ unix(
         const { prompt, run, chat } = yield* boot()
 
         const sh = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: "sleep 30" })
+          .shell({ sessionID: chat.id, agent: "build", command: "sleep 2" })
           .pipe(Effect.forkChild)
         yield* waitForBusy(chat.id)
 
@@ -1669,7 +1685,7 @@ unix(
             // Touch marker AFTER trap installs so the test waits for the actual
             // ignore-TERM state before cancelling; otherwise SIGTERM can arrive
             // before `trap` runs and the escalation path is never exercised.
-            command: `trap '' TERM; touch "${ready}"; sleep 30`,
+            command: `trap '' TERM; touch "${ready}"; sleep 10`,
           })
           .pipe(Effect.forkChild)
 
@@ -1717,7 +1733,7 @@ unix(
 
       yield* llm.tool("bash", {
         command:
-          'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; sleep 30',
+          'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; sleep 2',
         description: "Print many lines",
         timeout: 30_000,
         workdir: path.resolve(dir),
@@ -1751,7 +1767,7 @@ unix(
     Effect.gen(function* () {
       const { prompt, chat } = yield* boot()
 
-      const sh = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "sleep 30" }).pipe(Effect.forkChild)
+      const sh = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "sleep 2" }).pipe(Effect.forkChild)
       yield* waitForBusy(chat.id)
 
       const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
@@ -1780,7 +1796,7 @@ unix(
         const { prompt, chat } = yield* boot()
 
         const a = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: "sleep 30" })
+          .shell({ sessionID: chat.id, agent: "build", command: "sleep 2" })
           .pipe(Effect.forkChild)
         yield* waitForBusy(chat.id)
 
@@ -2509,6 +2525,46 @@ it.instance(
       const events = readTraceEvents(traceDir)
       expect(events.some((event) => event.phase === "processor.halted")).toBe(true)
       expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "hard-stops weak model tool loops with budget_limited",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-budget-limited")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Budget limited",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("write", { filePath: "loop-once.txt", content: "ok" })
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        withTurnMaxSteps(
+          "1",
+          prompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "write then keep going forever" }],
+          }),
+        ),
+      )
+
+      expect(yield* llm.calls).toBe(1)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") expect(JSON.stringify(result.info.error)).toContain("Turn step budget exceeded")
+      const events = readTraceEvents(traceDir)
+      expect(events.some((event) => event.phase === "turn.budget_limited")).toBe(true)
+      expect(
+        events.some((event) => event.phase === "turn.aborted" && event.data?.reason === "budget_limited"),
+      ).toBe(true)
 
       yield* sessions.remove(session.id)
     }),

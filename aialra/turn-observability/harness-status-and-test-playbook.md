@@ -3,18 +3,18 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
-## 0. 2026-05-18 九项路线最新状态
+## 0. 2026-05-19 九项路线最新状态
 
 | 编号 | 事项 | 当前状态 | 人话结论 | 证据/位置 |
 | --- | --- | --- | --- | --- |
 | 1 | Public event stream（公共事件流） | 已实现 MVP、已修复静默断流 524 | 现在不是只能看内部 trace；前端和测试都可以消费稳定公共事件。SSE 空闲时会发 ping，不会因为长时间没事件被 Cloudflare 掐掉。 | `GET /event/public`、`GET /session/:sessionID/events/public`、`aialra.public_event.v1`、`event: ping` |
-| 2 | Codex exec-server 研究/迁移 | 已完成源码研究和路线设计，尚未接入执行器 | 已知道 Codex exec-server 怎么分层，但 OpenCode 还没真正用 Rust sidecar 执行 bash/fs。 | `public-event-stream-and-exec-server-roadmap.md` 第 6-7 节 |
-| 3 | Linux bwrap / Landlock parity | 部分实现 | bash 已有 Linux bwrap 系统隔离；但还没有 Codex `codex-linux-sandbox` helper、seccomp/no_new_privs、Landlock 评估落地。 | tool executor 测试、roadmap 第 8-9 节 |
+| 2 | Codex exec-server 研究/迁移 | 已新增兼容适配器，未默认启用 | 现在代码里已有 Codex exec-server JSON-RPC client、可选 shell backend 和 fallback 事件；但本机已安装 `codex exec-server` 的 WebSocket 握手当前不可用，所以默认仍走 Node/Bun executor。文件工具还没有全量切到 exec-server FS API。 | `packages/opencode/src/tool/codex-exec-server.ts`、`AIALRA_EXEC_BACKEND=codex` |
+| 3 | Linux bwrap / Landlock parity | 已加强，仍非 1:1 | bash bwrap 现在有能力探测、更接近 Codex 的 `--new-session/--unshare-user/--die-with-parent` 参数、受限容器下自动跳过不可用 `/proc`、缺失 `.git/.agents/.codex` protected-create 防护。Landlock 已有探测脚本，但还没有 Rust helper 级真实 ABI enforcement。 | `linux-sandbox-capability.ts`、`probe-linux-sandbox.mjs`、turn-sandbox tests |
 | 4 | debug1 原版 OpenCode A/B | 未实现 | 还没有部署原版 OpenCode 到 `debug1.aialra.online`，三方自动对比也还没跑起来。 | 下一阶段待办 |
-| 5 | Kimi/弱模型卡死诊断 | 部分实现 | 已有 public event/trace 能定位卡在模型流、工具循环、审批还是沙箱拒绝；但还没加 turn step budget 和重复工具检测。 | roadmap 第 12 节 |
+| 5 | Kimi/弱模型卡死诊断 | 已实现第一批硬防护 | 默认每轮最多 80 个 agent loop step，可用 `AIALRA_TURN_MAX_STEPS=0` 关闭；超过后走 Codex reason `budget_limited`。重复工具模式会发 warning，先提示不拦截。 | `turn.budget_limited`、`turn.repeated_tool.warning` |
 | 6 | 只优先 Linux 沙箱 | 已遵守 | 当前实现和验收只承诺 Linux，不做 macOS/Windows 沙箱。 | 计划边界 |
 | 7 | Approval UI 和 TurnContext 审计绑定 | 已实现 MVP | 审批请求会带 turnID、approval policy、permission profile、sandbox policy，并映射到公共事件。 | `approval.requested` / `approval.resolved` |
-| 8 | Profile parity 测试表 | 部分设计，未全量自动化 | 已有 profile 预期表和关键 sandbox 测试，但还没覆盖每个 profile x 每个工具 x 网络/审批/失败表现的完整矩阵。 | roadmap 第 10 节 |
+| 8 | Profile parity 测试表 | 已扩展自动化，仍未覆盖网络/审批全矩阵 | 新增 read-only 读允许、write/edit/apply_patch 拒绝，full-access 外部写允许，workspace 外部写拒绝等测试。网络访问、审批触发和 exec-server FS API 还需要下一批。 | `test/tool/turn-sandbox.test.ts` |
 | 9 | Turn Inspector 面板 | 已实现 MVP、已完成中文体验修复并部署 | UI 右侧已有回合检查器按钮和面板，可看 turn/model/tool/file/command/approval/final 事件；面板文案、筛选、状态、按钮和命令入口已中文化。 | session header 右侧按钮、Turn Inspector panel |
 
 ## 0.1 2026-05-18 网站体验修复验收矩阵
@@ -30,6 +30,18 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | Cloudflare beacon 被 CSP 拦截 | Cloudflare 注入脚本被 `script-src` 拒绝，控制台报错。 | `script-src` 加入 `https://static.cloudflareinsights.com`。 | 登录后首页 CSP header 已包含该域名。 |
 | manifest 语法错误 | 未登录或登录代理路径下，`/site.webmanifest` 可能拿到 HTML/登录页。 | 登录代理对 manifest 和常见 favicon/icon 路径直接代理到 OpenCode 静态资源，不再先要求登录。 | `https://opencode.aialra.online/site.webmanifest` 返回 `application/manifest+json` 和 JSON 开头。 |
 | 浏览器页面报资源错误 | 重启期间动态 chunk 可能短暂 502；之前 worker/manifest/event stream 错误混在一起。 | CSP、manifest、SSE 已修；部署后 Playwright 登录并打开靶场 session，控制台无 warning/error。 | Playwright 结果：`warningsAndErrors: []`。 |
+
+## 0.2 2026-05-19 执行器和 Linux 沙箱推进矩阵
+
+| 项目 | 现在新增了什么 | 用户实际会感知到什么 | 和真 Codex 还差什么 |
+| --- | --- | --- | --- |
+| bwrap 能力探测 | 每次 bash sandbox 会记录 bwrap 版本、关键参数支持、user namespace、`/proc` 挂载能力、Codex CLI/exec-server/helper 是否存在。 | Turn Inspector 会出现“沙箱能力检查”，排查时能知道是不是系统能力不够。 | Codex 是 Rust helper 内部探测并执行；我们现在是 Node/Bun 侧探测。 |
+| bwrap 参数对齐 | bash sandbox 加入 `--new-session`、`--unshare-user`、`--unshare-pid`、`--die-with-parent`、网络隔离和只读根文件系统。容器不允许挂 `/proc` 时会跳过。 | 工作区内可写，工作区外写入失败；受限容器不再因为 `/proc` mount 失败导致所有 bash sandbox 失效。 | 还没有 Codex Rust helper 的 seccomp/no_new_privs/proxy network 全套。 |
+| protected-create | 如果工作区本来没有 `.git/.agents/.codex`，bash 里也不能偷偷创建这些目录。 | 让模型执行 `mkdir -p .git && echo bad > .git/config` 会失败，命令结束后宿主工作区不会留下 `.git`。 | Codex 在 bwrap builder 里有更完整的 synthetic mount/protected target 管理。 |
+| Landlock 评估 | 新增 `node aialra/turn-observability/scripts/probe-linux-sandbox.mjs`，输出 kernel、NoNewPrivs、Seccomp、userns、bwrap、Codex CLI 能力。 | 用户和运维能一条命令看当前服务器是否具备继续接 Landlock 的条件。 | 这不是 Landlock enforcement；真正限制文件访问还需要 Codex Rust helper 或 native syscall 层。 |
+| exec-server adapter | 新增 Codex exec-server JSON-RPC client，支持 `initialize`、`initialized`、`process/start`、`process/read`、`process/terminate`，shell 可用 `AIALRA_EXEC_BACKEND=codex` 尝试接管，并失败回退。 | 默认体验不变；打开环境变量后，Turn Inspector 会记录 exec-server started/finished/fallback。 | 当前本机 `codex exec-server` 能启动但 WebSocket 握手不可用；read/write/edit/apply_patch 还没有切到 exec-server FS API。 |
+| 弱模型 loop 防护 | 默认 80 step 硬预算；超过后写 assistant error、发 `turn.budget_limited`、`turn.aborted reason=budget_limited`，session 回 idle。重复工具模式发 warning。 | Kimi/弱模型反复工具调用时不会无限跑下去，用户能看到是“步骤预算耗尽”。 | 还需要更细的 token/output/tool pattern budget，以及 UI 里把 repeated tool 归组展示。 |
+| profile parity 自动化 | 新增 read-only/full-access/workspace/protected metadata 组合测试。 | 权限语义更可预期，不是只靠口头说明。 | 网络访问、approval never/on-request、external/disabled、exec-server FS 后端还要继续补齐。 |
 
 ## 1. 已实现能力验收矩阵
 
@@ -57,6 +69,11 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | `apply_patch` 补丁门禁 | 批量补丁里的每个目标路径都要过本轮规则。 | patch 自己解析文件路径。 | hunk path 和 move path 都按 TurnContext 检查。 | patch 不能绕过写权限。 | turn-sandbox 测试。 | 已实现 |
 | `bash` cwd 门禁 | shell 命令运行目录由本轮 cwd 控制。 | 默认更多来自 instance directory。 | 默认 cwd 使用 TurnContext.cwd。 | shell 相对路径落在本轮靶场。 | shell 回归和 bwrap 测试。 | 已实现 |
 | Linux `bubblewrap` | bash 命令被放进一个系统级受限环境。 | shell 主要靠 OpenCode 权限提示和进程 cwd。 | Linux managed sandbox 下 root 只读，workspace/tmp 可写。 | `echo bad > /srv/outside` 应失败。 | turn-sandbox bwrap 测试。 | 已实现 |
+| bwrap capability event | bash sandbox 开始前先记录系统沙箱能力。 | 以前只能猜 bwrap 为什么失败。 | 新增能力探测和 `tool.sandbox.capability` public event。 | Turn Inspector 能看到 bwrap 版本、user namespace、`/proc` 是否可挂载。 | `probe-linux-sandbox.mjs` 和 tool 测试。 | 已实现 |
+| protected-create for missing metadata | 即使 `.git/.agents/.codex` 原本不存在，bash 也不能新建。 | 以前只保护已经存在的敏感目录。 | 用只读空目录挂载模拟 Codex protected-create。 | 命令尝试创建 `.git/config` 失败，宿主不留下 `.git`。 | turn-sandbox 测试。 | 已实现 |
+| turn step budget | 弱模型循环太多步时硬停止。 | 以前主要依赖模型听从最后一步提醒。 | 默认 80 step 后 `budget_limited` 收口。 | 不再无限工具循环，Inspector 可见预算耗尽。 | prompt budget 测试。 | 已实现 |
+| repeated tool warning | 多次重复同一工具模式时记录警告。 | 以前只能事后翻工具调用。 | 第 3 次重复发 `turn.repeated_tool.warning`。 | 用户能看到模型可能陷入重复模式。 | trace/public event 映射。 | 已实现 |
+| Codex exec-server adapter | 可选接入 Codex exec-server 进程协议。 | 没有 exec-server 通路。 | 新增 JSON-RPC client 和 shell optional backend/fallback。 | 默认不影响用户；启用后能看到 executor 事件或 fallback。 | adapter 单测；真实本机握手当前记录为不可用。 | 部分实现 |
 | symlink escape 拒绝 | 软链接指向工作区外时，不能借它写外部文件。 | 旧路径检查更容易只看表面路径。 | 同时检查目标路径和真实路径。 | 不能通过 `linked-outside/file` 逃逸。 | symlink 测试。 | 已实现 |
 | `.git/.agents/.codex` 默认只读 | 关键元数据目录不能被模型默认改。 | 没有 Codex 风格默认保护。 | workspace profile 中这些目录 read-only。 | 模型不能随便改 Git/agent/Codex 配置。 | protected metadata 测试。 | 已实现 |
 | `tool.sandbox.checked` | 工具访问通过门禁检查时留痕。 | 没有这类专门事件。 | 新增 trace phase。 | 用户能看到工具确实被检查过。 | trace/schema 和工具测试。 | 已实现 |
@@ -67,14 +84,14 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | Codex 能力/优点 | 真 Codex CLI 怎么做 | 我们现在做到哪 | 为什么重要 | 下一步建议 | 优先级 |
 | --- | --- | --- | --- | --- | --- |
 | 公共 Thread/Turn/Item 事件 | Codex SDK/exec 输出 `thread.started`、`turn.started`、`item.started/updated/completed`、`turn.completed/failed`。 | 已有 OpenCode public event MVP：turn/model/tool/file/command/approval/final。还不是 Codex Thread/Item 协议 1:1。 | 用户不用翻 JSONL，也能看见每个工具/步骤状态。 | 下一步把公共事件进一步对齐 Codex item lifecycle，并补 command 实时输出。 | 高 |
-| Rust `exec-server` | Codex 有独立执行服务管理进程、文件系统、远程环境和沙箱。 | OpenCode 仍在 Node/Bun 工具执行器里执行，只是加了强门禁。 | 这是“执行底座”差距，不只是字段差距。 | 研究并移植/适配 Codex `exec-server` 协议。 | 最高 |
-| Linux Landlock | Codex Linux sandbox 不只可用 bwrap，还包含 Landlock 相关实现。 | 我们 Linux bash 已接入 bwrap；文件工具靠 Node 层门禁。 | Landlock 能进一步在内核层限制文件访问。 | 先做 bwrap parity，再评估 Landlock 接入。 | 高 |
-| bundled bwrap/runtime 管理 | Codex 有自己的 Linux sandbox 包装和运行时管理。 | 我们调用系统 `/usr/bin/bwrap`。 | 线上环境不一定都有 bwrap，版本行为也可能不同。 | 增加启动自检、版本记录、缺失降级策略，后续考虑 bundled bwrap。 | 中高 |
+| Rust `exec-server` | Codex 有独立执行服务管理进程、文件系统、远程环境和沙箱。 | 已新增 TypeScript JSON-RPC client 和可选 shell backend，但默认仍在 Node/Bun 工具执行器里执行。 | 这是“执行底座”差距，不只是字段差距。 | 修复/替换当前本机 exec-server 握手问题，然后把 FS API 接入 read/write/edit/apply_patch。 | 最高 |
+| Linux Landlock | Codex Linux sandbox 不只可用 bwrap，还包含 Landlock 相关实现。 | 已新增 kernel/容器能力探测；文件工具仍靠 Node 层门禁，bash 靠 bwrap。 | Landlock 能进一步在内核层限制文件访问。 | 接 Codex Rust `codex-linux-sandbox`，不要在 TypeScript 里硬造 syscall 层。 | 高 |
+| bundled bwrap/runtime 管理 | Codex 有自己的 Linux sandbox 包装和运行时管理。 | 我们现在会探测系统 bwrap 版本和能力，并在受限容器下跳过不可用 `/proc`。 | 线上环境不一定都有 bwrap，版本行为也可能不同。 | 接 Codex helper 或 bundled bwrap，而不是长期只依赖 `/usr/bin/bwrap`。 | 中高 |
 | macOS Seatbelt | Codex 用 macOS seatbelt 策略做系统隔离。 | 当前 OpenCode 部署重点是 Linux；macOS 没有移植。 | 如果本地 macOS 运行，需要同级安全边界。 | 移植 Codex seatbelt 策略或通过 exec-server 统一。 | 中 |
 | Windows sandbox | Codex 有 `windows-sandbox-rs`。 | 当前未移植。 | Windows 本地开发需要隔离。 | 在 exec-server 阶段一起规划。 | 中 |
 | Remote/multi-environment execution | Codex exec-server 有 remote/environment/file system 抽象。 | 我们 UserTurn 有 environments 字段，但工具只使用默认 cwd。 | 未来多仓库、多容器、远程机器会需要。 | 先实现 environment selection，再接 exec-server remote FS。 | 中 |
 | approval reviewer | Codex 有更完整的 approval/reviewer 交互语义。 | 已把 OpenCode permission ask/reply 和 TurnContext 审计绑定；但还没有完整 reviewer 抽象。 | 用户可控性更细。 | 做审批 UI 归组、历史审计查询和 reviewer 语义 parity。 | 高 |
-| permission profile 全语义 | Codex profile 覆盖更多模式，如 disabled/managed/external/read-only/workspace/full access 的完整行为。 | 我们实现了关键文件系统和网络字段的一版映射。 | 不同安全模式下行为应可预测。 | 做 profile parity 测试表，每个工具逐项验收。 | 高 |
+| permission profile 全语义 | Codex profile 覆盖更多模式，如 disabled/managed/external/read-only/workspace/full access 的完整行为。 | 已覆盖 read-only/workspace/full-access 的关键文件行为。 | 不同安全模式下行为应可预测。 | 继续补 external/disabled、network、approval trigger、exec-server FS。 | 高 |
 | final output schema | Codex 支持 turn-scoped output schema。 | OpenCode 已有 format/json_schema 概念，TurnContext 字段已放入，但还需全链路验收。 | 结构化输出是后续 agent 自动化基础。 | 在 exec/turn 稳定后做 schema parity。 | 中 |
 | 用户可见执行过程 | Codex exec/SDK 更容易消费结构化事件。 | 已有 Turn Inspector MVP 和 public event stream；但 command 输出仍是完成后摘要，不是 exec-server seq 分片。 | 用户体感现在明显提升，但还没到 Codex exec 实时流级别。 | 接 exec-server 后把 stdout/stderr 实时分片送进 Inspector。 | 最高 |
 | Benchmark/A-B 验证 | Codex 可用固定任务和事件流做评估。 | 我们已有 smoke 和单测，还缺和原版 OpenCode 的同题对比。 | 证明架构变化到底好不好。 | 先做行为型 A/B，再做 SWE-bench 小样本。 | 高 |
@@ -356,12 +373,13 @@ exec-server 那种实时 stdout/stderr seq 分片；approval 事件已经能展�
 
 ## 6. 下一步建议
 
-截至 2026-05-18，原来的第一优先级 “Public Event Stream + Turn Inspector”
-已经完成 MVP 并部署。新的优先级建议：
+截至 2026-05-19，原来的第一优先级 “Public Event Stream + Turn Inspector”
+已经完成 MVP 并部署；Linux bwrap、弱模型预算和 exec-server 兼容层也已推进。新的优先级建议：
 
-1. 做 Codex exec-server E0/E1。
-   先安装 Rust toolchain，构建并启动 Codex `exec-server`，完成
-   initialize/initialized，然后在 OpenCode 中新增 `ExecutorBackend` 接口。
+1. 解决 exec-server 真实握手和 FS API 接入。
+   当前 TypeScript adapter 已有，但本机 `codex exec-server` WebSocket 握手不可用。
+   下一步要么升级/替换 Codex CLI，要么直接构建本地 Rust sidecar，然后把
+   read/write/edit/apply_patch 逐步切到 `fs/readFile`、`fs/writeFile` 等协议。
 
 2. 做原版 OpenCode vs 当前 fork 的 debug1 A/B。
    先证明稳定性、路径正确性、沙箱拒绝、取消恢复这些硬指标。
@@ -369,11 +387,14 @@ exec-server 那种实时 stdout/stderr seq 分片；approval 事件已经能展�
 3. 做 permission profile parity 测试表。
    把 read-only、workspace-write、full-access、approval never/on-request 等组合逐项验收。
 
-4. 做 Linux bwrap parity 和 Landlock 评估。
-   先补 bwrap startup probe、seccomp/no_new_privs、protected-create，再评估 Landlock ABI。
+4. 做 Linux helper parity。
+   现在已经有 bwrap startup probe 和 protected-create。下一步应接
+   Codex `codex-linux-sandbox` helper，补 seccomp/no_new_privs/proxy network，
+   再做 Landlock 真实 enforcement。
 
-5. 做 Kimi/弱模型循环诊断。
-   基于 public event stream 加 turn step budget、重复工具模式 warning、输出大小统计。
+5. 做 Kimi/弱模型循环诊断第二批。
+   第一批 step budget 和 repeated tool warning 已完成。下一步补 output size budget、
+   per-tool budget、UI 归组和“自动停止前最后几步”摘要。
 
 6. 最后再做 SWE-bench 或自建任务 benchmark。
    这一步用来验证产出质量，不适合代替底层安全和稳定性验收。

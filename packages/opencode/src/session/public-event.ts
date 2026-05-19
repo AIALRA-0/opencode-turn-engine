@@ -9,14 +9,19 @@ export type PublicEventType =
   | "turn.input.received"
   | "turn.context.created"
   | "turn.started"
+  | "turn.warning"
   | "turn.completed"
   | "turn.aborted"
   | "model.request.started"
   | "model.stream.started"
   | "model.retrying"
   | "model.request.finished"
+  | "executor.started"
+  | "executor.finished"
+  | "executor.fallback"
   | "tool.call.started"
   | "tool.call.finished"
+  | "tool.sandbox.capability"
   | "tool.sandbox.checked"
   | "tool.sandbox.denied"
   | "file.read"
@@ -393,6 +398,26 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         status: "started",
         data,
       }
+    case "turn.repeated_tool.warning":
+      return {
+        ...base,
+        type: "turn.warning",
+        severity: "warning",
+        title: "Repeated tool pattern detected",
+        summary: short(String(data.tool ?? "")),
+        status: "warning",
+        data,
+      }
+    case "turn.budget_limited":
+      return {
+        ...base,
+        type: "turn.warning",
+        severity: "error",
+        title: "Turn budget limited",
+        summary: short(`${data.maxSteps ?? ""} steps`),
+        status: "budget_limited",
+        data,
+      }
     case "turn.completed":
       return {
         ...base,
@@ -453,6 +478,36 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         status: data.hasError ? "error" : "finished",
         data,
       }
+    case "exec_server.process.started":
+      return {
+        ...base,
+        type: "executor.started",
+        severity: "info",
+        title: "Codex exec-server process started",
+        summary: short(String(data.cwd ?? "")),
+        status: "started",
+        data,
+      }
+    case "exec_server.process.finished":
+      return {
+        ...base,
+        type: "executor.finished",
+        severity: "info",
+        title: "Codex exec-server process finished",
+        summary: short(`${data.durationMs ?? ""} ms`),
+        status: "finished",
+        data,
+      }
+    case "exec_server.fallback":
+      return {
+        ...base,
+        type: "executor.fallback",
+        severity: "warning",
+        title: "Executor fallback",
+        summary: short(String(data.reason ?? "")),
+        status: "warning",
+        data,
+      }
     case "tool.call.started":
       return {
         ...base,
@@ -485,6 +540,16 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         title: input.phase === "tool.sandbox.denied" ? "Sandbox denied tool access" : "Sandbox checked tool access",
         summary: short(String(data.reason ?? data.path ?? data.tool ?? "")),
         status: input.phase === "tool.sandbox.denied" ? "denied" : "checked",
+        data,
+      }
+    case "tool.sandbox.capability":
+      return {
+        ...base,
+        type: "tool.sandbox.capability",
+        severity: data?.bwrap && typeof data.bwrap === "object" && (data.bwrap as JsonRecord).available === false ? "warning" : "info",
+        title: "Sandbox capability checked",
+        summary: short(String(data.backend ?? data.tool ?? "")),
+        status: "checked",
         data,
       }
     case "prompt.completed":
