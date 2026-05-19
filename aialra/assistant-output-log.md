@@ -671,3 +671,31 @@ A/B harness 已扩展。原来默认 5 个强约束 prompt；现在默认 7 个�
 部署记录：执行 `./aialra/opencode-deployment/scripts/build-opencode.sh`，构建版本 `0.0.0-dev-202605191525`，Linux x64 CLI smoke 通过。重启 `aialra-opencode-web.service` 和 `aialra-opencode-login.service` 后，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-opencode-sensenova.service`、`aialra-codex-exec-server.service` 均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过。页面 502 对应的本地认证 API `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200。Playwright CLI wrapper 本机 `open` 阶段这次卡住，已清理卡住进程；因此本次最终浏览器证据不把 wrapper 结果伪装成通过，只记录 API 和部署 smoke 结果。
 
 三方 A/B 已重跑，最新报告为 `aialra/turn-observability/ab-reports/ab-comparison-20260519153559.md`。结果：Codex CLI 7/7 成功，AIALRA OpenCode fork 7/7 成功，debug1 原版 OpenCode 4/7 成功。AIALRA 在 7 个场景中 0 卡死、0 等待审批、0 越界写入、7/7 turn 终态、7/7 可解释；第 4 个越界写入、第 5 个混合任务、第 7 个情绪化越界恢复任务均不再等待审批。debug1 原版 OpenCode 在这三个场景仍停在审批等待且缺少 turn 终态。Codex CLI 和 AIALRA 在这组行为指标上同分；真实差距仍是 AIALRA 未接 `fs/readDirectory`、remote environment、完整 Codex item lifecycle、Node/Bun 层 Landlock syscall、approval reviewer 1:1 语义和超长 Inspector 虚拟列表。
+
+## 2026-05-19 实现记录：Sandbox Control Center、会话安全开关、fs/readDirectory、Inspector 产品化推进
+
+用户要求继续端到端推进 OpenCode Turn Harness，并强调本轮不是零散增强，而是把沙盒、权限、网络、审批、执行器和可观测性做成用户可切换、可审批、可审计、可对比的产品能力。本轮先做设计再实现，并把 `codexapp.aialra.online` 作为网页端 Codex 行为参考之一，但最终验收仍以本仓库测试、线上 smoke 和 A/B 报告为准。
+
+本轮新增 `SessionSecurity`，会话安全配置。它保存当前 session 的 `permission_profile`（权限档位）、`approval_policy`（审批策略）、`network access`（网络访问）、`exec backend`（执行后端）和 `environment`（执行环境）。新增 API：`GET /session/:sessionID/security` 用来读取当前安全配置，`PATCH /session/:sessionID/security` 用来修改配置。每次修改都会进入 public event stream，公共事件流，例如 `sandbox.profile.changed`、`sandbox.network.changed`、`approval.policy.changed`、`executor.backend.changed`、`environment.selected`，并带上从什么值变到什么值、当前 cwd、作用范围和 actor。
+
+这些开关不是前端假状态。新的 prompt 创建 `UserTurn` / `TurnContext` 时会读取 `SessionSecurity`，所以后续回合会按用户设置生成权限、沙箱、网络和审批策略。运行中的工具门禁也会读取这份配置：`TurnSandbox` 会在路径解析、文件读写检查、bash 沙箱构建时套用用户保存过的 session 安全配置；Codex exec-server 的 sandbox context 也会使用同一份配置。一个重要修复是：仅查询执行器偏好不能创建默认安全配置，否则会把单测或显式回合里的 read-only/full-access 覆盖成 workspace 默认值。这个问题已经通过 live exec-server 回归修复。
+
+Turn Inspector 里新增 Sandbox Control Center，沙盒控制中心。用户现在能在右侧面板顶部看到当前目录、网络状态、执行器状态，并切换权限档位：只读、工作区可写、完全访问、外部管理、关闭内置权限；也能切换审批策略：从不审批、工具请求时审批、失败后允许审批、非信任操作先审批；还能开关 bash 网络访问，查看本地 default environment（默认环境）和 remote environment（远程环境）未支持状态。执行后端也能在 UI 中切换为 Codex exec-server 或 Node/Bun fallback。切换会触发安全审计事件。
+
+Codex exec-server FS API 补齐了目录列举。之前 read/write/edit/apply_patch 的文件内容读写已经走 `fs/readFile`、`fs/writeFile`、`fs/createDirectory`、`fs/remove`；本轮新增 `fs/readDirectory`，read 工具读目录时也会优先通过 Codex exec-server 受控文件系统通道，失败时按既有 fallback 规则回退并记录事件。Codex RPC 明确拒绝的 sandbox 错误仍不会静默 fallback，避免绕过沙箱。
+
+Turn Inspector 产品化继续推进。筛选项从“全部、错误、工具、文件、命令、审批”扩展到“全部、错误、模型、工具、文件、命令、审批、沙箱、网络、执行器”。新增中文事件标题和中文摘要，包括安全配置变更、网络变更、执行器 fallback、sandbox capability、sandbox denied 等。面板保留新 turn 自动展开、历史 turn 自动折叠；raw 展开状态不会被新日志刷掉；当用户停在底部时会自动滚到底，手动上翻时不抢滚动，并新增“跳到最新”按钮。
+
+Linux sandbox 本轮重新探测。结果：当前平台是 Linux，kernel `6.8.0-106-generic`，Landlock 从内核配置和 LSM 顺序看可用；bwrap 路径 `/usr/bin/bwrap`，版本 `0.9.0`，user namespace 可用；容器不允许 bwrap 挂载 `/proc`，所以运行时仍需要跳过 `--proc /proc`；源码构建 Codex binary 的 Linux sandbox helper 真实写入探测仍能做到工作区内写入成功、工作区外写入失败。真实边界仍是：Node/Bun 工具层没有直接调用 Landlock syscall，因此不能说已经做到 Codex Linux sandbox 的 syscall 级 1:1。
+
+A/B harness 已从 7 个 prompt 扩展到 9 个 prompt，新增网络访问场景和弱模型循环风险场景。网络场景要求模型尝试 `curl -I https://example.com --max-time 5` 并写入 `network-check.md`，用于观察默认网络关闭时是否可解释失败；循环风险场景要求最多试一次工作区外写入，防止弱模型反复尝试同一被拒绝操作。
+
+验证记录：`bun run --cwd packages/opencode typecheck` 通过；`bun run --cwd packages/app typecheck` 通过；`bun --cwd packages/opencode test test/server/httpapi-public-event.test.ts --timeout 30000` 通过，4 pass；普通 Node/Bun 工具路径下 `bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 通过，24 pass、3 skip；live Codex sidecar 路径下 `AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 通过，27 pass。
+
+当前仍未完成并且不能冒充完成：remote environment（远程环境）仍是 disabled/unsupported 状态，没有远程执行；glob/grep 是否有 Codex exec-server 对应 API 仍需继续源码确认，当前仍在 TurnContext 门禁之后使用 Node/Bun 实现；approval reviewer（审批人语义）还没有 1:1 对齐 Codex；Turn Inspector 仍是折叠和 1000 条 replay buffer，不是真正虚拟列表；Landlock 没有在 Node/Bun 工具层 syscall enforce；网络开关已经影响 bash/bwrap，但网络 profile parity 还需要真实 curl/ping/npm 场景自动化矩阵继续补齐。
+
+本轮补充验收和部署结果：三方 A/B 已按 9 个 prompt 复跑，最新报告为 `aialra/turn-observability/ab-reports/ab-comparison-20260519201455.md`。结果是 Codex CLI 9/9 成功，AIALRA OpenCode fork 9/9 成功，debug1 原版 OpenCode 5/9 成功。AIALRA 在这组行为场景里 0 卡死、0 等待审批、0 越界写入、9/9 turn 终态、9/9 可解释；原版 OpenCode 主要输在越界写入、审批等待和缺终态。网络关闭场景里 AIALRA 和 Codex 都能解释网络不可用，debug1 原版 OpenCode 默认网络可用，说明 AIALRA 的网络默认安全策略已经和原版 OpenCode 拉开差异。
+
+完整验证命令已跑完：`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 通过，90 pass；`node --test aialra/turn-observability/tests/*.test.js` 通过；普通 Node/Bun 路径下工具测试 24 pass、3 skip；live Codex sidecar 路径下工具测试 27 pass；`bun run --cwd packages/opencode typecheck`、`bun run --cwd packages/app typecheck`、`bun --cwd packages/app build`、`bun run --cwd packages/opencode build --single` 均通过。部署脚本 `./aialra/opencode-deployment/scripts/build-opencode.sh` 生成线上版本 `0.0.0-dev-202605192026`，Linux x64 CLI smoke 通过。重启 `aialra-opencode-web.service` 和 `aialra-opencode-login.service` 后，Web、login、Codex exec-server 三个服务均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过。认证 API smoke 显示 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp`、`/session/:id/message` 和 `/session/:id/security` 均返回 200。
+
+浏览器级 Playwright smoke 这次仍不能作为通过证据：`playwright_cli.sh` 文件本身没有执行位，改用 `bash playwright_cli.sh open https://opencode.aialra.online` 后命令长时间无输出并被手动清理。因此最终线上验收采用部署 smoke、API smoke、A/B report 和构建测试结果，不把浏览器 wrapper 卡住伪装成浏览器通过。下一步若要把浏览器 smoke 固化，应该修复本机 Playwright CLI wrapper 的可执行权限和 daemon 启动稳定性，或者改为仓库内固定 Playwright 测试脚本。

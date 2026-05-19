@@ -23,6 +23,7 @@ import { Tool } from "../../src/tool/tool"
 import { Truncate } from "../../src/tool/truncate"
 import { WriteTool } from "../../src/tool/write"
 import { CodexTurn, type TurnContext } from "../../src/session/turn-context"
+import { SessionSecurity } from "../../src/session/security"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { probeLinuxSandboxCapability } from "../../src/tool/linux-sandbox-capability"
 import { TurnSandbox } from "../../src/tool/turn-sandbox"
@@ -458,6 +459,34 @@ describe("Codex turn sandbox tool gates", () => {
         expect(sandbox?.args).not.toContain("--unshare-net")
       } finally {
         yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
+      }
+    }),
+  )
+
+  it.instance("applies live Sandbox Control Center network changes to shell sandbox gates", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const active = turn(cwd)
+      SessionSecurity.update({
+        sessionID: active.sessionID,
+        cwd,
+        patch: { networkAccess: true },
+      })
+
+      const sandbox = yield* TurnSandbox.shellSandboxCommand(ctx(active), {
+        shell: "bash",
+        command: "true",
+        cwd,
+      })
+      try {
+        expect(sandbox?.mode).toBe("bwrap")
+        expect(sandbox?.args).not.toContain("--unshare-net")
+      } finally {
+        yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
+        SessionSecurity.clearForTest()
       }
     }),
   )

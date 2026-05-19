@@ -63,7 +63,12 @@ aialra/turn-observability/public-event-stream-and-exec-server-roadmap.md
 That layer maps trace phases and OpenCode bus events into stable public
 events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `tool.sandbox.denied`, `approval.requested`, `approval.resolved`, and
-`final.output`. The public stream keeps the same redaction rule: show structure,
+`final.output`. Security-control events are also public now:
+`sandbox.profile.changed`, `sandbox.network.changed`,
+`sandbox.policy.changed`, `approval.policy.changed`,
+`executor.backend.changed`, `environment.selected`,
+`security.override.requested`, and `security.override.resolved`. The public
+stream keeps the same redaction rule: show structure,
 state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
 model text, full tool output, or secrets.
 
@@ -117,6 +122,14 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `exec_server.fs.started`
 - `exec_server.fs.finished`
 - `exec_server.fallback`
+- `sandbox.profile.changed`
+- `sandbox.network.changed`
+- `sandbox.policy.changed`
+- `approval.policy.changed`
+- `executor.backend.changed`
+- `environment.selected`
+- `security.override.requested`
+- `security.override.resolved`
 - `tool.sandbox.capability`
 - `tool.sandbox.checked`
 - `tool.sandbox.denied`

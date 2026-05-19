@@ -7,6 +7,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SecurityConfig, SecurityUpdatePayload } from "@/session/security"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
@@ -95,6 +96,7 @@ export const SessionPaths = {
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
+  security: `${root}/:sessionID/security`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   updatePart: `${root}/:sessionID/message/:messageID/part/:partID`,
@@ -400,6 +402,33 @@ export const SessionApi = HttpApi.make("session")
             summary: "Respond to permission",
             description: "Approve or deny a permission request from the AI assistant.",
             deprecated: true,
+          }),
+        ),
+        HttpApiEndpoint.get("security", SessionPaths.security, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(SecurityConfig, "Current turn security controls"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.security",
+            summary: "Get turn security controls",
+            description:
+              "Read the current Sandbox Control Center settings for this session, including permission profile, approval policy, network access, executor backend, and environment.",
+          }),
+        ),
+        HttpApiEndpoint.patch("securityUpdate", SessionPaths.security, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: SecurityUpdatePayload,
+          success: described(SecurityConfig, "Updated turn security controls"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.security.update",
+            summary: "Update turn security controls",
+            description:
+              "Update Sandbox Control Center settings. The values are used by TurnContext, tool gates, sandbox checks, and public audit events.",
           }),
         ),
         HttpApiEndpoint.delete("deleteMessage", SessionPaths.deleteMessage, {

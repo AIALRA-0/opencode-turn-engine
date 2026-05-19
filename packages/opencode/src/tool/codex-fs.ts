@@ -7,7 +7,7 @@ import { CodexExecServer } from "./codex-exec-server"
 import * as Bom from "@/util/bom"
 
 function shouldUseExecServer(ctx: Tool.Context) {
-  return CodexExecServer.enabled() && !!ctx.turn
+  return CodexExecServer.enabledForContext(ctx) && !!ctx.turn
 }
 
 function fallback(ctx: Tool.Context, method: string, error: unknown): Effect.Effect<void> {
@@ -39,6 +39,36 @@ function withFallback<A>(
 }
 
 export namespace CodexFs {
+  export function readDirectoryEntries(
+    ctx: Tool.Context,
+    fs: AppFileSystem.Interface,
+    filePath: string,
+  ): Effect.Effect<AppFileSystem.DirEntry[]> {
+    return withFallback<AppFileSystem.DirEntry[]>(
+      ctx,
+      "fs/readDirectory",
+      Effect.tryPromise({
+        try: async () => {
+          const result = await CodexExecServer.readDirectory({ path: filePath, ctx })
+          return result.entries.map((entry) => ({
+            name: entry.fileName,
+            type: entry.isDirectory ? "directory" : entry.isFile ? "file" : "other",
+          }) satisfies AppFileSystem.DirEntry)
+        },
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      }),
+      fs.readDirectoryEntries(filePath),
+    )
+  }
+
+  export function readDirectory(
+    ctx: Tool.Context,
+    fs: AppFileSystem.Interface,
+    filePath: string,
+  ): Effect.Effect<string[]> {
+    return readDirectoryEntries(ctx, fs, filePath).pipe(Effect.map((entries) => entries.map((entry) => entry.name)))
+  }
+
   export function readFile(ctx: Tool.Context, fs: AppFileSystem.Interface, filePath: string): Effect.Effect<Uint8Array> {
     return withFallback<Uint8Array>(
       ctx,

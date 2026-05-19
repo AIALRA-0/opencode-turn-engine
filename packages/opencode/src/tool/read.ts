@@ -45,10 +45,10 @@ export const ReadTool = Tool.define(
     const reference = yield* Reference.Service
     const scope = yield* Scope.Scope
 
-    const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
+    const miss = Effect.fn("ReadTool.miss")(function* (filepath: string, ctx: Tool.Context) {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
-      const items = yield* fs.readDirectory(dir).pipe(
+      const items = yield* CodexFs.readDirectory(ctx, fs, dir).pipe(
         Effect.map((items) =>
           items
             .filter(
@@ -70,8 +70,8 @@ export const ReadTool = Tool.define(
       return yield* Effect.fail(new Error(`File not found: ${filepath}`))
     })
 
-    const list = Effect.fn("ReadTool.list")(function* (filepath: string) {
-      const items = yield* fs.readDirectoryEntries(filepath)
+    const list = Effect.fn("ReadTool.list")(function* (filepath: string, ctx: Tool.Context) {
+      const items = yield* CodexFs.readDirectoryEntries(ctx, fs, filepath)
       return yield* Effect.forEach(
         items,
         Effect.fnUntraced(function* (item) {
@@ -201,10 +201,10 @@ export const ReadTool = Tool.define(
         metadata: {},
       })
 
-      if (!stat) return yield* miss(filepath)
+      if (!stat) return yield* miss(filepath, ctx)
 
       if (stat.type === "Directory") {
-        const items = yield* list(filepath)
+        const items = yield* list(filepath, ctx)
         const limit = params.limit ?? DEFAULT_READ_LIMIT
         const offset = params.offset || 1
         const start = offset - 1

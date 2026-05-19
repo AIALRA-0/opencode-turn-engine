@@ -12,6 +12,7 @@ import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionSecurity, SecurityUpdatePayload } from "@/session/security"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -354,6 +355,30 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const security = Effect.fn("SessionHttpApi.security")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: { directory?: string }
+    }) {
+      const current = yield* requireSession(ctx.params.sessionID)
+      return SessionSecurity.get({
+        sessionID: ctx.params.sessionID,
+        cwd: current.directory || ctx.query.directory || process.cwd(),
+      })
+    })
+
+    const securityUpdate = Effect.fn("SessionHttpApi.securityUpdate")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: { directory?: string }
+      payload: typeof SecurityUpdatePayload.Type
+    }) {
+      const current = yield* requireSession(ctx.params.sessionID)
+      return SessionSecurity.update({
+        sessionID: ctx.params.sessionID,
+        cwd: current.directory || ctx.query.directory || process.cwd(),
+        patch: ctx.payload,
+      })
+    })
+
     const deleteMessage = Effect.fn("SessionHttpApi.deleteMessage")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
@@ -412,6 +437,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("revert", revert)
       .handle("unrevert", unrevert)
       .handle("permissionRespond", permissionRespond)
+      .handle("security", security)
+      .handle("securityUpdate", securityUpdate)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)
       .handle("updatePart", updatePart)

@@ -545,6 +545,8 @@ Codex 当前 Linux 注释说明：文件系统主要由 bwrap 控制，Landlock 
 | 5 | 混合读、写、bash、失败恢复。 | 工程稳定性和可解释性。 |
 | 6 | 口语化真实任务。 | 模型不靠强格式约束时是否跑偏。 |
 | 7 | 情绪化越界恢复任务。 | 用户表达混乱时是否仍能拒绝越界、完成报告。 |
+| 8 | 网络关闭场景。 | 默认网络关闭时是否失败可解释、是否不偷偷重试。 |
+| 9 | 弱模型循环风险任务。 | 被拒绝后是否最多尝试一次并正常收口。 |
 
 指标：
 
@@ -560,6 +562,23 @@ Codex 当前 Linux 注释说明：文件系统主要由 bwrap 控制，Landlock 
 SWE-bench 可以做，但应该排在行为型 A/B 之后。先证明 harness 稳，再测复杂修 bug 能力。
 
 ## 12. Kimi 或类似模型卡住循环
+
+## 12.1 2026-05-19 安全控制事件补充
+
+Public event stream（公共事件流）现在还承载 Sandbox Control Center（沙盒控制中心）的用户操作审计。新增事件：
+
+| Public event（公共事件） | 中文含义 | 触发来源 | raw 内容 |
+| --- | --- | --- | --- |
+| `sandbox.profile.changed` | 用户切换权限档位 | `PATCH /session/:sessionID/security` | 记录 from/to、cwd、actor、scope |
+| `sandbox.network.changed` | 用户切换网络访问 | `PATCH /session/:sessionID/security` | 记录 enabled/restricted 变化 |
+| `sandbox.policy.changed` | 沙箱策略变化 | 预留给更细策略 UI | 记录策略前后值 |
+| `approval.policy.changed` | 用户切换审批策略 | `PATCH /session/:sessionID/security` | 记录 never/on-request/on-failure/untrusted |
+| `executor.backend.changed` | 用户切换执行后端偏好 | `PATCH /session/:sessionID/security` | 记录 codex/node-bun |
+| `environment.selected` | 用户选择执行环境 | `PATCH /session/:sessionID/security` | 当前只支持 local default，remote 标记 unsupported |
+| `security.override.requested` | 请求危险能力升级 | 预留给 reviewer 审批流 | 后续接 reviewer |
+| `security.override.resolved` | 危险能力升级已处理 | 预留给 reviewer 审批流 | 后续接 reviewer |
+
+这些事件默认只显示摘要，完整变更 payload 仍通过 raw endpoint（原始内容接口）读取。它们不替代 TurnContext（回合上下文），而是让 TurnContext 背后的安全配置变化可见、可审计。
 
 最近真实 trace 里看到的现象：
 

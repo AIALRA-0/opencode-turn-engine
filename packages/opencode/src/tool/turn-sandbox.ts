@@ -9,6 +9,7 @@ import type {
   SandboxPolicy,
   TurnContext,
 } from "@/session/turn-context"
+import { SessionSecurity } from "@/session/security"
 import type * as Tool from "./tool"
 import { Shell } from "@/shell/shell"
 import { Wildcard } from "@/util/wildcard"
@@ -63,6 +64,10 @@ function accessRank(access: FileAccess) {
 
 function turnCwd(turn: TurnContext) {
   return path.resolve(turn.cwd)
+}
+
+function effectiveTurn(turn: TurnContext) {
+  return SessionSecurity.applyToTurn(turn)
 }
 
 function workspaceRoots(turn: TurnContext) {
@@ -142,7 +147,7 @@ function fileSystemEntries(turn: TurnContext) {
 }
 
 export function resolvePath(ctx: Tool.Context, input: string, fallbackCwd: string) {
-  const base = ctx.turn ? turnCwd(ctx.turn) : fallbackCwd
+  const base = ctx.turn ? turnCwd(effectiveTurn(ctx.turn)) : fallbackCwd
   return path.isAbsolute(input) ? path.resolve(input) : path.resolve(base, input)
 }
 
@@ -212,7 +217,7 @@ export const assertFileAccess = Effect.fn("TurnSandbox.assertFileAccess")(functi
   operation: "read" | "write",
   target: string,
 ) {
-  const turn = ctx.turn
+  const turn = ctx.turn ? effectiveTurn(ctx.turn) : undefined
   if (!turn) return
   const canonical = yield* Effect.promise(() => canonicalForAccess(target, operation))
   const actual = resolveAccess(turn, target)
@@ -243,7 +248,7 @@ export const assertShellAccess = Effect.fn("TurnSandbox.assertShellAccess")(func
   ctx: Tool.Context,
   input: { cwd: string; command: string },
 ) {
-  const turn = ctx.turn
+  const turn = ctx.turn ? effectiveTurn(ctx.turn) : undefined
   if (!turn) return
   const actual = resolveAccess(turn, input.cwd)
   if (actual === "none") {
@@ -351,7 +356,7 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
   ctx: Tool.Context,
   input: { shell: string; command: string; cwd: string },
 ) {
-  const turn = ctx.turn
+  const turn = ctx.turn ? effectiveTurn(ctx.turn) : undefined
   if (!turn) return undefined
   yield* assertShellAccess(ctx, { cwd: input.cwd, command: input.command })
   if (turn.permission_profile.type === "disabled" || turn.sandbox_policy.type === "danger-full-access") {
@@ -458,6 +463,7 @@ export const cleanupShellSandboxCommand = Effect.fn("TurnSandbox.cleanupShellSan
 })
 
 export function protectableMetadataPath(turn: TurnContext, target: string) {
+  turn = effectiveTurn(turn)
   for (const root of workspaceRoots(turn)) {
     for (const name of PROTECTED_WORKSPACE_NAMES) {
       const protectedPath = path.join(root, name)

@@ -32,6 +32,14 @@ export type PublicEventType =
   | "approval.requested"
   | "approval.resolved"
   | "final.output"
+  | "sandbox.profile.changed"
+  | "sandbox.network.changed"
+  | "sandbox.policy.changed"
+  | "approval.policy.changed"
+  | "executor.backend.changed"
+  | "environment.selected"
+  | "security.override.requested"
+  | "security.override.resolved"
 
 export type PublicEventSeverity = "info" | "warning" | "error"
 
@@ -807,6 +815,10 @@ export namespace PublicEventLog {
   export function recordBus(input: BusRecordInput) {
     const drafts = makeBusEvents(input)
     return drafts.map(record)
+  }
+
+  export function recordManual(input: PublicEventDraft) {
+    return record(input)
   }
 
   export function list(input: { sessionID?: string; afterID?: string; afterSequence?: number } = {}) {

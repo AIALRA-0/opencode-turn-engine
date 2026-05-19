@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { PublicEventLog } from "../../src/session/public-event"
+import { SessionSecurity } from "../../src/session/security"
 import { AialraTurnTrace } from "../../src/session/turn-trace"
 import { Server } from "../../src/server/server"
 import { EventPaths } from "../../src/server/routes/instance/httpapi/groups/event"
@@ -59,6 +60,7 @@ async function readEvent(response: Response) {
 
 afterEach(async () => {
   PublicEventLog.clearForTest()
+  SessionSecurity.clearForTest()
   await disposeAllInstances()
   await resetDatabase()
 })
@@ -148,6 +150,27 @@ describe("public event HttpApi", () => {
           sessionID: "ses_retry",
           turnID: "msg_retry",
         }),
+      ]),
+    )
+  })
+
+  test("Sandbox Control Center changes are public audit events", () => {
+    const next = SessionSecurity.update({
+      sessionID: "ses_security",
+      cwd: "/tmp/aialra-security",
+      patch: {
+        permissionProfileID: ":read-only",
+        approvalPolicy: "never",
+        networkAccess: false,
+        executorBackend: "node-bun",
+      },
+    })
+
+    expect(next.permissionProfileID).toBe(":read-only")
+    expect(PublicEventLog.list({ sessionID: "ses_security" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "sandbox.profile.changed", status: "changed" }),
+        expect.objectContaining({ type: "approval.policy.changed", status: "changed" }),
       ]),
     )
   })

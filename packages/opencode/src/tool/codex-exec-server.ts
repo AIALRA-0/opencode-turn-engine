@@ -2,6 +2,7 @@ import { AialraTurnTrace } from "@/session/turn-trace"
 import type * as Tool from "./tool"
 import type { ShellSandboxCommand } from "./turn-sandbox"
 import type { PermissionProfileFileSystemEntry, TurnContext } from "@/session/turn-context"
+import { SessionSecurity } from "@/session/security"
 import { Effect } from "effect"
 
 type JsonRecord = Record<string, unknown>
@@ -34,6 +35,14 @@ type ProcessReadResponse = {
 
 type FsReadFileResponse = {
   dataBase64: string
+}
+
+type FsReadDirectoryResponse = {
+  entries: Array<{
+    fileName: string
+    isDirectory: boolean
+    isFile: boolean
+  }>
 }
 
 type ManagedServer = {
@@ -275,6 +284,7 @@ function codexPermissionProfile(turn: TurnContext) {
 
 function sandboxContext(turn?: TurnContext) {
   if (!turn) return undefined
+  turn = SessionSecurity.applyToTurn(turn)
   return {
     permissions: codexPermissionProfile(turn),
     cwd: turn.cwd,
@@ -403,6 +413,33 @@ async function readFile(input: { path: string; ctx?: Tool.Context }) {
   }
 }
 
+async function readDirectory(input: { path: string; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/readDirectory", path: input.path },
+    }))
+    return await withClient((client) =>
+      client.request("fs/readDirectory", {
+        path: input.path,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    ) as FsReadDirectoryResponse
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/readDirectory", path: input.path, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
 async function writeFile(input: { path: string; data: string | Uint8Array; ctx?: Tool.Context }) {
   const started = Date.now()
   try {
@@ -491,9 +528,13 @@ async function remove(input: { path: string; recursive?: boolean; force?: boolea
 
 export const CodexExecServer = {
   enabled: CodexExecServerClient.enabled,
+  enabledForContext(ctx?: Tool.Context) {
+    return CodexExecServerClient.enabled() && SessionSecurity.executorBackend(ctx?.sessionID) === "codex"
+  },
   connect: CodexExecServerClient.connect,
   runProcess,
   readFile,
+  readDirectory,
   writeFile,
   createDirectory,
   remove,

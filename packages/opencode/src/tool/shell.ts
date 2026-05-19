@@ -603,7 +603,7 @@ export const ShellTool = Tool.define(
       })
 
       let code: number | null
-      if (CodexExecServer.enabled()) {
+      if (CodexExecServer.enabledForContext(ctx)) {
         const execExit = yield* Effect.exit(runWithCodexExecServer)
         if (Exit.isSuccess(execExit)) {
           code = execExit.value

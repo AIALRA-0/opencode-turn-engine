@@ -66,6 +66,7 @@ import { SessionTable } from "./session.sql"
 import { AialraTurnTrace } from "./turn-trace"
 import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
 import { CodexTurn, type TurnAbortReason, type TurnContext } from "./turn-context"
+import { SessionSecurity } from "./security"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1867,15 +1868,25 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         .pipe(Effect.exit)
       const activeModel = Exit.isSuccess(activeModelExit) ? activeModelExit.value : undefined
       const activeProvider = activeModel ? yield* provider.getProvider(activeModel.providerID) : undefined
+      const cwd = path.resolve(session.directory || instance.worktree)
+      const security = SessionSecurity.overrides({
+        sessionID: frame.sessionID,
+        cwd,
+      })
       const turn = CodexTurn.fromFrame({
         frame,
         parts: message.parts,
-        cwd: path.resolve(session.directory || instance.worktree),
+        cwd,
         retry: CodexTurn.retryConfig({
           providerOptions: activeProvider?.options,
           modelOptions: activeModel?.options,
         }),
         startedAt: receivedAt,
+        approvalPolicy: security.approvalPolicy,
+        sandboxPolicy: security.sandboxPolicy,
+        permissionProfile: security.permissionProfile,
+        activePermissionProfile: security.activePermissionProfile,
+        environments: security.environments,
       })
       if (message.info.format?.type === "json_schema") {
         turn.final_output_json_schema = message.info.format.schema

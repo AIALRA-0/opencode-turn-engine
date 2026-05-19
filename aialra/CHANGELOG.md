@@ -2,6 +2,41 @@
 
 ## 2026-05-19
 
+- Added Sandbox Control Center, 沙盒控制中心, inside Turn Inspector. Users can
+  view and switch `permission_profile`（权限档位）, `approval_policy`（审批策略）,
+  `network access`（网络访问）, `exec backend`（执行后端）, and the current local
+  `environment`（执行环境） from the session UI.
+- Added session security endpoints:
+  `GET /session/:sessionID/security` and
+  `PATCH /session/:sessionID/security`. Changes are audited through public
+  events: `sandbox.profile.changed`, `sandbox.network.changed`,
+  `approval.policy.changed`, `executor.backend.changed`, and
+  `environment.selected`.
+- Wired saved security settings into new `UserTurn`/`TurnContext` creation and
+  live tool gates. File and bash tools now consult the same session security
+  settings when a user changes permissions or network access in the UI. Purely
+  reading the executor preference no longer creates default security state, so
+  explicit test/user TurnContext values are not overwritten.
+- Added Codex exec-server `fs/readDirectory` support and routed the read tool's
+  directory listing path through `CodexFs.readDirectoryEntries` when the Codex
+  backend is enabled. File reads/writes and directory listing now share the same
+  controlled exec-server filesystem channel.
+- Expanded Turn Inspector filters and Chinese summaries to cover model, sandbox,
+  network, and executor events. The panel now includes a “跳到最新” control and
+  keeps raw expansion state stable when new log events arrive.
+- Expanded the A/B harness from 7 prompts to 9 prompts by adding a network
+  access scenario and a weak-model loop-risk scenario.
+- Re-ran the nine-prompt A/B harness. The latest report
+  `ab-comparison-20260519201455.md` shows Codex CLI and AIALRA OpenCode both
+  at 9/9 success with 0 stuck turns, 0 approval waits, 0 outside writes, and
+  9/9 turn terminals; debug1 original OpenCode remains 5/9 because several
+  outside-write and loop-risk cases still stop at approval or lack terminal
+  turn evidence.
+- Verified the Linux sandbox probe again on the current host: kernel
+  `6.8.0-106-generic` has Landlock configured and ordered in LSM, bwrap
+  `0.9.0` is available, user namespaces work, `/proc` mount is blocked by the
+  container, and the Codex Linux sandbox helper still enforces workspace-write
+  in the real write probe.
 - Stabilized the full `prompt.test.ts` + `schema-decoding.test.ts` regression
   command. The previous shell cancel/concurrency failures were caused by test
   readiness timing and hard timeout windows, not by exec-server fallback or
@@ -21,6 +56,8 @@
 - Added public event mappings and Chinese Turn Inspector summaries for
   exec-server filesystem operations, so users can see when Codex exec-server
   handled `fs/readFile`, `fs/writeFile`, `fs/createDirectory`, or `fs/remove`.
+- Updated the latest exec-server event summaries to include `fs/readDirectory`
+  after directory listing moved onto the Codex filesystem API.
 - Expanded profile parity tests to cover `disabled`, `external`, and bash
   network isolation behavior in addition to read-only, workspace-write,
   full-access, protected metadata, symlink escape, and bwrap behavior.

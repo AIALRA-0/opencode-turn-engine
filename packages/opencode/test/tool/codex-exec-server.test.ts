@@ -84,6 +84,8 @@ runIfCodex("Codex exec-server FS API reads and writes inside the turn workspace"
     await CodexExecServer.writeFile({ path: file, data: "fs-ok", ctx: ctx(active) })
     const bytes = await CodexExecServer.readFile({ path: file, ctx: ctx(active) })
     expect(bytes.toString("utf8")).toBe("fs-ok")
+    const listed = await CodexExecServer.readDirectory({ path: cwd, ctx: ctx(active) })
+    expect(listed.entries.some((entry) => entry.fileName === "inside.txt" && entry.isFile)).toBe(true)
   } finally {
     await fs.rm(cwd, { recursive: true, force: true })
   }
