@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
@@ -24,6 +24,22 @@ export type ShellSandboxCommand = {
 }
 
 const PROTECTED_WORKSPACE_NAMES = [".git", ".agents", ".codex"] as const
+const syntheticProtectedMounts = new Map<string, { source: string; refs: number; createdDest: boolean }>()
+let protectedMountLock: Promise<void> = Promise.resolve()
+
+async function withProtectedMountLock<T>(fn: () => Promise<T>) {
+  const previous = protectedMountLock
+  let release!: () => void
+  protectedMountLock = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await previous
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
 
 function normalize(file: string) {
   const resolved = path.resolve(file)
@@ -276,24 +292,48 @@ function bindExisting(args: string[], mode: "--bind" | "--ro-bind", source: stri
 
 async function protectedMetadataMounts(turn: TurnContext) {
   const mounts: Array<{ source: string; dest: string; cleanup?: string[] }> = []
-  for (const root of workspaceRoots(turn)) {
-    for (const name of PROTECTED_WORKSPACE_NAMES) {
-      const dest = path.join(root, name)
-      const exists = Bun.spawnSync(["test", "-e", dest], { stdout: "ignore", stderr: "ignore" }).exitCode === 0
-      if (exists) {
-        mounts.push({ source: dest, dest })
-        continue
-      }
+  await withProtectedMountLock(async () => {
+    for (const root of workspaceRoots(turn)) {
+      for (const name of PROTECTED_WORKSPACE_NAMES) {
+        const dest = path.join(root, name)
+        const synthetic = syntheticProtectedMounts.get(dest)
+        if (synthetic) {
+          synthetic.refs++
+          mounts.push({ source: synthetic.source, dest, cleanup: [dest] })
+          continue
+        }
 
-      // Codex protects missing .git/.agents/.codex with protected-create
-      // targets. Plain bwrap has no direct protected-create primitive, so we
-      // mount an empty read-only directory over the missing path. This prevents
-      // sandboxed bash from creating that metadata path during the command.
-      const source = await mkdtemp(path.join(os.tmpdir(), "aialra-protected-metadata-"))
-      mounts.push({ source, dest, cleanup: [source, dest] })
+        const exists = Bun.spawnSync(["test", "-e", dest], { stdout: "ignore", stderr: "ignore" }).exitCode === 0
+        if (exists) {
+          mounts.push({ source: dest, dest })
+          continue
+        }
+
+        // Codex protects missing .git/.agents/.codex with protected-create
+        // targets. Plain bwrap has no direct protected-create primitive, so we
+        // create a temporary host mountpoint and bind an empty read-only source
+        // over it. A small ref-count prevents concurrent bash calls from racing
+        // by deleting another command's still-needed mountpoint.
+        const source = await mkdtemp(path.join(os.tmpdir(), "aialra-protected-metadata-"))
+        await mkdir(dest)
+        syntheticProtectedMounts.set(dest, { source, refs: 1, createdDest: true })
+        mounts.push({ source, dest, cleanup: [dest] })
+      }
     }
-  }
+  })
   return mounts
+}
+
+async function releaseProtectedMetadataMount(dest: string) {
+  await withProtectedMountLock(async () => {
+    const entry = syntheticProtectedMounts.get(dest)
+    if (!entry) return
+    entry.refs--
+    if (entry.refs > 0) return
+    syntheticProtectedMounts.delete(dest)
+    await rm(entry.source, { recursive: true, force: true })
+    if (entry.createdDest) await rm(dest, { recursive: true, force: true })
+  })
 }
 
 function writableRoots(turn: TurnContext) {
@@ -413,7 +453,7 @@ export const cleanupShellSandboxCommand = Effect.fn("TurnSandbox.cleanupShellSan
   sandbox: ShellSandboxCommand | undefined,
 ) {
   for (const item of sandbox?.cleanupPaths ?? []) {
-    yield* Effect.promise(() => rm(item, { recursive: true, force: true })).pipe(Effect.ignore)
+    yield* Effect.promise(() => releaseProtectedMetadataMount(item)).pipe(Effect.ignore)
   }
 })
 

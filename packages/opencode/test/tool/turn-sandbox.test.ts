@@ -381,4 +381,32 @@ describe("Codex turn sandbox tool gates", () => {
       expect(result.metadata.exit).not.toBe(0)
     }),
   )
+
+  it.instance("keeps missing protected metadata mounts stable across concurrent bash calls", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      Shell.acceptable.reset()
+      const tool = yield* initShell()
+      const active = turn(cwd)
+
+      const results = yield* Effect.all(
+        [
+          tool.execute({ command: "pwd", description: "print cwd" }, ctx(active)),
+          tool.execute({ command: "ls -la", description: "list files" }, ctx(active)),
+          tool.execute({ command: "cat missing.txt 2>/dev/null || true", description: "read optional file" }, ctx(active)),
+        ],
+        { concurrency: "unbounded" },
+      )
+
+      expect(results[0]?.metadata.exit).toBe(0)
+      expect(results[1]?.metadata.exit).toBe(0)
+      expect(results[1]?.metadata.output).not.toContain("Can't get type of source")
+      expect(fssync.existsSync(path.join(cwd, ".git"))).toBe(false)
+      expect(fssync.existsSync(path.join(cwd, ".agents"))).toBe(false)
+      expect(fssync.existsSync(path.join(cwd, ".codex"))).toBe(false)
+    }),
+  )
 })

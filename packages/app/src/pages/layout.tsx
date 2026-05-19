@@ -420,6 +420,7 @@ export default function Layout(props: ParentProps) {
     onMount(() => {
       const toastBySession = new Map<string, number>()
       const alertedAtBySession = new Map<string, number>()
+      const alertedEventKeys = new Set<string>()
       const cooldownMs = 5000
 
       const dismissSessionAlert = (sessionKey: string) => {
@@ -461,8 +462,23 @@ export default function Layout(props: ParentProps) {
             : language.t("notification.question.title")
         const icon = e.details.type === "permission.asked" ? ("checklist" as const) : ("bubble-5" as const)
         const directory = e.name
-        const props = e.details.properties
+        const props = e.details.properties as { id?: string; requestID?: string; sessionID?: string }
         if (e.details.type === "permission.asked" && permission.autoResponds(e.details.properties, directory)) return
+        const requestID =
+          typeof props.id === "string"
+            ? props.id
+            : typeof props.requestID === "string"
+              ? props.requestID
+              : undefined
+        const eventKey = `${directory}:${e.details.type}:${props.sessionID}:${requestID ?? "pending"}`
+        if (requestID && alertedEventKeys.has(eventKey)) return
+        if (requestID) {
+          alertedEventKeys.add(eventKey)
+          if (alertedEventKeys.size > 500) {
+            const first = alertedEventKeys.values().next().value
+            if (first) alertedEventKeys.delete(first)
+          }
+        }
 
         const [store] = globalSync.child(directory, { bootstrap: false })
         const session = store.session.find((s) => s.id === props.sessionID)

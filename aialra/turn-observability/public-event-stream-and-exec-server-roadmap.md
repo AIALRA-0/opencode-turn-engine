@@ -4,7 +4,7 @@
 
 这里所有 Codex 结论都来自本机源码 `/srv/aialra/apps/codex-turn-engine`，不是猜测。
 
-## 0. 2026-05-18 实现状态
+## 0. 2026-05-19 实现状态
 
 本路线图的第一批用户可见能力已经落地：
 
@@ -24,14 +24,27 @@
   All/Errors/Tools/Files/Commands/Approvals 过滤和 raw payload 展开。
 - 已给 `Permission.Request` 增加 turn 相关审计字段，并在工具触发审批时
   从 `Tool.Context.turn` 填入。
+- 已修复 Turn Inspector raw 展开一直 loading 的问题。后端 raw endpoint
+  本来可以返回 200，问题在前端 store 合并旧状态导致 `loading=true` 残留。
+  现在成功和失败都会清掉 loading。
+- 已实现历史 turn 默认折叠：当前最新 turn 展开，旧 turn 默认折叠，用户可以
+  手动展开历史回合日志。
+- 已部署原版 anomalyco/opencode 对照组到 `debug1.aialra.online`，并建立
+  三方 A/B harness：原版 Codex CLI、debug1 原版 OpenCode、AIALRA OpenCode fork。
+- 已查明 exec-server 握手问题的真实边界：全局安装的
+  `codex-cli 0.125.0-alpha.3` exec-server 不完成当前客户端需要的 WebSocket
+  handshake；源码构建的 Codex binary 可以正常 `/readyz`、`initialize` 和
+  `process/start/read`。AIALRA 主服务已将 bash 后端配置为优先使用源码构建的
+  Codex exec-server，并保留 fallback。
 
 仍未完成的部分：
 
-- Codex Rust exec-server 尚未替换当前 Node/Bun executor。
+- Codex Rust exec-server 尚未替换全部 Node/Bun executor。bash 已优先走
+  sidecar；`read/write/edit/apply_patch` 还没有接 Codex FS API。
 - command 输出目前主要来自工具完成后的摘要；exec-server 接入后才能做到
   Codex 风格的实时 stdout/stderr seq 分片。
-- debug1 原版 OpenCode A/B 部署还未执行。
-- bwrap/Landlock parity 仍在后续阶段。
+- Landlock 仍只有能力评估，没有内核级 enforce。
+- exec-server 还没有独立 systemd sidecar 化，目前是 OpenCode adapter 按需托管。
 
 ## 1. 下一阶段优先级
 

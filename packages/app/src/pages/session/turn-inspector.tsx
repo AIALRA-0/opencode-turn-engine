@@ -266,11 +266,13 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
   const [store, setStore] = createStore({
     events: [] as PublicEvent[],
     raw: {} as Record<string, { loading?: boolean; error?: string; value?: unknown } | undefined>,
+    collapsedTurns: {} as Record<string, boolean | undefined>,
     filter: "all" as Filter,
     connected: false,
     error: undefined as string | undefined,
   })
   const [pinnedToBottom, setPinnedToBottom] = createSignal(true)
+  let autoCollapsedLatestTurn: string | undefined
   let viewportRef: HTMLDivElement | undefined
 
   const events = createMemo(() => {
@@ -293,6 +295,40 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
     }
     return sections
   })
+
+  const latestTurnKey = createMemo(() => {
+    const sections = eventSections().filter((section) => section.turnID)
+    return sections.at(-1)?.key
+  })
+
+  createEffect(() => {
+    const latest = latestTurnKey()
+    if (!latest) return
+    if (latest === autoCollapsedLatestTurn) return
+    autoCollapsedLatestTurn = latest
+    const keys = eventSections()
+      .filter((section) => section.turnID)
+      .map((section) => section.key)
+    setStore(
+      "collapsedTurns",
+      produce((draft) => {
+        for (const key of keys) {
+          if (key === latest) {
+            draft[key] = false
+            continue
+          }
+          if (draft[key] === undefined || draft[key] === false) draft[key] = true
+        }
+      }),
+    )
+  })
+
+  const isCollapsed = (section: EventSection) => !!section.turnID && store.collapsedTurns[section.key] === true
+
+  const toggleSection = (section: EventSection) => {
+    if (!section.turnID) return
+    setStore("collapsedTurns", section.key, !isCollapsed(section))
+  }
 
   const updatePinnedToBottom = () => {
     const viewport = viewportRef
@@ -397,7 +433,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
       })
       if (!response.ok) throw new Error(`原始内容加载失败：HTTP ${response.status}`)
       const payload = await response.json()
-      setStore("raw", event.id, { value: payload.raw })
+      setStore("raw", event.id, { loading: false, error: undefined, value: payload.raw ?? payload })
     } catch (error) {
       const message =
         error instanceof DOMException && error.name === "AbortError"
@@ -405,7 +441,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
           : error instanceof Error
             ? error.message
             : String(error)
-      setStore("raw", event.id, { error: message })
+      setStore("raw", event.id, { loading: false, error: message })
     } finally {
       window.clearTimeout(timeout)
     }
@@ -481,82 +517,104 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
                     <div class="flex flex-col gap-1">
                       <div class="px-1 pt-1 flex items-center gap-2 text-10-regular text-text-muted">
                         <div class="h-px flex-1 bg-border-weaker-base" />
-                        <span class="shrink-0">{section.turnID ? `回合 ${shortID(section.turnID)}` : "全局事件"}</span>
+                        <button
+                          type="button"
+                          class="shrink-0 inline-flex items-center gap-1 hover:text-text-base"
+                          onClick={() => toggleSection(section)}
+                        >
+                          <Show when={section.turnID}>
+                            <Icon name={isCollapsed(section) ? "chevron-right" : "chevron-down"} size="small" />
+                          </Show>
+                          <span>{section.turnID ? `回合 ${shortID(section.turnID)}` : "全局事件"}</span>
+                        </button>
                         <span class="shrink-0">{section.events.length} 条</span>
                         <div class="h-px flex-1 bg-border-weaker-base" />
                       </div>
-                      <For each={section.events}>
-                        {(event) => {
-                          const raw = () => store.raw[event.id]
-                          return (
-                            <div class="group rounded-md border border-transparent hover:border-border-weaker-base hover:bg-surface-panel transition-colors">
-                              <div class="px-2 py-2 flex items-start gap-2">
-                                <div
-                                  class="mt-0.5 size-5 shrink-0 rounded flex items-center justify-center"
-                                  classList={{
-                                    "bg-surface-critical-weak text-text-on-critical-weak": event.severity === "error",
-                                    "bg-surface-warning-weak text-text-on-warning-base": event.severity === "warning",
-                                    "bg-surface-weak text-icon-weak": event.severity === "info",
-                                  }}
-                                >
-                                  <Icon name={groupIcon(event)} size="small" />
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                  <div class="flex items-center gap-2 min-w-0">
-                                    <div class="text-12-medium text-text-strong truncate">{localizedTitle(event)}</div>
-                                    <div class="text-10-regular text-text-muted shrink-0">{formatTime(event.ts)}</div>
-                                  </div>
-                                  <div class="mt-0.5 text-11-regular text-text-weak truncate">
-                                    {localizedSummary(event)}
-                                  </div>
-                                  <div class="mt-1 flex flex-wrap gap-1 text-10-regular text-text-muted">
-                                    <span>{event.type}</span>
-                                    <Show when={event.status}>
-                                      {(status) => <span>{localizedStatus(status())}</span>}
-                                    </Show>
-                                    <Show when={event.toolCallID}>
-                                      <span>{event.toolCallID}</span>
-                                    </Show>
-                                  </div>
-                                </div>
-                                <Show when={event.rawRef}>
-                                  <Button
-                                    variant="ghost"
-                                    size="small"
-                                    class="h-6 px-2 opacity-0 group-hover:opacity-100 focus:opacity-100"
-                                    onClick={() =>
-                                      raw()?.value !== undefined || raw()?.error
-                                        ? clearRaw(event.id)
-                                        : void loadRaw(event)
-                                    }
+                      <Show
+                        when={!isCollapsed(section)}
+                        fallback={
+                          <button
+                            type="button"
+                            class="rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2 text-left text-11-regular text-text-weak hover:text-text-base"
+                            onClick={() => toggleSection(section)}
+                          >
+                            已折叠历史回合日志。点击展开查看 {section.events.length} 条事件。
+                          </button>
+                        }
+                      >
+                        <For each={section.events}>
+                          {(event) => {
+                            const raw = () => store.raw[event.id]
+                            return (
+                              <div class="group rounded-md border border-transparent hover:border-border-weaker-base hover:bg-surface-panel transition-colors">
+                                <div class="px-2 py-2 flex items-start gap-2">
+                                  <div
+                                    class="mt-0.5 size-5 shrink-0 rounded flex items-center justify-center"
+                                    classList={{
+                                      "bg-surface-critical-weak text-text-on-critical-weak": event.severity === "error",
+                                      "bg-surface-warning-weak text-text-on-warning-base": event.severity === "warning",
+                                      "bg-surface-weak text-icon-weak": event.severity === "info",
+                                    }}
                                   >
-                                    {raw()?.value !== undefined || raw()?.error ? "收起" : "原始"}
-                                  </Button>
+                                    <Icon name={groupIcon(event)} size="small" />
+                                  </div>
+                                  <div class="min-w-0 flex-1">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                      <div class="text-12-medium text-text-strong truncate">{localizedTitle(event)}</div>
+                                      <div class="text-10-regular text-text-muted shrink-0">{formatTime(event.ts)}</div>
+                                    </div>
+                                    <div class="mt-0.5 text-11-regular text-text-weak truncate">
+                                      {localizedSummary(event)}
+                                    </div>
+                                    <div class="mt-1 flex flex-wrap gap-1 text-10-regular text-text-muted">
+                                      <span>{event.type}</span>
+                                      <Show when={event.status}>
+                                        {(status) => <span>{localizedStatus(status())}</span>}
+                                      </Show>
+                                      <Show when={event.toolCallID}>
+                                        <span>{event.toolCallID}</span>
+                                      </Show>
+                                    </div>
+                                  </div>
+                                  <Show when={event.rawRef}>
+                                    <Button
+                                      variant="ghost"
+                                      size="small"
+                                      class="h-6 px-2 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                      onClick={() =>
+                                        raw()?.value !== undefined || raw()?.error
+                                          ? clearRaw(event.id)
+                                          : void loadRaw(event)
+                                      }
+                                    >
+                                      {raw()?.value !== undefined || raw()?.error ? "收起" : "原始"}
+                                    </Button>
+                                  </Show>
+                                </div>
+                                <Show when={raw()}>
+                                  {(state) => (
+                                    <div class="px-2 pb-2">
+                                      <Switch>
+                                        <Match when={state().loading}>
+                                          <div class="text-11-regular text-text-weak px-2 py-1">正在加载原始内容...</div>
+                                        </Match>
+                                        <Match when={state().error}>
+                                          <div class="text-11-regular text-text-on-critical-weak px-2 py-1">{state().error}</div>
+                                        </Match>
+                                        <Match when={state().value !== undefined}>
+                                          <pre class="max-h-72 overflow-auto rounded bg-background-base border border-border-weaker-base p-2 text-10-regular text-text-base whitespace-pre-wrap break-words">
+                                            {JSON.stringify(state().value, null, 2)}
+                                          </pre>
+                                        </Match>
+                                      </Switch>
+                                    </div>
+                                  )}
                                 </Show>
                               </div>
-                              <Show when={raw()}>
-                                {(state) => (
-                                  <div class="px-2 pb-2">
-                                    <Switch>
-                                      <Match when={state().loading}>
-                                        <div class="text-11-regular text-text-weak px-2 py-1">正在加载原始内容...</div>
-                                      </Match>
-                                      <Match when={state().error}>
-                                        <div class="text-11-regular text-text-on-critical-weak px-2 py-1">{state().error}</div>
-                                      </Match>
-                                      <Match when={state().value !== undefined}>
-                                        <pre class="max-h-72 overflow-auto rounded bg-background-base border border-border-weaker-base p-2 text-10-regular text-text-base whitespace-pre-wrap break-words">
-                                          {JSON.stringify(state().value, null, 2)}
-                                        </pre>
-                                      </Match>
-                                    </Switch>
-                                  </div>
-                                )}
-                              </Show>
-                            </div>
-                          )
-                        }}
-                      </For>
+                            )
+                          }}
+                        </For>
+                      </Show>
                     </div>
                   )}
                 </For>

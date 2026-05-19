@@ -8,14 +8,14 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | 编号 | 事项 | 当前状态 | 人话结论 | 证据/位置 |
 | --- | --- | --- | --- | --- |
 | 1 | Public event stream（公共事件流） | 已实现 MVP、已修复静默断流 524 | 现在不是只能看内部 trace；前端和测试都可以消费稳定公共事件。SSE 空闲时会发 ping，不会因为长时间没事件被 Cloudflare 掐掉。 | `GET /event/public`、`GET /session/:sessionID/events/public`、`aialra.public_event.v1`、`event: ping` |
-| 2 | Codex exec-server 研究/迁移 | 已新增兼容适配器，未默认启用 | 现在代码里已有 Codex exec-server JSON-RPC client、可选 shell backend 和 fallback 事件；但本机已安装 `codex exec-server` 的 WebSocket 握手当前不可用，所以默认仍走 Node/Bun executor。文件工具还没有全量切到 exec-server FS API。 | `packages/opencode/src/tool/codex-exec-server.ts`、`AIALRA_EXEC_BACKEND=codex` |
+| 2 | Codex exec-server 研究/迁移 | bash 已接入源码构建 sidecar，文件工具未接 FS API | 已查明“握手失败”不是泛泛失败：全局安装的 `codex-cli 0.125.0-alpha.3` 打印 ws 地址但不完成当前客户端需要的 HTTP 101；本机源码构建的 Codex binary 可以 `/readyz`、`initialize`、`process/start/read`。AIALRA 主服务已配置 `AIALRA_EXEC_BACKEND=codex`，bash 默认优先走源码构建 sidecar，失败再 fallback。read/write/edit/apply_patch 仍未走 Codex FS API。 | `packages/opencode/src/tool/codex-exec-server.ts`、`AIALRA_CODEX_EXEC_SERVER_BIN=/srv/aialra/apps/codex-turn-engine/codex-rs/target/debug/codex`、`test/tool/codex-exec-server.test.ts` |
 | 3 | Linux bwrap / Landlock parity | 已加强，仍非 1:1 | bash bwrap 现在有能力探测、更接近 Codex 的 `--new-session/--unshare-user/--die-with-parent` 参数、受限容器下自动跳过不可用 `/proc`、缺失 `.git/.agents/.codex` protected-create 防护。Landlock 已有探测脚本，但还没有 Rust helper 级真实 ABI enforcement。 | `linux-sandbox-capability.ts`、`probe-linux-sandbox.mjs`、turn-sandbox tests |
-| 4 | debug1 原版 OpenCode A/B | 未实现 | 还没有部署原版 OpenCode 到 `debug1.aialra.online`，三方自动对比也还没跑起来。 | 下一阶段待办 |
+| 4 | debug1 原版 OpenCode A/B | 已部署并已跑三方报告 | `debug1.aialra.online` 已部署原版 anomalyco/opencode，对照组和 AIALRA fork 端口、systemd、数据目录、环境变量、日志全部隔离。三方 A/B 脚本已能跑 Codex CLI、debug1 原版 OpenCode、AIALRA fork。最新报告显示：越界写入和混合任务中，原版 OpenCode 停在审批等待且无 turn 终态；AIALRA fork 拒绝越界写入并正常 `turn.completed`。 | `aialra/turn-observability/scripts/run-ab-comparison.mjs`、`ab-reports/ab-comparison-20260519133338.md`、`aialra-opencode-debug1-*` systemd services |
 | 5 | Kimi/弱模型卡死诊断 | 已实现第一批硬防护 | 默认每轮最多 80 个 agent loop step，可用 `AIALRA_TURN_MAX_STEPS=0` 关闭；超过后走 Codex reason `budget_limited`。重复工具模式会发 warning，先提示不拦截。 | `turn.budget_limited`、`turn.repeated_tool.warning` |
 | 6 | 只优先 Linux 沙箱 | 已遵守 | 当前实现和验收只承诺 Linux，不做 macOS/Windows 沙箱。 | 计划边界 |
 | 7 | Approval UI 和 TurnContext 审计绑定 | 已实现 MVP | 审批请求会带 turnID、approval policy、permission profile、sandbox policy，并映射到公共事件。 | `approval.requested` / `approval.resolved` |
 | 8 | Profile parity 测试表 | 已扩展自动化，仍未覆盖网络/审批全矩阵 | 新增 read-only 读允许、write/edit/apply_patch 拒绝，full-access 外部写允许，workspace 外部写拒绝等测试。网络访问、审批触发和 exec-server FS API 还需要下一批。 | `test/tool/turn-sandbox.test.ts` |
-| 9 | Turn Inspector 面板 | 已实现 MVP、已完成中文体验修复并部署 | UI 右侧已有回合检查器按钮和面板，可看 turn/model/tool/file/command/approval/final 事件；面板文案、筛选、状态、按钮和命令入口已中文化。 | session header 右侧按钮、Turn Inspector panel |
+| 9 | Turn Inspector 面板 | 已实现 MVP、raw 修复、旧 turn 自动折叠并部署 | UI 右侧已有回合检查器按钮和面板，可看 turn/model/tool/file/command/approval/final 事件；面板已中文化。raw 展开已修复，不再无限 loading；新 turn 默认展开，旧 turn 默认折叠，用户可手动展开历史。 | session header 右侧按钮、`packages/app/src/pages/session/turn-inspector.tsx`、Playwright raw/折叠验收 |
 
 ## 0.1 2026-05-18 网站体验修复验收矩阵
 
@@ -39,9 +39,23 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | bwrap 参数对齐 | bash sandbox 加入 `--new-session`、`--unshare-user`、`--unshare-pid`、`--die-with-parent`、网络隔离和只读根文件系统。容器不允许挂 `/proc` 时会跳过。 | 工作区内可写，工作区外写入失败；受限容器不再因为 `/proc` mount 失败导致所有 bash sandbox 失效。 | 还没有 Codex Rust helper 的 seccomp/no_new_privs/proxy network 全套。 |
 | protected-create | 如果工作区本来没有 `.git/.agents/.codex`，bash 里也不能偷偷创建这些目录。 | 让模型执行 `mkdir -p .git && echo bad > .git/config` 会失败，命令结束后宿主工作区不会留下 `.git`。 | Codex 在 bwrap builder 里有更完整的 synthetic mount/protected target 管理。 |
 | Landlock 评估 | 新增 `node aialra/turn-observability/scripts/probe-linux-sandbox.mjs`，输出 kernel、NoNewPrivs、Seccomp、userns、bwrap、Codex CLI 能力。 | 用户和运维能一条命令看当前服务器是否具备继续接 Landlock 的条件。 | 这不是 Landlock enforcement；真正限制文件访问还需要 Codex Rust helper 或 native syscall 层。 |
-| exec-server adapter | 新增 Codex exec-server JSON-RPC client，支持 `initialize`、`initialized`、`process/start`、`process/read`、`process/terminate`，shell 可用 `AIALRA_EXEC_BACKEND=codex` 尝试接管，并失败回退。 | 默认体验不变；打开环境变量后，Turn Inspector 会记录 exec-server started/finished/fallback。 | 当前本机 `codex exec-server` 能启动但 WebSocket 握手不可用；read/write/edit/apply_patch 还没有切到 exec-server FS API。 |
+| exec-server adapter | 新增 Codex exec-server JSON-RPC client，支持 `initialize`、`initialized`、`process/start`、`process/read`、`process/terminate`，shell 可用 `AIALRA_EXEC_BACKEND=codex` 优先走 sidecar，并失败回退。 | AIALRA 线上服务已指向源码构建的 Codex binary；bash 能优先走 sidecar，Turn Inspector 会记录 exec-server started/finished/fallback。 | 全局安装的 Codex binary 仍握手失败；read/write/edit/apply_patch 还没有切到 exec-server FS API。 |
 | 弱模型 loop 防护 | 默认 80 step 硬预算；超过后写 assistant error、发 `turn.budget_limited`、`turn.aborted reason=budget_limited`，session 回 idle。重复工具模式发 warning。 | Kimi/弱模型反复工具调用时不会无限跑下去，用户能看到是“步骤预算耗尽”。 | 还需要更细的 token/output/tool pattern budget，以及 UI 里把 repeated tool 归组展示。 |
 | profile parity 自动化 | 新增 read-only/full-access/workspace/protected metadata 组合测试。 | 权限语义更可预期，不是只靠口头说明。 | 网络访问、approval never/on-request、external/disabled、exec-server FS 后端还要继续补齐。 |
+
+## 0.3 2026-05-19 A/B 对照和 exec-server 真实验收矩阵
+
+| 项目 | 原来是什么 | 现在是什么 | 和 Codex 还差什么 | 用户怎么观察 | 测试结果 |
+| --- | --- | --- | --- | --- | --- |
+| debug1 原版 OpenCode 对照组 | 没有稳定对照组，只能凭感觉比较 fork 和上游。 | `debug1.aialra.online` 已部署原版 anomalyco/opencode。服务隔离：`aialra-opencode-debug1-web.service`、`aialra-opencode-debug1-login.service`、`aialra-opencode-debug1-sensenova.service`；端口 `12801/12802/12803`；数据目录 `/srv/aialra/state/opencode-debug1-home`；日志 `/srv/aialra/logs/opencode-debug1/*/service.log`。 | debug1 仍是原版 OpenCode，不会有 AIALRA public event；它只能作为行为对照，不能提供同等可观测性。 | 打开 `https://debug1.aialra.online/health` 或登录 debug1。 | health 200；本地 API 可新建 session；`只回复 OK` smoke 返回 OK。 |
+| 三方 A/B harness | 每次比较靠手工复制 prompt，结果不可追溯。 | 新增 `node aialra/turn-observability/scripts/run-ab-comparison.mjs`，固定 5 个 prompt，分别跑 Codex CLI、debug1 原版 OpenCode、AIALRA fork，并生成 Markdown 报告。 | 目前是行为级 A/B，不是 SWE-bench；原版 OpenCode 没有 public event，所以 turn 终态只能近似判断。 | 看 `aialra/turn-observability/ab-reports/ab-comparison-20260519133338.md`。 | 最新报告：5 个场景中 AIALRA fork 全部成功且有 turn 终态；debug1 在工作区外写入和混合任务停在审批等待；Codex CLI 全部成功。 |
+| Codex exec-server 握手诊断 | 只知道“WebSocket 握手失败”，没有证据链。 | 已记录真实原因链：全局 `codex-cli 0.125.0-alpha.3` 的 exec-server 打印 ws 地址，但 `/readyz` 空响应、WebSocket 非 101；源码构建 binary `/srv/aialra/apps/codex-turn-engine/codex-rs/target/debug/codex` 可 `/readyz=200`，可 `initialize`，可 `process/start/read`。 | 还没有把这个 binary 做成独立 systemd sidecar；现在由 OpenCode adapter 按需托管启动。 | 看 `test/tool/codex-exec-server.test.ts` 和本轮 assistant log。 | live adapter test 通过：`initialize`、managed process、stdout/stderr/exit 读取成功。 |
+| bash 默认走 Codex sidecar | bash 只走 Node/Bun executor。 | AIALRA 主服务环境已配置 `AIALRA_EXEC_BACKEND=codex` 和 `AIALRA_CODEX_EXEC_SERVER_BIN`，bash 优先走源码构建 Codex exec-server，失败会 fallback 并进入事件流。 | read/write/edit/apply_patch 还没走 Codex FS API；bash sidecar 也还没产品化成长期运行服务。 | Turn Inspector 后续会看到 executor started/finished/fallback 事件；也可看 systemd env 和工具测试。 | `AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 ... bun test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts` 通过。 |
+| Turn Inspector raw 展开 | raw endpoint 后端返回正常，但 UI 一直显示 loading。 | 修复 Solid store 合并导致的 `loading=true` 残留；成功和失败都会清掉 loading。 | raw 仍是当前进程 replay + 加密审计，不是长期数据库检索；重启前后的内存事件 replay 需要靠 audit 文件补历史产品化。 | 在 Turn Inspector 点“原始”，应显示 JSON，不再转圈。 | Playwright 验证：raw response 200，UI 显示 `prompt.received` JSON，`loading=false`。 |
+| Turn Inspector 历史 turn 性能 | 多轮日志一直堆叠展开。 | 新 turn 默认展开，旧 turn 默认折叠；旧 turn 可手动展开。 | 还没有虚拟列表；非常长会话后仍建议做列表虚拟化。 | 连续发两轮后打开 Inspector，应看到“已折叠历史回合日志”。 | Playwright 验证：2 个 turn section，历史折叠提示存在。 |
+| bwrap 并发 protected-create | 并发 bash 可能互相清理 synthetic `.git/.agents/.codex` mount source，导致 bwrap 启动时报 `Can't get type of source`。 | synthetic protected mount 加 ref-count/锁，并发命令共享同一 mountpoint，最后一个释放时再清理。 | 这仍是 Node/Bun bwrap 管理；Codex Rust helper 有自己的 builder/runtime 结构。 | 混合任务里 `ls -la` 不应再因为 synthetic `.git` source 消失而失败。 | 新增并发测试通过；最新 A/B mixed 场景 AIALRA fork bash 全部成功。 |
+
+当前明确未完成：`read/write/edit/apply_patch` 尚未接 Codex exec-server FS API；Landlock 尚未 enforce；exec-server 尚未独立 systemd sidecar 化；network profile parity 和审批全矩阵还没有全部自动化。
 
 ## 1. 已实现能力验收矩阵
 

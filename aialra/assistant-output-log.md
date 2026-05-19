@@ -599,3 +599,31 @@ Turn Inspector 是网页里的“执行过程面板”，用来让用户看到�
 profile parity 测试就是把不同权限档位逐项测清楚，例如 read-only 应该允许读但拒绝写，workspace-write 应该允许工作区内写但拒绝工作区外写，full-access 应该放开更多。Landlock 是 Linux 内核里的文件访问限制能力，意思是由内核直接拦文件读写；目前只做了“这台机器看起来支持不支持”的评估，还没有真正把文件访问交给 Landlock 拦。`read/write/edit/apply_patch` 没走 exec-server FS API 的意思是这些文件工具还没有交给 Codex 执行服务统一执行，而是先走 OpenCode 现有工具加 TurnContext 门禁；要完全 1:1，下一步必须把这些工具接到 Codex 的文件系统协议。
 
 debug1 原版 OpenCode A/B 还没部署是事实，不应该反复拖延。当前服务器没有现成 debug1 nginx/systemd 路由，部署需要单独服务、端口、数据目录、登录/认证和模型配置隔离。下一步应把它拆成一个专门部署任务完成，而不是继续夹在沙箱改造里。Sensenova 未提交改动是工作区里本来存在的两份模型桥接相关改动，不是本轮改动；我没有提交它们，避免混入无关内容。
+
+## 2026-05-19 实现记录：debug1 对照组、三方 A/B、Codex exec-server 源码二进制接入、Turn Inspector raw 修复
+
+用户要求从现在开始停止零散增强，优先建立真实 A/B 对照体系，然后推进 Codex exec-server 完整接入，并修复 Turn Inspector raw 一直 loading、通知反复弹窗、页面 502/worker/CSP 等体验问题。本次实际完成如下。
+
+debug1 原版 OpenCode 对照组已经部署。原版 anomalyco/opencode 克隆在 `/srv/aialra/apps/opencode-original`，部署包装在 `/srv/aialra/apps/opencode-original-deployment`。服务隔离如下：Web 服务 `aialra-opencode-debug1-web.service` 监听 `127.0.0.1:12801`，登录代理 `aialra-opencode-debug1-login.service` 监听 `127.0.0.1:12803`，Sensenova bridge `aialra-opencode-debug1-sensenova.service` 监听 `127.0.0.1:12802`。环境文件是 `/srv/aialra/config/secrets/opencode-debug1.env`，数据目录是 `/srv/aialra/state/opencode-debug1-home`，日志目录是 `/srv/aialra/logs/opencode-debug1/`。nginx vhost 已配置为 `debug1.aialra.online`，Let's Encrypt 证书位于 `/etc/letsencrypt/live/debug1.aialra.online/`。health smoke 结果：`https://debug1.aialra.online/health` 返回 200；本地 Basic auth API 能创建 session；模型 smoke prompt “只回复 OK” 返回 OK。
+
+三方 A/B harness 已实现。脚本是 `aialra/turn-observability/scripts/run-ab-comparison.mjs`，固定靶场根目录 `/srv/aialra/turn-harness-target`，每次为每个目标创建独立运行目录，目标包括原版 Codex CLI、debug1 原版 OpenCode、AIALRA OpenCode fork。固定 5 个 prompt：只回复 OK；读取 README；工作区内创建文件；尝试工作区外写入；混合读写 bash 和失败恢复。记录指标包括是否卡死、是否等待审批、是否有 turn 终态、cwd、工作区外是否真的写入、工具调用次数、耗时、是否能解释过程。最新完整报告是 `aialra/turn-observability/ab-reports/ab-comparison-20260519133338.md`。
+
+最新 A/B 结论：前三个简单场景三方都成功。第 4 个“工作区外写入”场景，Codex CLI 正确拒绝外部写入并完成，debug1 原版 OpenCode 停在审批等待且没有 turn 终态，AIALRA fork 正确拒绝外部写入并 `turn.completed`。第 5 个混合场景，Codex CLI 成功，debug1 原版 OpenCode 再次停在审批等待且没有 turn 终态，AIALRA fork 成功完成，工作区内读写和 bash 成功，外部写入被拒绝，且 public event 可解释。这个报告证明当前架构变化至少在“越界写入不挂死、能收口、能解释”这类 harness 行为上已经优于原版 OpenCode。
+
+Codex exec-server 真实诊断已完成。本机全局安装的 `codex-cli 0.125.0-alpha.3` 可以运行 `codex exec-server --listen ws://127.0.0.1:0` 并打印监听地址，但 `/readyz` 返回空响应，Node/Bun WebSocket 客户端连接时拿不到预期 HTTP 101 升级响应。因此之前“握手失败”的真实原因不是 OpenCode adapter 随便写错，而是当前全局 codex binary 暴露出的入口和我们源码协议预期不一致。随后从 `/srv/aialra/apps/codex-turn-engine/codex-rs` 源码构建了本地 Codex binary：`/srv/aialra/apps/codex-turn-engine/codex-rs/target/debug/codex`。该源码构建版本可以 `/readyz=200`，WebSocket 能连接，`initialize` 返回 sessionId，`process/start` 能启动命令，`process/read` 能按 chunks 读取 stdout/stderr 和 exitCode。
+
+AIALRA 主服务已切到源码构建 Codex exec-server 后端。`/srv/aialra/config/secrets/opencode.env` 已配置 `AIALRA_EXEC_BACKEND=codex` 和 `AIALRA_CODEX_EXEC_SERVER_BIN=/srv/aialra/apps/codex-turn-engine/codex-rs/target/debug/codex`。这不是仓库文件，不会提交。bash 工具现在优先使用 Codex exec-server adapter，失败时回退到现有 Node/Bun executor，并记录 fallback 事件。验证命令 `AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_EXEC_BACKEND=codex AIALRA_CODEX_EXEC_SERVER_BIN=/srv/aialra/apps/codex-turn-engine/codex-rs/target/debug/codex bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts --timeout 30000` 通过，覆盖 exec-server adapter live process 和 bwrap sandbox。
+
+Linux bwrap 并发 protected-create race 已修。之前 A/B mixed 场景里 AIALRA fork 的 `ls -la` 曾出现 bwrap synthetic `.git` source 被并发清理导致的失败。修复方式是对 synthetic protected mount 加 ref-count/锁：多个并发 bash 共享同一 synthetic mountpoint，最后一个释放时才清理。新增测试 `keeps missing protected metadata mounts stable across concurrent bash calls`，并发跑 `pwd`、`ls -la`、`cat missing.txt || true`，验证不会再出现 `Can't get type of source`，并且 `.git/.agents/.codex` 不会遗留在工作区。最新 A/B mixed 场景已证明 AIALRA fork 的 bash `pwd`、`ls -la`、`cat` 全部成功。
+
+Turn Inspector raw loading bug 已修。浏览器复现显示：raw endpoint 已经 200 返回，但 UI 仍停在“正在加载原始内容”。根因是 Solid store 的对象更新会合并旧对象，成功写入 `{ value }` 时没有清掉旧的 `loading: true`，所以 `Switch` 一直命中 loading 分支。现在成功路径写入 `{ loading: false, error: undefined, value }`，失败路径写入 `{ loading: false, error }`。Playwright 复测：新 session 打开回合检查器，点击“原始”，raw response 200，UI 显示 `prompt.received` JSON，`loading=false`。
+
+Turn Inspector 历史 turn 折叠已实现。新 turn 默认展开，旧 turn 默认折叠，显示“已折叠历史回合日志。点击展开查看 N 条事件。”用户可手动展开旧回合。Playwright 复测：同一 session 连续发两轮后，Inspector 里有 2 个 turn section，并出现历史折叠提示。
+
+通知反复弹窗已做第一批前端去重。`packages/app/src/context/notification.tsx` 对 session idle/error 终态通知按 directory/session/timestamp/error 去重，且当前正在看的 session 不触发系统通知。`packages/app/src/pages/layout.tsx` 对 permission/question 弹窗按 directory/type/session/request id 去重，避免同一审批请求被反复系统弹窗轰炸。
+
+页面零散错误已验证。公网 `https://opencode.aialra.online` 通过 Playwright 登录，首页加载成功，控制台没有 warning/error/requestfailed。内网 `http://127.0.0.1:12601` 打开 session 页面也无控制台错误。`/provider` 和 `/project` 本地 smoke 均返回 200。此前 Cloudflare beacon、site.webmanifest、worker-src 等 CSP/manifest 修复仍有效。
+
+测试和构建记录：`node --test aialra/turn-observability/tests/*.test.js` 通过；`bun --cwd packages/app typecheck` 通过；`bun run --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app build` 通过；`bun run --cwd packages/opencode build --single` 通过并完成 Linux x64 CLI smoke。exec-server + sandbox live 测试通过。`git diff --check` 通过。`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 在完整大套件里仍有 shell 取消/并发相关单个用例偶发 30 秒超时；单独重跑失败用例通过，`bun --cwd packages/opencode test test/session/prompt.test.ts -t "shell" --timeout 30000` 15 个 shell 相关用例全部通过。这说明逻辑路径可收口，但完整大套件在当前机器上还有 shell 取消类 flake，不能把它说成 30 秒全绿。
+
+当前仍未完成并且不能冒充完成：`read/write/edit/apply_patch` 还没有走 Codex exec-server FS API；Landlock 仍只是能力评估，没有内核级 enforce；exec-server 还没有独立 systemd sidecar 化；network profile parity、approval never/on-request 的全矩阵还没有全部自动化；Turn Inspector 还没有虚拟列表，超长历史会话后还需要进一步优化。

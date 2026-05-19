@@ -2,6 +2,36 @@
 
 ## 2026-05-19
 
+- Deployed an isolated original OpenCode control group at
+  `debug1.aialra.online`. It uses independent ports, systemd services, data
+  directories, environment file, logs, nginx vhost, TLS certificate, login
+  proxy, and Sensenova bridge, so AIALRA fork behavior can be compared against
+  upstream behavior without sharing runtime state.
+- Added a three-way A/B comparison harness for original Codex CLI, debug1
+  original OpenCode, and the AIALRA OpenCode fork. The harness runs five fixed
+  prompts under `/srv/aialra/turn-harness-target`, records stuck/approval/turn
+  terminal/cwd/sandbox/tool-count/duration/explainability metrics, and writes
+  Markdown reports under `aialra/turn-observability/ab-reports/`.
+- Diagnosed the previous Codex exec-server WebSocket failure. The globally
+  installed `codex-cli 0.125.0-alpha.3` prints a WebSocket URL but does not
+  complete the expected HTTP 101 handshake for the current client. A local
+  source build from `/srv/aialra/apps/codex-turn-engine/codex-rs` does expose a
+  working `/readyz`, `initialize`, and `process/start/read` protocol. The AIALRA
+  fork now points `AIALRA_EXEC_BACKEND=codex` at that source-built binary for
+  bash execution, with explicit fallback events if the sidecar cannot be used.
+- Fixed a Linux bwrap protected-metadata race. Concurrent bash commands no
+  longer remove each other's synthetic read-only `.git`, `.agents`, or `.codex`
+  mount points while another command is still starting.
+- Fixed Turn Inspector raw payload expansion. The backend raw endpoint was
+  already returning 200, but the Solid store update kept the previous
+  `loading=true` flag when merging the successful payload. Raw success and
+  failure states now clear `loading`, so the UI shows the JSON payload or an
+  error instead of spinning forever.
+- Improved Turn Inspector browsing behavior. A new turn auto-expands while
+  older turns auto-collapse by default, preserving manual expansion for
+  historical debugging and reducing long-session rendering pressure.
+- Reduced duplicate desktop/system notifications for session idle/error and
+  permission prompts by deduping terminal and approval notification keys.
 - Strengthened the Linux bash sandbox. OpenCode now records bwrap/Codex
   helper/Landlock capability details, uses more Codex-like bwrap flags, skips
   `/proc` mounting in containers that reject it, and protects missing

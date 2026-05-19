@@ -132,6 +132,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const [index, setIndex] = createStore<NotificationIndex>(buildNotificationIndex(store.list))
 
     const meta = { pruned: false, disposed: false }
+    const deliveredTerminalEvents = new Set<string>()
 
     const updateUnseen = (scope: "session" | "project", key: string, unseen: Notification[]) => {
       setIndex(scope, "unseen", key, unseen)
@@ -232,6 +233,13 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
         if (meta.disposed) return
         if (!session) return
         if (session.parentID) return
+        const key = `${directory}:${sessionID}:${session.time?.updated ?? "unknown"}:idle`
+        if (deliveredTerminalEvents.has(key)) return
+        deliveredTerminalEvents.add(key)
+        if (deliveredTerminalEvents.size > 500) {
+          const first = deliveredTerminalEvents.values().next().value
+          if (first) deliveredTerminalEvents.delete(first)
+        }
 
         if (settings.sounds.agentEnabled()) {
           void playSoundById(settings.sounds.agent())
@@ -246,7 +254,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
         })
 
         const href = `/${base64Encode(directory)}/session/${sessionID}`
-        if (settings.notifications.agent()) {
+        if (settings.notifications.agent() && !viewedInCurrentSession(directory, sessionID)) {
           void platform.notify(language.t("notification.session.responseReady.title"), session.title ?? sessionID, href)
         }
       })
@@ -261,6 +269,13 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
       void lookup(directory, sessionID).then((session) => {
         if (meta.disposed) return
         if (session?.parentID) return
+        const key = `${directory}:${sessionID ?? "global"}:${JSON.stringify(event.properties.error ?? "")}:error`
+        if (deliveredTerminalEvents.has(key)) return
+        deliveredTerminalEvents.add(key)
+        if (deliveredTerminalEvents.size > 500) {
+          const first = deliveredTerminalEvents.values().next().value
+          if (first) deliveredTerminalEvents.delete(first)
+        }
 
         if (settings.sounds.errorsEnabled()) {
           void playSoundById(settings.sounds.errors())
@@ -279,7 +294,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
           session?.title ??
           (typeof error === "string" ? error : language.t("notification.session.error.fallbackDescription"))
         const href = sessionID ? `/${base64Encode(directory)}/session/${sessionID}` : `/${base64Encode(directory)}`
-        if (settings.notifications.errors()) {
+        if (settings.notifications.errors() && !viewedInCurrentSession(directory, sessionID)) {
           void platform.notify(language.t("notification.session.error.title"), description, href)
         }
       })

@@ -132,7 +132,7 @@ export class CodexExecServerClient {
     if (!url) throw new Error("codex exec-server URL was not resolved")
     const ws = await openWebSocket(url)
     const client = new CodexExecServerClient(ws, managed)
-    await client.request("initialize", { clientName: "aialra-opencode" })
+    await client.request("initialize", { clientName: "aialra-opencode", resumeSessionId: null })
     client.notify("initialized", {})
     return client
   }
@@ -203,7 +203,7 @@ export class CodexExecServerClient {
 }
 
 async function startManagedServer(): Promise<ManagedServer> {
-  const codex = Bun.which("codex")
+  const codex = process.env.AIALRA_CODEX_EXEC_SERVER_BIN || Bun.which("codex")
   if (!codex) throw new Error("AIALRA_EXEC_BACKEND=codex requires `codex` on PATH")
   const child = Bun.spawn([codex, "exec-server", "--listen", "ws://127.0.0.1:0"], {
     stdout: "pipe",
