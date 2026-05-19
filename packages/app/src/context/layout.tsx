@@ -19,6 +19,7 @@ const DEFAULT_FILE_TREE_WIDTH = 200
 const DEFAULT_SESSION_WIDTH = 600
 const DEFAULT_TERMINAL_HEIGHT = 280
 const DEFAULT_TURN_INSPECTOR_WIDTH = 360
+const DEFAULT_SANDBOX_CONTROL_WIDTH = 380
 export type AvatarColorKey = (typeof AVATAR_COLOR_KEYS)[number]
 
 export function getAvatarColors(key?: string) {
@@ -254,6 +255,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         turnInspector: {
           opened: false,
           width: DEFAULT_TURN_INSPECTOR_WIDTH,
+        },
+        sandboxControl: {
+          opened: false,
+          width: DEFAULT_SANDBOX_CONTROL_WIDTH,
         },
         session: {
           width: DEFAULT_SESSION_WIDTH,
@@ -693,6 +698,38 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
             return
           }
           setStore("turnInspector", "width", width)
+        },
+      },
+      sandboxControl: {
+        opened: createMemo(() => store.sandboxControl?.opened ?? false),
+        width: createMemo(() => store.sandboxControl?.width ?? DEFAULT_SANDBOX_CONTROL_WIDTH),
+        open() {
+          if (!store.sandboxControl) {
+            setStore("sandboxControl", { opened: true, width: DEFAULT_SANDBOX_CONTROL_WIDTH })
+            return
+          }
+          setStore("sandboxControl", "opened", true)
+        },
+        close() {
+          if (!store.sandboxControl) {
+            setStore("sandboxControl", { opened: false, width: DEFAULT_SANDBOX_CONTROL_WIDTH })
+            return
+          }
+          setStore("sandboxControl", "opened", false)
+        },
+        toggle() {
+          if (!store.sandboxControl) {
+            setStore("sandboxControl", { opened: true, width: DEFAULT_SANDBOX_CONTROL_WIDTH })
+            return
+          }
+          setStore("sandboxControl", "opened", (x) => !x)
+        },
+        resize(width: number) {
+          if (!store.sandboxControl) {
+            setStore("sandboxControl", { opened: true, width })
+            return
+          }
+          setStore("sandboxControl", "width", width)
         },
       },
       session: {

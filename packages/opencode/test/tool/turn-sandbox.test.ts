@@ -99,6 +99,11 @@ function outsideRepoFile(name: string) {
   return path.join(process.cwd(), `.turn-sandbox-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 }
 
+function canRunBwrapSandbox() {
+  const capability = probeLinuxSandboxCapability()
+  return process.platform === "linux" && capability.bwrap.available && capability.bwrap.userNamespaceProbe.available
+}
+
 const initWrite = Effect.fn("TurnSandboxTest.initWrite")(function* () {
   const info = yield* WriteTool
   return yield* info.init()
@@ -382,7 +387,7 @@ describe("Codex turn sandbox tool gates", () => {
 
   it.instance("runs bash inside a bubblewrap workspace sandbox on Linux", () =>
     Effect.gen(function* () {
-      if (process.platform !== "linux" || !fssync.existsSync("/usr/bin/bwrap")) return
+      if (!canRunBwrapSandbox()) return
       const test = yield* TestInstance
       const cwd = path.join(test.directory, "workspace")
       const outside = outsideRepoFile("outside-shell")
@@ -410,7 +415,7 @@ describe("Codex turn sandbox tool gates", () => {
 
   it.instance("adds network isolation to bwrap when the turn network policy is restricted", () =>
     Effect.gen(function* () {
-      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      if (!canRunBwrapSandbox()) return
       const test = yield* TestInstance
       const cwd = path.join(test.directory, "workspace")
       yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
@@ -421,7 +426,9 @@ describe("Codex turn sandbox tool gates", () => {
       })
       try {
         expect(sandbox?.mode).toBe("bwrap")
-        expect(sandbox?.args).toContain("--unshare-net")
+        const networkNamespaceAvailable = probeLinuxSandboxCapability().bwrap.networkNamespaceProbe.available
+        if (networkNamespaceAvailable) expect(sandbox?.args).toContain("--unshare-net")
+        else expect(sandbox?.args).not.toContain("--unshare-net")
       } finally {
         yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
       }
@@ -430,7 +437,7 @@ describe("Codex turn sandbox tool gates", () => {
 
   it.instance("does not add network isolation to bwrap when the turn network policy is enabled", () =>
     Effect.gen(function* () {
-      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      if (!canRunBwrapSandbox()) return
       const test = yield* TestInstance
       const cwd = path.join(test.directory, "workspace")
       yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
@@ -465,7 +472,7 @@ describe("Codex turn sandbox tool gates", () => {
 
   it.instance("applies live Sandbox Control Center network changes to shell sandbox gates", () =>
     Effect.gen(function* () {
-      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      if (!canRunBwrapSandbox()) return
       const test = yield* TestInstance
       const cwd = path.join(test.directory, "workspace")
       yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
@@ -493,7 +500,7 @@ describe("Codex turn sandbox tool gates", () => {
 
   it.instance("prevents bash from creating missing protected metadata directories", () =>
     Effect.gen(function* () {
-      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      if (!canRunBwrapSandbox()) return
       const test = yield* TestInstance
       const cwd = path.join(test.directory, "workspace")
       yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
@@ -515,7 +522,7 @@ describe("Codex turn sandbox tool gates", () => {
 
   it.instance("keeps missing protected metadata mounts stable across concurrent bash calls", () =>
     Effect.gen(function* () {
-      if (process.platform !== "linux" || !probeLinuxSandboxCapability().bwrap.available) return
+      if (!canRunBwrapSandbox()) return
       const test = yield* TestInstance
       const cwd = path.join(test.directory, "workspace")
       yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))

@@ -37,18 +37,6 @@ export type PublicEvent = {
 
 type Filter = "all" | "error" | "model" | "tool" | "file" | "command" | "approval" | "sandbox" | "network" | "executor"
 
-type SecurityConfig = {
-  sessionID: string
-  permissionProfileID: ":read-only" | ":workspace" | ":danger-full-access" | "external" | "disabled"
-  approvalPolicy: "never" | "on-request" | "on-failure" | "untrusted"
-  networkAccess: boolean
-  executorBackend: "codex" | "node-bun"
-  environmentID: string
-  cwd: string
-  remoteEnvironmentSupported: boolean
-  remoteEnvironmentStatus: string
-}
-
 type EventSection = {
   key: string
   turnID?: string
@@ -99,6 +87,7 @@ const typeLabels: Record<string, string> = {
   "sandbox.profile.changed": "权限档位已切换",
   "sandbox.network.changed": "网络访问已切换",
   "sandbox.policy.changed": "沙箱策略已切换",
+  "sandbox.control.changed": "沙盒控制已变更",
   "approval.policy.changed": "审批策略已切换",
   "executor.backend.changed": "执行器已切换",
   "environment.selected": "执行环境已选择",
@@ -177,26 +166,6 @@ const shortID = (value: string | undefined) => {
 const textValue = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined)
 
 const numberValue = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined)
-
-const permissionProfileLabels: Record<SecurityConfig["permissionProfileID"], string> = {
-  ":read-only": "只读",
-  ":workspace": "工作区可写",
-  ":danger-full-access": "完全访问",
-  external: "外部管理",
-  disabled: "关闭内置权限",
-}
-
-const approvalPolicyLabels: Record<SecurityConfig["approvalPolicy"], string> = {
-  never: "从不审批，危险操作直接拒绝",
-  "on-request": "工具请求时审批",
-  "on-failure": "失败后允许审批",
-  untrusted: "非信任操作先审批",
-}
-
-const executorBackendLabels: Record<SecurityConfig["executorBackend"], string> = {
-  codex: "Codex exec-server，Codex 执行服务",
-  "node-bun": "Node/Bun fallback，旧执行器回退",
-}
 
 function localizedTitle(event: PublicEvent) {
   return typeLabels[event.type] ?? event.title ?? event.type
@@ -288,6 +257,8 @@ function localizedSummary(event: PublicEvent) {
       return `网络访问从 ${from ?? "未知"} 切换到 ${to ?? "未知"}，bash 命令沙箱会按这个开关决定是否隔离网络`
     case "sandbox.policy.changed":
       return `沙箱策略已变更${from || to ? `：${from ?? "未知"} -> ${to ?? "未知"}` : ""}`
+    case "sandbox.control.changed":
+      return "用户在沙盒控制中心修改了后续回合的执行规则"
     case "approval.policy.changed":
       return `审批策略从 ${from ?? "未知"} 切换到 ${to ?? "未知"}`
     case "executor.backend.changed":
@@ -331,189 +302,6 @@ function authHeaders(server: ReturnType<typeof useServer>["current"]) {
     password: server.http.password,
   })}`
   return headers
-}
-
-function SandboxControlCenter(props: { sessionID: string | undefined; active: boolean }) {
-  const sdk = useSDK()
-  const server = useServer()
-  const platform = usePlatform()
-  const [store, setStore] = createStore({
-    config: undefined as SecurityConfig | undefined,
-    loading: false,
-    saving: undefined as string | undefined,
-    error: undefined as string | undefined,
-  })
-
-  const securityURL = () => {
-    if (!props.sessionID) return
-    const url = new URL(`/session/${props.sessionID}/security`, sdk.url)
-    url.searchParams.set("directory", sdk.directory)
-    return url
-  }
-
-  const fetchSecurity = async () => {
-    const url = securityURL()
-    if (!url) return
-    setStore("loading", true)
-    setStore("error", undefined)
-    try {
-      const response = await (platform.fetch ?? fetch)(url, {
-        headers: authHeaders(server.current),
-      })
-      if (!response.ok) throw new Error(`安全配置加载失败：HTTP ${response.status}`)
-      setStore("config", (await response.json()) as SecurityConfig)
-    } catch (error) {
-      setStore("error", error instanceof Error ? error.message : String(error))
-    } finally {
-      setStore("loading", false)
-    }
-  }
-
-  const updateSecurity = async (label: string, patch: Partial<SecurityConfig>) => {
-    const url = securityURL()
-    if (!url) return
-    setStore("saving", label)
-    setStore("error", undefined)
-    try {
-      const response = await (platform.fetch ?? fetch)(url, {
-        method: "PATCH",
-        headers: {
-          ...authHeaders(server.current),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(patch),
-      })
-      if (!response.ok) throw new Error(`安全配置保存失败：HTTP ${response.status}`)
-      setStore("config", (await response.json()) as SecurityConfig)
-    } catch (error) {
-      setStore("error", error instanceof Error ? error.message : String(error))
-    } finally {
-      setStore("saving", undefined)
-    }
-  }
-
-  createEffect(() => {
-    if (!props.active || !props.sessionID) return
-    void fetchSecurity()
-  })
-
-  const config = () => store.config
-  const profileOptions = Object.keys(permissionProfileLabels) as SecurityConfig["permissionProfileID"][]
-  const approvalOptions = Object.keys(approvalPolicyLabels) as SecurityConfig["approvalPolicy"][]
-  const executorOptions = Object.keys(executorBackendLabels) as SecurityConfig["executorBackend"][]
-
-  return (
-    <div class="shrink-0 border-b border-border-weaker-base bg-surface-panel">
-      <div class="px-3 py-2 flex items-center justify-between gap-2">
-        <div class="min-w-0">
-          <div class="text-12-medium text-text-strong">沙盒控制中心</div>
-          <div class="text-11-regular text-text-weak truncate">
-            <Show when={config()} fallback={store.loading ? "正在读取本会话安全配置" : "等待安全配置"}>
-              {(item) =>
-                `目录：${item().cwd}，网络：${item().networkAccess ? "开启" : "关闭"}，执行器：${executorBackendLabels[item().executorBackend]}`
-              }
-            </Show>
-          </div>
-        </div>
-        <Tooltip value="刷新安全配置">
-          <IconButton
-            icon="reset"
-            variant="ghost"
-            class="h-6 w-6"
-            onClick={() => void fetchSecurity()}
-            aria-label="刷新安全配置"
-          />
-        </Tooltip>
-      </div>
-
-      <Show when={store.error}>
-        {(error) => <div class="mx-3 mb-2 rounded border border-border-warning-base px-2 py-1 text-11-regular text-text-warning">{error()}</div>}
-      </Show>
-
-      <Show when={config()}>
-        {(item) => (
-          <div class="px-3 pb-3 flex flex-col gap-2">
-            <div>
-              <div class="mb-1 text-10-regular text-text-muted">permission_profile，权限档位</div>
-              <div class="flex flex-wrap gap-1">
-                <For each={profileOptions}>
-                  {(profile) => (
-                    <Button
-                      variant={item().permissionProfileID === profile ? "primary" : "ghost"}
-                      size="small"
-                      class="h-6 px-2 text-11-regular"
-                      disabled={store.saving !== undefined}
-                      onClick={() => void updateSecurity("permissionProfileID", { permissionProfileID: profile })}
-                    >
-                      {permissionProfileLabels[profile]}
-                    </Button>
-                  )}
-                </For>
-              </div>
-            </div>
-
-            <div>
-              <div class="mb-1 text-10-regular text-text-muted">approval_policy，审批策略</div>
-              <div class="flex flex-wrap gap-1">
-                <For each={approvalOptions}>
-                  {(policy) => (
-                    <Button
-                      variant={item().approvalPolicy === policy ? "primary" : "ghost"}
-                      size="small"
-                      class="h-6 px-2 text-11-regular"
-                      disabled={store.saving !== undefined}
-                      onClick={() => void updateSecurity("approvalPolicy", { approvalPolicy: policy })}
-                    >
-                      {approvalPolicyLabels[policy]}
-                    </Button>
-                  )}
-                </For>
-              </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2 text-left hover:bg-surface-weak"
-                disabled={item().permissionProfileID === ":danger-full-access" || store.saving !== undefined}
-                onClick={() => void updateSecurity("networkAccess", { networkAccess: !item().networkAccess })}
-              >
-                <div class="text-11-medium text-text-strong">network access，网络访问</div>
-                <div class="text-11-regular text-text-weak">
-                  {item().networkAccess ? "已开启，bash 可以访问网络" : "已关闭，bash 会隔离网络"}
-                </div>
-              </button>
-              <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
-                <div class="text-11-medium text-text-strong">environment，执行环境</div>
-                <div class="text-11-regular text-text-weak">
-                  local default，本地默认环境；remote，远程环境：未支持
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div class="mb-1 text-10-regular text-text-muted">exec backend，执行后端</div>
-              <div class="flex flex-wrap gap-1">
-                <For each={executorOptions}>
-                  {(backend) => (
-                    <Button
-                      variant={item().executorBackend === backend ? "primary" : "ghost"}
-                      size="small"
-                      class="h-6 px-2 text-11-regular"
-                      disabled={store.saving !== undefined}
-                      onClick={() => void updateSecurity("executorBackend", { executorBackend: backend })}
-                    >
-                      {executorBackendLabels[backend]}
-                    </Button>
-                  )}
-                </For>
-              </div>
-            </div>
-          </div>
-        )}
-      </Show>
-    </div>
-  )
 }
 
 export function TurnInspectorPanel(props: { sessionID: string | undefined; active: boolean }) {
@@ -734,8 +522,6 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
           />
         </Tooltip>
       </div>
-
-      <SandboxControlCenter sessionID={props.sessionID} active={props.active} />
 
       <div class="shrink-0 px-2 py-2 flex flex-wrap gap-1 border-b border-border-weaker-base">
         <For each={Object.keys(filterLabels) as Filter[]}>

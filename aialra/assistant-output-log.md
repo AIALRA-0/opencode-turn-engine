@@ -699,3 +699,24 @@ A/B harness 已从 7 个 prompt 扩展到 9 个 prompt，新增网络访问场�
 完整验证命令已跑完：`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 通过，90 pass；`node --test aialra/turn-observability/tests/*.test.js` 通过；普通 Node/Bun 路径下工具测试 24 pass、3 skip；live Codex sidecar 路径下工具测试 27 pass；`bun run --cwd packages/opencode typecheck`、`bun run --cwd packages/app typecheck`、`bun --cwd packages/app build`、`bun run --cwd packages/opencode build --single` 均通过。部署脚本 `./aialra/opencode-deployment/scripts/build-opencode.sh` 生成线上版本 `0.0.0-dev-202605192026`，Linux x64 CLI smoke 通过。重启 `aialra-opencode-web.service` 和 `aialra-opencode-login.service` 后，Web、login、Codex exec-server 三个服务均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过。认证 API smoke 显示 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp`、`/session/:id/message` 和 `/session/:id/security` 均返回 200。
 
 浏览器级 Playwright smoke 这次仍不能作为通过证据：`playwright_cli.sh` 文件本身没有执行位，改用 `bash playwright_cli.sh open https://opencode.aialra.online` 后命令长时间无输出并被手动清理。因此最终线上验收采用部署 smoke、API smoke、A/B report 和构建测试结果，不把浏览器 wrapper 卡住伪装成浏览器通过。下一步若要把浏览器 smoke 固化，应该修复本机 Playwright CLI wrapper 的可执行权限和 daemon 启动稳定性，或者改为仓库内固定 Playwright 测试脚本。
+## 2026-05-19 实现记录：真实工程 A/B 评测和独立沙盒控制中心
+
+用户要求停止 toy A/B prompt，把对比体系升级成 SWE-bench 风格真实工程任务，同时把 Sandbox Control Center（沙盒控制中心）从 Turn Inspector（回合检查器）里拆出去，做成独立、中文、下拉框式、能真实影响后续 TurnContext 的产品能力。
+
+本轮先修复开发环境权限。当前仓库和靶场目录被之前的 root 进程写成 `root:root`，本轮工具用户是 `aialra`，导致 `apply_patch` 和 A/B run 目录创建失败。已用本机已有容器镜像只调整 ownership：`/srv/aialra/apps/opencode-turn-engine` 和 `/srv/aialra/turn-harness-target` 改回 `aialra:aialra`。这不改代码内容，但恢复后续开发和评测写入能力。
+
+Sandbox Control Center 已拆成独立面板。新文件是 `packages/app/src/pages/session/sandbox-control-center.tsx`，入口按钮放在回合检查器按钮右侧。Turn Inspector 现在只显示公共事件流；沙盒控制中心负责改规则。UI 已改成中文下拉框，不再使用混乱按钮堆，不再把英文术语裸露给用户。控制项包括权限档位、审批策略、文件访问范围说明、网络访问、命令执行、执行后端、本轮覆盖入口和审计说明。高级底层细节折叠显示，不再默认把 Landlock、bwrap、Node/Bun 等底层词堆给普通用户。
+
+这些控制项不是纯展示。面板仍调用 `GET/PATCH /session/:sessionID/security`，后端 `SessionSecurity` 会把配置套到下一轮 `UserTurn/TurnContext`，工具门禁继续从 TurnContext 读取 cwd、permission profile、approval policy、sandbox policy、network access 和 executor backend。也就是说，用户切到只读后，下一轮写文件会被拒绝；用户开网络后，bash/bwrap 会按网络开关调整。
+
+安全审计补齐了统一事件。之前只有 `sandbox.profile.changed`、`sandbox.network.changed`、`approval.policy.changed` 这类分散事件；现在每次控制中心 PATCH 还会写一条 `sandbox.control.changed`，raw payload 记录 before、after、changedBy、time、cwd 和作用范围。Turn Inspector 中文摘要也增加了这个事件，用户能看到“用户在沙盒控制中心修改了后续回合的执行规则”。
+
+A/B harness 已升级为分层评测。`aialra/turn-observability/scripts/run-ab-comparison.mjs` 默认不再把 toy prompt 当主成绩。smoke 任务仍保留，用来判断服务是否活着；主评测新增 8 个 SWE-style 本地小仓库，每个都有失败测试、真实代码、口语化 prompt，并且 prompt 不告诉文件名、函数名或命令。覆盖：日期边界回归、空输入异常处理、解析器转义、缓存刷新、CLI 参数覆盖、子目录 cwd 路径、最小回归测试、弱模型循环风险。脚本会为 Codex CLI、debug1 原版 OpenCode、AIALRA fork 分别创建独立仓库，运行后再执行 `node --test`、收集 git diff、改动文件数、patch 大小、测试输出、耗时、工具调用和 turn 终态。
+
+报告也升级了。新的 Markdown 报告会标注 case 类型、口语化提示词、三方是否完成、SWE-style 测试是否通过、patch 大小、工作区外写入是否发生、是否卡死、是否等待审批、是否有 turn 终态、是否可解释。整体评分会把“测试通过”和“合理 patch”放进主分，不再只看有没有回一句话。
+
+当前真实边界必须说明清楚：这批 SWE-style fixtures 是本地可控的 SWE-bench 风格任务，还不是直接从官方 SWE-bench Lite/Verified 数据集导入。这样做的原因是三方线上对照需要短、稳定、无外部依赖的本地仓库；下一步要补的是官方样本导入器，而不是继续扩大 toy prompt。沙盒控制中心里“只对本轮生效”和“设为默认”目前还没有完整后端默认档案表；网络下拉框底层仍按开/关执行，还没有 HTTPS 白名单和逐次网络审批；Landlock 没有 Node/Bun 工具层 syscall enforce；approval reviewer 仍未 Codex 1:1；glob/grep 仍需继续接 exec-server 或受控 adapter；Turn Inspector 仍未做虚拟列表。
+
+补充修复了一个真实 Linux 容器坑：工具测试暴露出当前环境里 `/usr/bin/bwrap` 存在，但 user namespace 会报 `setting up uid map: Permission denied`，network namespace 会报 `loopback: Failed RTM_NEWADDR: Operation not permitted`。之前只按“bwrap 存在”判断，会错误添加 `--unshare-net` 或直接启动不可用的 bwrap，导致普通 bash 也失败。现在 `linux-sandbox-capability.ts` 单独探测 user namespace 和 network namespace；network namespace 不可用时不再让普通 bash 全挂，而是在事件里记录网络沙箱降级为 `restricted-unenforced`。这不是完整网络隔离，硬隔离仍需要 Codex helper / seccomp / namespace 能力真的可用。
+
+本轮验证：`node --check aialra/turn-observability/scripts/run-ab-comparison.mjs` 通过；`AIALRA_AB_CASE_LIMIT=0 AIALRA_AB_REPORT_DIR=/tmp/aialra-ab-check node aialra/turn-observability/scripts/run-ab-comparison.mjs` 通过，说明脚本能初始化并写报告；`bun --cwd packages/app typecheck` 通过；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 通过，24 pass、3 skip；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 通过，90 pass；`bun --cwd packages/app build` 通过；`bun --cwd packages/opencode build --single` 通过，Linux x64 smoke 版本 `0.0.0-dev-202605192152`。尚未把完整三方 SWE-style A/B 全跑完和部署上线，不能把这一部分说成线上完成。

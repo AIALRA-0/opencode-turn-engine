@@ -514,6 +514,28 @@ export function SessionHeader() {
                       </div>
                     </Button>
                   </Tooltip>
+
+                  <Tooltip value="沙盒控制中心">
+                    <Button
+                      variant="ghost"
+                      class="titlebar-icon w-8 h-6 p-0 box-border"
+                      onClick={() => layout.sandboxControl.toggle()}
+                      aria-label="切换沙盒控制中心"
+                      aria-expanded={layout.sandboxControl.opened()}
+                      aria-controls="sandbox-control-panel"
+                    >
+                      <div class="relative flex items-center justify-center size-4">
+                        <Icon
+                          size="small"
+                          name={layout.sandboxControl.opened() ? "shield" : "shield"}
+                          classList={{
+                            "text-icon-strong": layout.sandboxControl.opened(),
+                            "text-icon-weak": !layout.sandboxControl.opened(),
+                          }}
+                        />
+                      </div>
+                    </Button>
+                  </Tooltip>
                 </div>
               </div>
             </div>

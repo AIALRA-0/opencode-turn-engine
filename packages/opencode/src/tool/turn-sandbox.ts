@@ -283,6 +283,7 @@ function bubblewrapProgram() {
   if (process.platform !== "linux") return
   const capability = probeLinuxSandboxCapability()
   if (!capability.bwrap.available) return
+  if (!capability.bwrap.userNamespaceProbe.available) return
   return capability.bwrap.path
 }
 
@@ -381,6 +382,10 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
           available: capability.bwrap.userNamespaceProbe.available,
           error: capability.bwrap.userNamespaceProbe.error,
         },
+        networkNamespace: {
+          available: capability.bwrap.networkNamespaceProbe.available,
+          error: capability.bwrap.networkNamespaceProbe.error,
+        },
         mountProc: {
           available: capability.bwrap.mountProcProbe.available,
           error: capability.bwrap.mountProcProbe.error,
@@ -416,7 +421,8 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
     "/dev",
   ]
   if (capability.bwrap.mountProcProbe.available) args.push("--proc", "/proc")
-  if (!networkAllowed(turn)) args.splice(3, 0, "--unshare-net")
+  const networkIsolated = !networkAllowed(turn) && capability.bwrap.networkNamespaceProbe.available
+  if (networkIsolated) args.splice(3, 0, "--unshare-net")
 
   for (const root of writableRoots(turn)) {
     bindExisting(args, "--bind", root)
@@ -438,7 +444,8 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
       operation: "shell",
       target: input.cwd,
       sandbox: "bwrap",
-      network: networkAllowed(turn) ? "enabled" : "restricted",
+      network: networkAllowed(turn) ? "enabled" : networkIsolated ? "restricted" : "restricted-unenforced",
+      networkNamespaceAvailable: capability.bwrap.networkNamespaceProbe.available,
       writableRoots: writableRoots(turn),
       protectedMetadataMounts: protectedMounts.map((mount) => ({
         dest: mount.dest,

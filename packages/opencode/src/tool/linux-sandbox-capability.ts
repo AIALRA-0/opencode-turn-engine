@@ -31,6 +31,7 @@ export type LinuxSandboxCapability = {
       dev: boolean
     }
     userNamespaceProbe: CommandProbe
+    networkNamespaceProbe: CommandProbe
     mountProcProbe: CommandProbe
   }
   codex: {
@@ -96,6 +97,7 @@ function bwrapProbe(path: string | undefined) {
       dev: false,
     },
     userNamespaceProbe: { available: false, error: "bwrap not found" },
+    networkNamespaceProbe: { available: false, error: "bwrap not found" },
     mountProcProbe: { available: false, error: "bwrap not found" },
   } satisfies LinuxSandboxCapability["bwrap"]
 
@@ -139,6 +141,24 @@ function bwrapProbe(path: string | undefined) {
     ],
     { timeoutMs: 5_000 },
   )
+  const networkNamespaceProbe = run(
+    [
+      path,
+      "--new-session",
+      "--die-with-parent",
+      "--ro-bind",
+      "/",
+      "/",
+      "--dev",
+      "/dev",
+      "--unshare-user",
+      "--unshare-pid",
+      "--unshare-net",
+      "--",
+      "/bin/true",
+    ],
+    { timeoutMs: 5_000 },
+  )
 
   return {
     available: version.exitCode === 0 && help.exitCode === 0,
@@ -160,6 +180,7 @@ function bwrapProbe(path: string | undefined) {
       dev: text.includes("--dev"),
     },
     userNamespaceProbe,
+    networkNamespaceProbe,
     mountProcProbe,
   } satisfies LinuxSandboxCapability["bwrap"]
 }
@@ -184,6 +205,7 @@ export function probeLinuxSandboxCapability(input?: { refresh?: boolean }): Linu
   if (platform === "linux" && !bwrap.available) notes.push("bubblewrap is not available; managed Linux shell sandboxing must fail closed when approval_policy is never.")
   if (bwrap.available && !bwrap.supports.perms) notes.push("System bubblewrap does not report --perms support; Codex would prefer bundled/runtime-managed bubblewrap.")
   if (bwrap.available && !bwrap.userNamespaceProbe.available) notes.push("bubblewrap exists but could not create the user/pid namespace in this container.")
+  if (bwrap.available && !bwrap.networkNamespaceProbe.available) notes.push("bubblewrap exists but could not create the network namespace in this container; OpenCode will omit --unshare-net and report the degraded network sandbox capability.")
   if (bwrap.available && !bwrap.mountProcProbe.available) notes.push("bubblewrap cannot mount /proc in this container; OpenCode will skip --proc like Codex's restrictive-container compatibility path.")
   notes.push("Landlock is only kernel-version probed here; exact ABI enforcement requires the Codex Rust helper or a native syscall probe.")
 

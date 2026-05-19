@@ -2,16 +2,17 @@
 
 ## 2026-05-19
 
-- Added Sandbox Control Center, 沙盒控制中心, inside Turn Inspector. Users can
-  view and switch `permission_profile`（权限档位）, `approval_policy`（审批策略）,
-  `network access`（网络访问）, `exec backend`（执行后端）, and the current local
-  `environment`（执行环境） from the session UI.
+- Split Sandbox Control Center（沙盒控制中心） out of Turn Inspector（回合检查器）
+  into its own right-side panel and header button. Users now control execution
+  rules in a separate Chinese UI with dropdowns for 权限档位、审批策略、网络访问、
+  命令执行, and 执行后端, while Turn Inspector stays focused on explaining what
+  happened in the current turn.
 - Added session security endpoints:
   `GET /session/:sessionID/security` and
   `PATCH /session/:sessionID/security`. Changes are audited through public
   events: `sandbox.profile.changed`, `sandbox.network.changed`,
-  `approval.policy.changed`, `executor.backend.changed`, and
-  `environment.selected`.
+  `approval.policy.changed`, `executor.backend.changed`, `environment.selected`,
+  and the new unified audit event `sandbox.control.changed`.
 - Wired saved security settings into new `UserTurn`/`TurnContext` creation and
   live tool gates. File and bash tools now consult the same session security
   settings when a user changes permissions or network access in the UI. Purely
@@ -24,8 +25,13 @@
 - Expanded Turn Inspector filters and Chinese summaries to cover model, sandbox,
   network, and executor events. The panel now includes a “跳到最新” control and
   keeps raw expansion state stable when new log events arrive.
-- Expanded the A/B harness from 7 prompts to 9 prompts by adding a network
-  access scenario and a weak-model loop-risk scenario.
+- Upgraded the A/B harness from toy prompts to layered evaluation. Smoke cases
+  remain for service health, but the main score now comes from SWE-style local
+  repositories with failing tests and vague, colloquial prompts that do not
+  name files, functions, or commands. The first fixture set covers date
+  boundary regressions, empty-input handling, parser escaping, stale cache,
+  CLI override behavior, cwd path handling, minimum regression tests, and
+  weak-model loop risk.
 - Re-ran the nine-prompt A/B harness. The latest report
   `ab-comparison-20260519201455.md` shows Codex CLI and AIALRA OpenCode both
   at 9/9 success with 0 stuck turns, 0 approval waits, 0 outside writes, and
@@ -34,9 +40,14 @@
   turn evidence.
 - Verified the Linux sandbox probe again on the current host: kernel
   `6.8.0-106-generic` has Landlock configured and ordered in LSM, bwrap
-  `0.9.0` is available, user namespaces work, `/proc` mount is blocked by the
-  container, and the Codex Linux sandbox helper still enforces workspace-write
-  in the real write probe.
+  `0.9.0` is available, but this container currently denies bwrap user/network
+  namespace setup and `/proc` mounts. The Codex Linux sandbox helper still
+  enforces workspace-write in the real write probe.
+- Added explicit bwrap user-namespace and network-namespace probes. When a
+  container exposes `/usr/bin/bwrap` but cannot create the needed namespaces,
+  OpenCode no longer blindly adds failing bwrap flags that make ordinary bash
+  commands fail; the public event stream records the degraded network sandbox
+  capability instead.
 - Stabilized the full `prompt.test.ts` + `schema-decoding.test.ts` regression
   command. The previous shell cancel/concurrency failures were caused by test
   readiness timing and hard timeout windows, not by exec-server fallback or

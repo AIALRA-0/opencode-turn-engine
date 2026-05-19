@@ -572,6 +572,7 @@ Public event stream（公共事件流）现在还承载 Sandbox Control Center�
 | `sandbox.profile.changed` | 用户切换权限档位 | `PATCH /session/:sessionID/security` | 记录 from/to、cwd、actor、scope |
 | `sandbox.network.changed` | 用户切换网络访问 | `PATCH /session/:sessionID/security` | 记录 enabled/restricted 变化 |
 | `sandbox.policy.changed` | 沙箱策略变化 | 预留给更细策略 UI | 记录策略前后值 |
+| `sandbox.control.changed` | 用户在沙盒控制中心改了规则 | `PATCH /session/:sessionID/security` | 记录 before/after、changedBy、time、cwd、scope |
 | `approval.policy.changed` | 用户切换审批策略 | `PATCH /session/:sessionID/security` | 记录 never/on-request/on-failure/untrusted |
 | `executor.backend.changed` | 用户切换执行后端偏好 | `PATCH /session/:sessionID/security` | 记录 codex/node-bun |
 | `environment.selected` | 用户选择执行环境 | `PATCH /session/:sessionID/security` | 当前只支持 local default，remote 标记 unsupported |

@@ -403,13 +403,17 @@ export default function Page() {
   const desktopReviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
   const desktopFileTreeOpen = createMemo(() => isDesktop() && layout.fileTree.opened())
   const desktopTurnInspectorOpen = createMemo(() => isDesktop() && layout.turnInspector.opened())
-  const desktopSidePanelOpen = createMemo(() => desktopReviewOpen() || desktopFileTreeOpen() || desktopTurnInspectorOpen())
+  const desktopSandboxControlOpen = createMemo(() => isDesktop() && layout.sandboxControl.opened())
+  const desktopSidePanelOpen = createMemo(
+    () => desktopReviewOpen() || desktopFileTreeOpen() || desktopTurnInspectorOpen() || desktopSandboxControlOpen(),
+  )
   const sessionPanelWidth = createMemo(() => {
     if (!desktopSidePanelOpen()) return "100%"
     if (desktopReviewOpen()) return `${layout.session.width()}px`
     const fileWidth = desktopFileTreeOpen() ? layout.fileTree.width() : 0
     const inspectorWidth = desktopTurnInspectorOpen() ? layout.turnInspector.width() : 0
-    return `calc(100% - ${fileWidth + inspectorWidth}px)`
+    const sandboxWidth = desktopSandboxControlOpen() ? layout.sandboxControl.width() : 0
+    return `calc(100% - ${fileWidth + inspectorWidth + sandboxWidth}px)`
   })
   const centered = createMemo(() => isDesktop() && !desktopReviewOpen())
 

@@ -27,6 +27,7 @@ import { FileTabContent } from "@/pages/session/file-tabs"
 import { createOpenSessionFileTab, createSessionTabs, getTabReorderIndex, type Sizing } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import { SandboxControlPanel } from "@/pages/session/sandbox-control-center"
 import { TurnInspectorPanel } from "@/pages/session/turn-inspector"
 
 type RenderDiff = (SnapshotFileDiff & { file: string }) | VcsFileDiff
@@ -69,14 +70,16 @@ export function SessionSidePanel(props: {
   const reviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
   const fileOpen = createMemo(() => isDesktop() && shown() && layout.fileTree.opened())
   const inspectorOpen = createMemo(() => isDesktop() && layout.turnInspector.opened())
-  const open = createMemo(() => reviewOpen() || fileOpen() || inspectorOpen())
+  const sandboxOpen = createMemo(() => isDesktop() && layout.sandboxControl.opened())
+  const open = createMemo(() => reviewOpen() || fileOpen() || inspectorOpen() || sandboxOpen())
   const reviewTab = createMemo(() => isDesktop())
   const panelWidth = createMemo(() => {
     if (!open()) return "0px"
     if (reviewOpen()) return `calc(100% - ${layout.session.width()}px)`
     const fileWidth = fileOpen() ? layout.fileTree.width() : 0
     const inspectorWidth = inspectorOpen() ? layout.turnInspector.width() : 0
-    return `${fileWidth + inspectorWidth}px`
+    const sandboxWidth = sandboxOpen() ? layout.sandboxControl.width() : 0
+    return `${fileWidth + inspectorWidth + sandboxWidth}px`
   })
   const treeWidth = createMemo(() => (fileOpen() ? `${layout.fileTree.width()}px` : "0px"))
 
@@ -461,6 +464,10 @@ export function SessionSidePanel(props: {
 
             <Show when={inspectorOpen()}>
               <TurnInspectorPanel sessionID={params.id} active={inspectorOpen()} />
+            </Show>
+
+            <Show when={sandboxOpen()}>
+              <SandboxControlPanel sessionID={params.id} active={sandboxOpen()} />
             </Show>
           </div>
         </Show>

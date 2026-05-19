@@ -166,6 +166,40 @@ function emitChange(input: {
   })
 }
 
+function emitControlChanged(input: {
+  sessionID: string
+  before: StoredSecurityConfig
+  after: StoredSecurityConfig
+  patch: SecurityUpdatePayload
+  cwd: string
+}) {
+  PublicEventLog.recordManual({
+    type: "sandbox.control.changed",
+    severity: "info",
+    sessionID: input.sessionID,
+    title: "Sandbox control changed",
+    summary: "沙盒控制中心已更新后续回合的执行规则",
+    status: "changed",
+    data: {
+      before: input.before,
+      after: input.after,
+      changed: input.patch,
+      cwd: input.cwd,
+      changedBy: "current_user",
+      time: new Date().toISOString(),
+      scope: "session_next_turn_and_live_tool_gates",
+    },
+    raw: {
+      source: "session.security",
+      before: input.before,
+      after: input.after,
+      changed: input.patch,
+      cwd: input.cwd,
+      changedBy: "current_user",
+    },
+  })
+}
+
 export namespace SessionSecurity {
   export function get(input: { sessionID: string; cwd: string }) {
     return publicConfig(input.sessionID, input.cwd)
@@ -177,6 +211,16 @@ export namespace SessionSecurity {
     const next: StoredSecurityConfig = { ...previous, ...input.patch }
     if (next.permissionProfileID === ":danger-full-access") next.networkAccess = true
     configs.set(input.sessionID, next)
+
+    if (JSON.stringify(previous) !== JSON.stringify(next)) {
+      emitControlChanged({
+        sessionID: input.sessionID,
+        before: previous,
+        after: next,
+        patch: input.patch,
+        cwd,
+      })
+    }
 
     if (previous.permissionProfileID !== next.permissionProfileID) {
       emitChange({

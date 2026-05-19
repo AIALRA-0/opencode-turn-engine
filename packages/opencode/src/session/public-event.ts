@@ -35,6 +35,7 @@ export type PublicEventType =
   | "sandbox.profile.changed"
   | "sandbox.network.changed"
   | "sandbox.policy.changed"
+  | "sandbox.control.changed"
   | "approval.policy.changed"
   | "executor.backend.changed"
   | "environment.selected"
