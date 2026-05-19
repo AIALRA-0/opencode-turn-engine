@@ -587,3 +587,15 @@ profile parity 测试继续扩展。`packages/opencode/test/tool/turn-sandbox.te
 部署记录：本次提交 `b090ebdc7 feat(aialra): strengthen linux sandbox and loop budget` 已推送到 `origin/dev`。push 钩子执行 `bun turbo typecheck`，14 个任务全部成功。随后执行 `./aialra/opencode-deployment/scripts/build-opencode.sh`，构建版本为 `0.0.0-dev-202605190244`，Linux x64 CLI smoke 通过。重启 `aialra-opencode-web.service` 和 `aialra-opencode-login.service` 后，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-opencode-sensenova.service` 均为 active。执行 `systemctl daemon-reload` 后服务仍全部 active。
 
 线上验收：`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，`RUN_MODEL_CALL=1 ./aialra/opencode-deployment/scripts/e2e-smoke.sh` 也通过。当前线上 fork 已部署本轮版本。部署脚本会生成 `packages/core/src/models-snapshot.js`，该文件属于构建副产物，已恢复，未进入提交。工作区剩余未提交改动只有两份本轮未触碰的 Sensenova 文件：`aialra/opencode-deployment/adapters/sensenova-openai-bridge.js` 和 `aialra/opencode-deployment/tests/sensenova-bridge.test.js`。
+
+## 2026-05-19 解释记录：沙箱、exec-server、profile、弱模型预算的人话版
+
+用户指出前文大量英文名词不可读，要求逐项解释。核心解释如下：bwrap 沙箱就是把 bash 命令关进一个受限制的 Linux 进程环境里，让操作系统阻止它乱写文件、乱访问目录或联网；它对 bash 是系统级硬隔离的一部分，但不是 Codex 完整 1:1，因为 Codex 还有 Rust exec-server、Linux helper、Landlock/seccomp/no_new_privs 等更底层能力，而当前 OpenCode 仍有一些文件工具走 TypeScript 里的应用层检查。Linux 沙箱探测脚本的作用是提前看服务器到底支不支持这些隔离能力，例如 bwrap 是否存在、user namespace 是否可用、`/proc` 能不能挂载；Codex 也会做类似启动检查和 warning，我们现在做的是 Node/Bun 版本的可观察探测。
+
+Turn Inspector 是网页里的“执行过程面板”，用来让用户看到一轮请求从开始、模型、工具、审批、沙箱检查到结束到底发生了什么。`tool.sandbox.capability` 是其中一种事件，意思是“bash 沙箱启动前，这台机器的沙箱能力长什么样”。弱模型/Kimi 循环硬收口的意思是防止模型反复调用同一个工具而永远不结束；默认 80 step 指的是模型-工具循环轮数，不是 token 数，也不是单个长命令执行时间，已有 agent.steps 会优先覆盖，`AIALRA_TURN_MAX_STEPS=0` 可关闭。超限时会写一个可见错误、发 `turn.aborted`、把 session 变回可输入 idle，避免前端一直思考中。
+
+重复工具 warning 的判定方式是工具名 + 前 500 字符输入 + 完成/错误状态连续累计到 3 次，只记录不拦截，所以不会误杀，只是让 Turn Inspector 里能看出模型可能在绕圈。这是 AIALRA 当前为诊断弱模型循环加的观测能力，不是直接照搬 Codex 原生功能。Codex exec-server 是 Codex 的独立执行服务，负责跑命令、读写文件、接沙箱和远程环境；Node/Bun executor 是 OpenCode 现有的 TypeScript/Bun 直接执行工具方式。我们新增的 TypeScript adapter 是桥，用来让 OpenCode 能和 Codex exec-server 通话，但本机 Codex exec-server WebSocket 握手当前失败，所以它只能可选启用并 fallback，不能默认替换。
+
+profile parity 测试就是把不同权限档位逐项测清楚，例如 read-only 应该允许读但拒绝写，workspace-write 应该允许工作区内写但拒绝工作区外写，full-access 应该放开更多。Landlock 是 Linux 内核里的文件访问限制能力，意思是由内核直接拦文件读写；目前只做了“这台机器看起来支持不支持”的评估，还没有真正把文件访问交给 Landlock 拦。`read/write/edit/apply_patch` 没走 exec-server FS API 的意思是这些文件工具还没有交给 Codex 执行服务统一执行，而是先走 OpenCode 现有工具加 TurnContext 门禁；要完全 1:1，下一步必须把这些工具接到 Codex 的文件系统协议。
+
+debug1 原版 OpenCode A/B 还没部署是事实，不应该反复拖延。当前服务器没有现成 debug1 nginx/systemd 路由，部署需要单独服务、端口、数据目录、登录/认证和模型配置隔离。下一步应把它拆成一个专门部署任务完成，而不是继续夹在沙箱改造里。Sensenova 未提交改动是工作区里本来存在的两份模型桥接相关改动，不是本轮改动；我没有提交它们，避免混入无关内容。
