@@ -658,6 +658,8 @@ A/B harness 已扩展。原来默认 5 个强约束 prompt；现在默认 7 个�
 
 验证结果：`packages/app` 的 `bun run typecheck` 通过；`packages/app` 的 `bun run build` 通过。构建只出现既有 Vite chunk/动态导入警告，没有新增类型错误或构建错误。本次修复还没有改变后端权限语义，只是前端体验和 stale terminal 状态清理。
 
+部署结果：提交 `89863ed16 fix(aialra): dedupe approval notifications and stale terminals` 已推送到 `origin/dev`，push 钩子 `bun turbo typecheck` 通过，14 个 typecheck 任务成功。执行 `./aialra/opencode-deployment/scripts/build-opencode.sh` 后生成版本 `0.0.0-dev-202605191607`，Linux x64 CLI smoke 通过。重启 `aialra-opencode-web.service` 和 `aialra-opencode-login.service` 后，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active。执行 `./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过。
+
 ## 2026-05-19 追加实现记录：外部路径审批收口、线上部署、A/B 复跑
 
 本轮在第一次 A/B 复跑里发现一个真实缺口：AIALRA 已经把工作区外写入挡住了，文件也没有被创建，但模型随后为了确认文件不存在，调用 `read` 读取了同一个工作区外路径。OpenCode 旧逻辑把“工作区外读取”当成 `external_directory` 审批，于是脚本看到等待审批并中断。这不是安全破口，而是 Codex 化 turn harness 和 OpenCode legacy permission 之间的重复门禁。
