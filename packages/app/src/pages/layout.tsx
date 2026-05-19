@@ -421,7 +421,66 @@ export default function Layout(props: ParentProps) {
       const toastBySession = new Map<string, number>()
       const alertedAtBySession = new Map<string, number>()
       const alertedEventKeys = new Set<string>()
+      const alertedFingerprints = new Map<string, number>()
       const cooldownMs = 5000
+      const fingerprintCooldownMs = 60_000
+
+      const compact = (value: unknown): string | undefined => {
+        if (typeof value === "string" && value.trim()) return value.trim().slice(0, 160)
+        if (typeof value === "number" || typeof value === "boolean") return String(value)
+        return undefined
+      }
+
+      const eventFingerprint = (
+        directory: string,
+        type: string,
+        props: Record<string, unknown> & { sessionID?: string },
+      ) => {
+        const permission = compact(props.permission) ?? compact(props.title) ?? ""
+        const pattern =
+          Array.isArray(props.patterns) && props.patterns.length
+            ? props.patterns
+                .map((item) => compact(item))
+                .filter(Boolean)
+                .join("|")
+            : ""
+        const metadata = props.metadata
+        const metadataKey =
+          metadata && typeof metadata === "object"
+            ? compact((metadata as Record<string, unknown>).filepath) ??
+              compact((metadata as Record<string, unknown>).filePath) ??
+              compact((metadata as Record<string, unknown>).path) ??
+              compact((metadata as Record<string, unknown>).parentDir) ??
+              ""
+            : ""
+        const tool = props.tool
+        const toolKey =
+          tool && typeof tool === "object"
+            ? compact((tool as Record<string, unknown>).callID) ??
+              compact((tool as Record<string, unknown>).id) ??
+              compact((tool as Record<string, unknown>).name) ??
+              ""
+            : ""
+        return [directory, type, props.sessionID ?? "unknown", permission, pattern, metadataKey, toolKey].join(":")
+      }
+
+      const rememberFingerprint = (key: string) => {
+        const now = Date.now()
+        const last = alertedFingerprints.get(key)
+        if (last !== undefined && now - last < fingerprintCooldownMs) return false
+        alertedFingerprints.set(key, now)
+        if (alertedFingerprints.size > 500) {
+          const cutoff = now - fingerprintCooldownMs
+          for (const [item, at] of alertedFingerprints) {
+            if (at < cutoff) alertedFingerprints.delete(item)
+          }
+          if (alertedFingerprints.size > 500) {
+            const first = alertedFingerprints.keys().next().value
+            if (first) alertedFingerprints.delete(first)
+          }
+        }
+        return true
+      }
 
       const dismissSessionAlert = (sessionKey: string) => {
         const toastId = toastBySession.get(sessionKey)
@@ -462,7 +521,11 @@ export default function Layout(props: ParentProps) {
             : language.t("notification.question.title")
         const icon = e.details.type === "permission.asked" ? ("checklist" as const) : ("bubble-5" as const)
         const directory = e.name
-        const props = e.details.properties as { id?: string; requestID?: string; sessionID?: string }
+        const props = e.details.properties as Record<string, unknown> & {
+          id?: string
+          requestID?: string
+          sessionID?: string
+        }
         if (e.details.type === "permission.asked" && permission.autoResponds(e.details.properties, directory)) return
         const requestID =
           typeof props.id === "string"
@@ -483,6 +546,13 @@ export default function Layout(props: ParentProps) {
         const [store] = globalSync.child(directory, { bootstrap: false })
         const session = store.session.find((s) => s.id === props.sessionID)
         const sessionKey = `${directory}:${props.sessionID}`
+        const currentSession = params.id
+        if (pathKey(directory) === pathKey(currentDir()) && props.sessionID === currentSession) return
+        if (pathKey(directory) === pathKey(currentDir()) && session?.parentID === currentSession) return
+        if (toastBySession.has(sessionKey)) return
+
+        const fingerprint = eventFingerprint(directory, e.details.type, props)
+        if (!rememberFingerprint(fingerprint)) return
 
         const sessionTitle = session?.title ?? language.t("command.session.new")
         const projectName = getFilename(directory)
@@ -511,10 +581,6 @@ export default function Layout(props: ParentProps) {
             void platform.notify(title, description, href)
           }
         }
-
-        const currentSession = params.id
-        if (pathKey(directory) === pathKey(currentDir()) && props.sessionID === currentSession) return
-        if (pathKey(directory) === pathKey(currentDir()) && session?.parentID === currentSession) return
 
         dismissSessionAlert(sessionKey)
 

@@ -29,9 +29,15 @@
   in and ordered in the LSM list; Codex's Linux sandbox helper can enforce
   workspace-write on this host, while this Node probe still does not itself
   apply Landlock syscalls.
-- Reduced stale terminal 404 noise in the Web UI. If a PTY session is already
-  gone, the terminal client now removes it locally instead of repeatedly trying
-  to open WebSockets for a missing session.
+- Reduced stale terminal 404 noise in the Web UI. Workspace terminal state now
+  validates persisted PTY ids against the server on startup and removes ids
+  that no longer exist, so a server restart should not leave the browser
+  repeatedly opening WebSockets for missing terminal sessions.
+- Reduced duplicate approval/question notifications in the Web UI. The
+  notification path now skips the current visible session before playing
+  sounds or posting system notifications, suppresses duplicate pending prompts
+  for the same session, and fingerprints equivalent permission requests for a
+  short cooldown window.
 - Expanded the A/B harness from five strict prompts to seven prompts by adding
   colloquial and emotional real-use cases. Reports now include per-case and
   overall "who is better and why" conclusions, not only raw tables.

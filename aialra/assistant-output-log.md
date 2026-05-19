@@ -650,6 +650,14 @@ A/B harness 已扩展。原来默认 5 个强约束 prompt；现在默认 7 个�
 
 当前真实边界：目录列举还没有接 Codex `fs/readDirectory`；Codex remote environment、HTTP API、实时 stdout/stderr seq 分片 UI 还没完成；Landlock 还没有在 Node/Bun 工具层 syscall enforce；approval reviewer 语义还没做到 Codex 1:1；Turn Inspector 超长历史还没有虚拟列表。
 
+## 2026-05-19 追加修复记录：审批通知去重和 stale PTY 清理
+
+用户反馈浏览器仍然能看到 `tabs:outgoing.message.ready`、`/lsp` 或 `/session/.../message` 502、旧 `/pty/...` 404，以及审批弹窗仍有重复。排查结论如下：`tabs:outgoing.message.ready` 在当前仓库源码中没有任何匹配，更像浏览器扩展或外部注入脚本事件，不能在 OpenCode 源码里直接修。`/lsp`、`/session/.../message` 的 502 更像部署重启或上游瞬时不可用，因为当前 `aialra-opencode-web.service` active，部署后认证 API smoke 曾显示相关接口 200；如果它继续复现，需要按具体时间查 Cloudflare/nginx/login-proxy/web 四层日志。`/pty/...` 404 的根因更明确：前端会持久化终端标签页，服务重启后旧 PTY 编号已经不存在，但页面还继续按旧编号连接。
+
+本次代码修复两点。第一，`packages/app/src/pages/layout.tsx` 里 permission/question 通知现在先判断当前会话是否正在打开；如果用户就在当前会话，不再播放声音、不再发系统通知、不再弹 toast。它还会对同一 session 已经有待处理弹窗的情况直接跳过，并用 directory/type/session/permission/path/tool 生成短期 fingerprint，避免后端重复发等价审批事件时前端跟着重复轰炸。第二，`packages/app/src/context/terminal.tsx` 现在在终端状态加载完成后调用 `pty.list`，把本地持久化但后端已经不存在的 PTY id 清掉，从源头减少 `/pty/.../connect-token` 和 WebSocket 的 404 噪音。
+
+验证结果：`packages/app` 的 `bun run typecheck` 通过；`packages/app` 的 `bun run build` 通过。构建只出现既有 Vite chunk/动态导入警告，没有新增类型错误或构建错误。本次修复还没有改变后端权限语义，只是前端体验和 stale terminal 状态清理。
+
 ## 2026-05-19 追加实现记录：外部路径审批收口、线上部署、A/B 复跑
 
 本轮在第一次 A/B 复跑里发现一个真实缺口：AIALRA 已经把工作区外写入挡住了，文件也没有被创建，但模型随后为了确认文件不存在，调用 `read` 读取了同一个工作区外路径。OpenCode 旧逻辑把“工作区外读取”当成 `external_directory` 审批，于是脚本看到等待审批并中断。这不是安全破口，而是 Codex 化 turn harness 和 OpenCode legacy permission 之间的重复门禁。

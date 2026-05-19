@@ -222,6 +222,28 @@ function createWorkspaceTerminalSession(
   })
   onCleanup(unsub)
 
+  let validated = false
+  createEffect(() => {
+    if (!ready()) return
+    if (validated) return
+    validated = true
+
+    sdk.client.pty
+      .list({ directory: dir }, { throwOnError: false })
+      .then((result) => {
+        if (result.response.status !== 200) return
+        const live = new Set((result.data ?? []).map((item) => item?.id).filter((id): id is string => !!id))
+        const stale = store.all.filter((item) => !live.has(item.id))
+        if (!stale.length) return
+        batch(() => {
+          const next = store.all.filter((item) => live.has(item.id))
+          setStore("all", next)
+          if (store.active && !live.has(store.active)) setStore("active", next[0]?.id)
+        })
+      })
+      .catch(() => undefined)
+  })
+
   const update = (client: ReturnType<typeof useSDK>["client"], pty: Partial<LocalPTY> & { id: string }) => {
     const index = store.all.findIndex((x) => x.id === pty.id)
     const previous = index >= 0 ? store.all[index] : undefined
