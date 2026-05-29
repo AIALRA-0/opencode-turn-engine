@@ -199,6 +199,10 @@ export const layer = Layer.effect(
         patterns: request.patterns,
         metadata: request.metadata,
         always: request.always,
+        turnID: request.turnID,
+        approvalPolicy: request.approvalPolicy,
+        permissionProfile: request.permissionProfile,
+        sandboxPolicy: request.sandboxPolicy,
         tool: request.tool,
       }
       log.info("asking", { id, permission: info.permission, patterns: info.patterns })

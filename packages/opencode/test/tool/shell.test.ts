@@ -18,6 +18,7 @@ import { Plugin } from "../../src/plugin"
 import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { CodexTurn, type TurnContext } from "../../src/session/turn-context"
 
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
@@ -71,6 +72,33 @@ const ctx = {
   messages: [],
   metadata: () => Effect.void,
   ask: () => Effect.void,
+}
+
+function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
+  return {
+    version: "aialra.user_turn.v1",
+    turnID: MessageID.make("msg_turn_shell"),
+    startedAt: Date.now(),
+    items: [],
+    cwd,
+    approval_policy: "on-request",
+    sandbox_policy: CodexTurn.defaultSandboxPolicy(cwd),
+    permission_profile: CodexTurn.workspacePermissionProfile(cwd),
+    active_permission_profile: { id: ":workspace" },
+    model: { providerID: "test", modelID: "test" },
+    collaboration_mode: { kind: "default" },
+    environments: [{ environmentID: "default", cwd }],
+    network_policy: "off",
+    command_policy: "workspace",
+    route: "prompt",
+    sessionID: SessionID.make("ses_shell_turn"),
+    messageID: MessageID.make("msg_turn_shell"),
+    agent: "build",
+    noReply: false,
+    format: "text",
+    retry: CodexTurn.retryConfig({}),
+    ...overrides,
+  }
 }
 
 Shell.acceptable.reset()
@@ -213,6 +241,52 @@ describe("tool.shell", () => {
 })
 
 describe("tool.shell permissions", () => {
+  each("asks for every command when turn command policy is ask", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
+          yield* run(
+            {
+              command: "pwd",
+              description: "Show current directory",
+            },
+            { ...capture(requests), turn: turn(tmp, { command_policy: "ask" }) },
+          )
+          const bashReq = requests.find((request) => request.permission === "bash")
+          expect(bashReq).toBeDefined()
+          expect(bashReq!.metadata.reason).toBe("command_policy")
+          expect(bashReq!.patterns).toContain("pwd")
+        }),
+      )
+    }),
+  )
+
+  each("asks for network permission when turn network policy is ask", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
+          yield* run(
+            {
+              command: "curl --version || true",
+              description: "Check curl availability",
+            },
+            { ...capture(requests), turn: turn(tmp, { network_policy: "ask" }) },
+          )
+          const networkReq = requests.find((request) => request.permission === "network")
+          expect(networkReq).toBeDefined()
+          expect(networkReq!.metadata.reason).toBe("network_policy")
+          expect(networkReq!.patterns).toContain("curl --version || true")
+        }),
+      )
+    }),
+  )
+
   each("asks for bash permission with correct pattern", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped()

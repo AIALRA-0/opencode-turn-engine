@@ -236,10 +236,24 @@ export function SessionHeader() {
   const v2ActionsState = createMemo<SessionHeaderV2ActionsState>(() => ({
     statusVisible: status(),
     statusLabel: language.t("status.popover.trigger"),
+    terminalVisible: term(),
+    terminalLabel: language.t("command.terminal.toggle"),
+    terminalKeybind: command.keybind("terminal.toggle"),
+    terminalOpened: view().terminal.opened(),
+    onTerminalToggle: toggleTerminal,
     reviewLabel: language.t("command.review.toggle"),
     reviewKeybind: command.keybind("review.toggle"),
     reviewOpened: view().reviewPanel.opened(),
     onReviewToggle: () => view().reviewPanel.toggle(),
+    fileTreeVisible: tree(),
+    fileTreeLabel: language.t("command.fileTree.toggle"),
+    fileTreeKeybind: command.keybind("fileTree.toggle"),
+    fileTreeOpened: layout.fileTree.opened(),
+    onFileTreeToggle: () => layout.fileTree.toggle(),
+    turnInspectorOpened: layout.turnInspector.opened(),
+    onTurnInspectorToggle: () => layout.turnInspector.toggle(),
+    sandboxControlOpened: layout.sandboxControl.opened(),
+    onSandboxControlToggle: () => layout.sandboxControl.toggle(),
   }))
 
   const selectApp = (app: OpenApp) => {
@@ -566,10 +580,24 @@ export function SessionHeader() {
 type SessionHeaderV2ActionsState = {
   statusVisible: boolean
   statusLabel: string
+  terminalVisible: boolean
+  terminalLabel: string
+  terminalKeybind: string
+  terminalOpened: boolean
+  onTerminalToggle: () => void
   reviewLabel: string
   reviewKeybind: string
   reviewOpened: boolean
   onReviewToggle: () => void
+  fileTreeVisible: boolean
+  fileTreeLabel: string
+  fileTreeKeybind: string
+  fileTreeOpened: boolean
+  onFileTreeToggle: () => void
+  turnInspectorOpened: boolean
+  onTurnInspectorToggle: () => void
+  sandboxControlOpened: boolean
+  onSandboxControlToggle: () => void
 }
 
 function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
@@ -579,6 +607,22 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
         <Tooltip placement="bottom" value={props.state.statusLabel}>
           <StatusPopoverV2 />
         </Tooltip>
+      </Show>
+      <Show when={props.state.terminalVisible}>
+        <TooltipKeybind title={props.state.terminalLabel} keybind={props.state.terminalKeybind}>
+          <IconButtonV2
+            type="button"
+            variant="ghost-muted"
+            size="large"
+            class="!w-9 shrink-0"
+            state={props.state.terminalOpened ? "pressed" : undefined}
+            onClick={props.state.onTerminalToggle}
+            aria-label={props.state.terminalLabel}
+            aria-expanded={props.state.terminalOpened}
+            aria-controls="terminal-panel"
+            icon={<Icon name={props.state.terminalOpened ? "terminal-active" : "terminal"} size="small" />}
+          />
+        </TooltipKeybind>
       </Show>
       <TooltipKeybind title={props.state.reviewLabel} keybind={props.state.reviewKeybind}>
         <IconButtonV2
@@ -594,6 +638,50 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
           icon={<IconV2 name="sidebar-right" />}
         />
       </TooltipKeybind>
+      <Show when={props.state.fileTreeVisible}>
+        <TooltipKeybind title={props.state.fileTreeLabel} keybind={props.state.fileTreeKeybind}>
+          <IconButtonV2
+            type="button"
+            variant="ghost-muted"
+            size="large"
+            class="!w-9 shrink-0"
+            state={props.state.fileTreeOpened ? "pressed" : undefined}
+            onClick={props.state.onFileTreeToggle}
+            aria-label={props.state.fileTreeLabel}
+            aria-expanded={props.state.fileTreeOpened}
+            aria-controls="file-tree-panel"
+            icon={<Icon name={props.state.fileTreeOpened ? "file-tree-active" : "file-tree"} size="small" />}
+          />
+        </TooltipKeybind>
+      </Show>
+      <Tooltip placement="bottom" value="回合检查器">
+        <IconButtonV2
+          type="button"
+          variant="ghost-muted"
+          size="large"
+          class="!w-9 shrink-0"
+          state={props.state.turnInspectorOpened ? "pressed" : undefined}
+          onClick={props.state.onTurnInspectorToggle}
+          aria-label="切换回合检查器"
+          aria-expanded={props.state.turnInspectorOpened}
+          aria-controls="turn-inspector-panel"
+          icon={<Icon name={props.state.turnInspectorOpened ? "status-active" : "status"} size="small" />}
+        />
+      </Tooltip>
+      <Tooltip placement="bottom" value="沙盒控制中心">
+        <IconButtonV2
+          type="button"
+          variant="ghost-muted"
+          size="large"
+          class="!w-9 shrink-0"
+          state={props.state.sandboxControlOpened ? "pressed" : undefined}
+          onClick={props.state.onSandboxControlToggle}
+          aria-label="切换沙盒控制中心"
+          aria-expanded={props.state.sandboxControlOpened}
+          aria-controls="sandbox-control-panel"
+          icon={<Icon name="shield" size="small" />}
+        />
+      </Tooltip>
     </div>
   )
 }

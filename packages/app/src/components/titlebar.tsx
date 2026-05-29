@@ -466,6 +466,23 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                 <Show when={windows() || linux()}>
                   <WindowsAppMenu command={command} platform={platform} variant="v2" />
                 </Show>
+                <TooltipKeybind
+                  placement="bottom"
+                  title={language.t("command.sidebar.toggle")}
+                  keybind={command.keybind("sidebar.toggle")}
+                >
+                  <IconButtonV2
+                    type="button"
+                    variant="ghost-muted"
+                    size="large"
+                    class="!w-9 shrink-0"
+                    onClick={layout.sidebar.toggle}
+                    aria-label={language.t("command.sidebar.toggle")}
+                    aria-expanded={layout.sidebar.opened()}
+                    state={layout.sidebar.opened() ? "pressed" : undefined}
+                    icon={<Icon name={layout.sidebar.opened() ? "sidebar-active" : "sidebar"} size="small" />}
+                  />
+                </TooltipKeybind>
                 <IconButtonV2
                   variant="ghost-muted"
                   size="large"

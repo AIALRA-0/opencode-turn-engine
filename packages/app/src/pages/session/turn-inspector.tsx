@@ -87,6 +87,7 @@ const typeLabels: Record<string, string> = {
   "final.output": "最终输出",
   "sandbox.profile.changed": "权限档位已切换",
   "sandbox.network.changed": "网络访问已切换",
+  "sandbox.command.changed": "命令执行已切换",
   "sandbox.policy.changed": "沙箱策略已切换",
   "sandbox.control.changed": "沙盒控制已变更",
   "approval.policy.changed": "审批策略已切换",
@@ -258,6 +259,8 @@ function localizedSummary(event: PublicEvent) {
       return `权限档位从 ${from ?? "未知"} 切换到 ${to ?? "未知"}，后续工具门禁会按新档位执行`
     case "sandbox.network.changed":
       return `网络访问从 ${from ?? "未知"} 切换到 ${to ?? "未知"}，bash 命令沙箱会按这个开关决定是否隔离网络`
+    case "sandbox.command.changed":
+      return `命令执行从 ${from ?? "未知"} 切换到 ${to ?? "未知"}，后续 bash 命令会按这个策略审批或放行`
     case "sandbox.policy.changed":
       return `沙箱策略已变更${from || to ? `：${from ?? "未知"} -> ${to ?? "未知"}` : ""}`
     case "sandbox.control.changed":

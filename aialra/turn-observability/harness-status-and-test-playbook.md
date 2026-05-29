@@ -3,6 +3,23 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.00 2026-05-30 最新修复状态
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| V2 顶栏按钮 | 官方新布局分支只显示少量 V2 按钮，AIALRA 的文件树、Turn Inspector、沙盒控制中心按钮只挂在旧布局分支里 | 新布局和旧布局都显示左侧项目栏开关、终端、文件树、回合检查器、沙盒控制中心 | 如果打开了新版布局，顶部仍能看到这些工具按钮，左侧项目栏可重新打开 | 这是布局分支补齐，不改变左侧项目栏默认是否展开 |
+| 沙盒控制中心 UI | 面板里多个灰色卡片叠在一起，看起来和文件树、Turn Inspector 不一致 | 改成侧栏式分隔区块，减少灰色卡片感，控件保持紧凑 | 打开沙盒控制中心，视觉上应更接近右侧面板，而不是一整块灰色表单 | 还没做最终设计系统组件化，只是把当前 MVP 调整到一致风格 |
+| 默认安全策略 | 默认工作区可写、需要时询问，但网络和命令没有明确“每次询问”的后端字段 | 默认变成：工作区可写、需要时询问、网络每次询问、命令每次询问、Codex 执行服务、步骤上限关闭 | 打开沙盒控制中心，网络访问和命令执行默认都是“每次询问” | 这会让非交互 A/B 在网络/命令任务里等待审批，除非 benchmark 显式选择自动拒绝或预审批策略 |
+| 网络每次询问 | UI 可以显示“每次询问”，但后端只是按网络关闭执行 | bash 检测到 `curl`、`wget`、`ping`、`npm install`、`git clone` 等网络命令时，先发 `network` 审批，批准后只给这一条命令打开网络 | 执行 curl 类命令时应先看到网络审批，批准后命令能走不带 `--unshare-net` 的沙箱 | 检测是工程规则，不是 LLM 理解，下一步要补更完整网络命令分类和白名单 |
+| 命令每次询问 | 有些命令只有涉及文件时才审批，`pwd` 这类普通命令可能直接跑 | `commandPolicy=ask` 时，每次 bash 命令都会先请求审批 | 让 agent 执行 `pwd`，默认会先出现命令审批 | 用户点“本轮全部”或“始终全部”后，同范围内后续命令不会再弹 |
+| 审批审计字段 | `Permission.ask` 构造 bus payload 时丢了 turnID 和策略字段 | approval 事件保留 turnID、approval policy、permission profile、sandbox policy、tool call | Turn Inspector 的 approval 事件能挂到对应回合和工具 | reviewer 语义还没有 Codex 1:1，但审计数据不再丢 |
+
+本轮部署验收：线上版本 `0.0.0-dev-202605292231` 已构建并部署，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，e2e smoke 11 pass，API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp`、`/session/:id/message`、`/session/:id/security` 均返回 200
+
+浏览器级验收边界：`playwright_cli.sh` 没有执行位，改用 `bash playwright_cli.sh` 后 `npx playwright-cli` 在本机长时间无输出，本轮没有把浏览器点击验收伪装成通过，UI 结果需要用户刷新线上页面后确认，后续应把 agent-browser 或固定 Playwright 脚本纳入稳定验收链
+
+本轮没有重跑完整 15 场三方 A/B，原因是默认策略已改成“命令每次询问”和“网络每次询问”，非交互 benchmark 遇到 bash 或网络会自然停在审批等待，下一步需要先给 A/B harness 增加安全策略档案，例如 `interactive-default`、`noninteractive-auto-deny`、`trusted-full-auto`，否则会把产品安全默认值误判成模型能力下降
+
 ## 0. 2026-05-19 九项路线最新状态
 
 | 编号 | 事项 | 当前状态 | 人话结论 | 证据/位置 |
@@ -474,3 +491,15 @@ exec-server 那种实时 stdout/stderr seq 分片；approval 事件已经能展�
 
 6. 最后再做 SWE-bench 或自建任务 benchmark。
    这一步用来验证产出质量，不适合代替底层安全和稳定性验收。
+
+## 0.01 安全组合应该怎么测
+
+| 测试层 | 应该测什么 | 为什么 | 当前状态 |
+| --- | --- | --- | --- |
+| 单元测试 | `read-only`、`workspace-write`、`full-access`、`external`、`disabled` 下的 read/write/edit/apply_patch/bash/network/approval | 组合很多，靠手点一定漏，安全门禁必须自动化 | 已有 turn-sandbox、external-directory、shell command/network policy 测试，下一步继续扩展完整表格 |
+| 集成测试 | 通过 `GET/PATCH /session/:sessionID/security` 改策略，再执行真实工具 | 验证 UI 改的不是假状态，后端 TurnContext 真读到了 | 已有 public-event 和 live profile 测试 |
+| 浏览器手测 | 看审批弹窗、Turn Inspector、沙盒控制中心联动是否人能看懂 | 自动化只能证明行为，不能证明用户理解 | 需要每次部署后做 Playwright 或手动 smoke |
+| A/B benchmark | 同一复杂任务在 Codex CLI、debug1 原版 OpenCode、AIALRA fork 上跑 | 验证工程能力，而不是只验证一个权限开关 | 已有 15 场，下一步要加入大型长 prompt、多模型横评和模糊任务 |
+| 安全审查场景 | 越界写入、symlink escape、`.git/.agents/.codex`、网络命令、审批拒绝、审批允许一次 | 这些可以由实现者自行测试，不需要用户手动承担风险 | 当前本机可自动测，线上高风险项先在 `/srv/aialra/turn-harness-target` 靶场跑 |
+
+用户自己建议手测的最小路径：打开沙盒控制中心，保持默认工作区可写、需要时询问、网络每次询问、命令每次询问，然后让 agent 执行 `pwd`、写工作区文件、尝试写工作区外文件、执行 `curl --version`，预期是命令会先问，工作区内写可在批准后成功，工作区外写被拒绝，网络命令会单独问网络权限

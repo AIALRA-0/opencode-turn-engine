@@ -1894,6 +1894,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         permissionProfile: security.permissionProfile,
         activePermissionProfile: security.activePermissionProfile,
         environments: security.environments,
+        networkPolicy: security.networkPolicy,
+        commandPolicy: security.commandPolicy,
         stepBudget: security.stepBudget,
       })
       if (message.info.format?.type === "json_schema") {
@@ -2288,7 +2290,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               processor: handle,
               bypassAgentCheck,
               messages: msgs,
-              turn: turn?.turnID === lastUser.id ? turn : undefined,
+              turn: activeTurnForStep,
             })
             yield* AialraTurnTrace.emit({
               phase: "tools.resolved",

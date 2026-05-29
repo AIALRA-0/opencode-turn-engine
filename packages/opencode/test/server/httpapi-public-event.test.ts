@@ -161,7 +161,8 @@ describe("public event HttpApi", () => {
       patch: {
         permissionProfileID: ":read-only",
         approvalPolicy: "never",
-        networkAccess: false,
+        networkPolicy: "on",
+        commandPolicy: "read",
         executorBackend: "node-bun",
         stepBudgetEnabled: true,
         stepBudgetMaxSteps: 120,
@@ -169,11 +170,15 @@ describe("public event HttpApi", () => {
     })
 
     expect(next.permissionProfileID).toBe(":read-only")
+    expect(next.networkPolicy).toBe("on")
+    expect(next.commandPolicy).toBe("read")
     expect(next.stepBudgetEnabled).toBe(true)
     expect(next.stepBudgetMaxSteps).toBe(120)
     expect(PublicEventLog.list({ sessionID: "ses_security" })).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "sandbox.profile.changed", status: "changed" }),
+        expect.objectContaining({ type: "sandbox.network.changed", status: "changed" }),
+        expect.objectContaining({ type: "sandbox.command.changed", status: "changed" }),
         expect.objectContaining({ type: "approval.policy.changed", status: "changed" }),
         expect.objectContaining({ type: "turn.step_budget.changed", status: "changed" }),
       ]),

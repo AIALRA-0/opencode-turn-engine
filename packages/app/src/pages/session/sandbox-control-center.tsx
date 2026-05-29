@@ -16,6 +16,8 @@ type SecurityConfig = {
   sessionID: string
   permissionProfileID: ":read-only" | ":workspace" | ":danger-full-access" | "external" | "disabled"
   approvalPolicy: "never" | "on-request" | "on-failure" | "untrusted"
+  networkPolicy: "off" | "on" | "ask"
+  commandPolicy: "ask" | "workspace" | "all" | "read" | "disabled"
   networkAccess: boolean
   executorBackend: "codex" | "node-bun"
   environmentID: string
@@ -29,14 +31,22 @@ type SecurityConfig = {
 type SecurityPatch = Partial<
   Pick<
     SecurityConfig,
-    "permissionProfileID" | "approvalPolicy" | "networkAccess" | "executorBackend" | "stepBudgetEnabled" | "stepBudgetMaxSteps"
+    | "permissionProfileID"
+    | "approvalPolicy"
+    | "networkPolicy"
+    | "commandPolicy"
+    | "networkAccess"
+    | "executorBackend"
+    | "stepBudgetEnabled"
+    | "stepBudgetMaxSteps"
   >
 >
 
 const defaults: SecurityPatch = {
   permissionProfileID: ":workspace",
   approvalPolicy: "on-request",
-  networkAccess: false,
+  networkPolicy: "ask",
+  commandPolicy: "ask",
   executorBackend: "codex",
   stepBudgetEnabled: false,
   stepBudgetMaxSteps: 80,
@@ -65,19 +75,26 @@ const approvalOptions: Array<{
   { value: "untrusted", label: "不可信操作询问", description: "普通安全动作直接执行，不可信或高风险动作先问你" },
 ]
 
-const networkOptions = [
-  { value: "off", label: "关闭网络", description: "默认选项，命令运行时不能访问外网", access: false },
-  { value: "https", label: "允许常规 HTTPS", description: "当前 Linux 执行底座按允许网络执行，后续会细分 HTTPS 白名单", access: true },
-  { value: "all", label: "允许全部网络", description: "命令可以访问网络，所有开关变更都会进入审计事件", access: true },
-  { value: "ask", label: "每次询问", description: "当前会按关闭网络执行，后续接入网络审批人后逐次询问", access: false },
+const networkOptions: Array<{
+  value: SecurityConfig["networkPolicy"]
+  label: string
+  description: string
+}> = [
+  { value: "ask", label: "每次询问", description: "默认选项，检测到 curl、npm install、git clone 等网络命令时先问你" },
+  { value: "off", label: "关闭网络", description: "命令运行时不能访问外网，网络命令会被沙箱隔离" },
+  { value: "on", label: "允许网络", description: "命令可以访问网络，所有开关变更都会进入审计事件" },
 ] as const
 
-const commandOptions = [
+const commandOptions: Array<{
+  value: SecurityConfig["commandPolicy"]
+  label: string
+  description: string
+}> = [
+  { value: "ask", label: "每次询问", description: "默认选项，每次 bash 命令执行前都先问你" },
+  { value: "read", label: "允许只读命令", description: "切到只读档位，写文件和写入类命令会被拒绝" },
+  { value: "workspace", label: "允许工作区命令", description: "切到工作区可写档位，命令只能影响当前项目" },
+  { value: "all", label: "允许全部命令", description: "切到完全访问档位，仍会记录审计" },
   { value: "disabled", label: "交给外部门禁", description: "切到关闭内置门禁档位，权限由外部系统接管" },
-  { value: "read", label: "允许只读命令", description: "当前由只读权限档位近似执行，写入类命令会被拒绝" },
-  { value: "workspace", label: "允许工作区命令", description: "当前工作区可写档位，命令只能影响当前项目" },
-  { value: "all", label: "允许全部命令", description: "当前完全访问档位，仍会记录审计" },
-  { value: "ask", label: "每次询问", description: "当前配合需要时询问审批策略使用" },
 ] as const
 
 const executorOptions: Array<{
@@ -104,16 +121,11 @@ function optionDescription<T extends string>(items: ReadonlyArray<{ value: T; de
 }
 
 function currentNetworkValue(config: SecurityConfig | undefined) {
-  return config?.networkAccess ? "all" : "off"
+  return config?.networkPolicy ?? "ask"
 }
 
 function currentCommandValue(config: SecurityConfig | undefined) {
-  if (!config) return "workspace"
-  if (config.permissionProfileID === "disabled") return "disabled"
-  if (config.permissionProfileID === ":read-only") return "read"
-  if (config.permissionProfileID === ":danger-full-access") return "all"
-  if (config.approvalPolicy === "on-request") return "ask"
-  return "workspace"
+  return config?.commandPolicy ?? "ask"
 }
 
 function SelectField<T extends string>(props: {
@@ -130,7 +142,7 @@ function SelectField<T extends string>(props: {
         <span class="text-11-medium text-text-strong">{props.label}</span>
       </div>
       <select
-        class="h-8 w-full rounded-md border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-base outline-none focus:border-border-strong"
+        class="h-8 w-full rounded-md border border-border-weaker-base bg-surface-panel px-2 text-12-regular text-text-base outline-none focus:border-border-strong"
         value={props.value}
         disabled={props.disabled}
         onInput={(event) => props.onChange(event.currentTarget.value as T)}
@@ -146,7 +158,7 @@ function SelectField<T extends string>(props: {
 
 function Section(props: { title: string; children: JSX.Element }) {
   return (
-    <section class="rounded-md border border-border-weaker-base bg-background-base p-3">
+    <section class="border-b border-border-weaker-base px-3 py-3 last:border-b-0">
       <div class="mb-3 text-12-medium text-text-strong">{props.title}</div>
       {props.children}
     </section>
@@ -267,7 +279,7 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
       </Show>
 
       <ScrollView class="flex-1 min-h-0" data-scrollable>
-        <div class="p-3 flex flex-col gap-3">
+        <div class="flex flex-col">
           <Section title="执行权限">
             <SelectField
               label="权限档位"
@@ -317,10 +329,7 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
               disabled={busy()}
               options={networkOptions}
               detail={optionDescription(networkOptions, network())}
-              onChange={(value) => {
-                const option = networkOptions.find((item) => item.value === value)
-                void updateSecurity("networkAccess", { networkAccess: option?.access ?? false })
-              }}
+              onChange={(value) => void updateSecurity("networkPolicy", { networkPolicy: value })}
             />
             <div class="mt-3">
               <SelectField
@@ -330,24 +339,20 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
                 options={commandOptions}
                 detail={optionDescription(commandOptions, command())}
                 onChange={(value) => {
-                  if (value === "disabled") void updateSecurity("permissionProfileID", { permissionProfileID: "disabled" })
-                  if (value === "read") void updateSecurity("permissionProfileID", { permissionProfileID: ":read-only" })
-                  if (value === "workspace") void updateSecurity("permissionProfileID", { permissionProfileID: ":workspace" })
-                  if (value === "all") void updateSecurity("permissionProfileID", { permissionProfileID: ":danger-full-access" })
-                  if (value === "ask") void updateSecurity("approvalPolicy", { approvalPolicy: "on-request" })
+                  void updateSecurity("commandPolicy", { commandPolicy: value })
                 }}
               />
             </div>
           </Section>
 
           <Section title="生效范围与步骤上限">
-            <div class="rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
+            <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
               <div class="text-12-medium text-text-strong">实时生效范围</div>
               <div class="mt-1 text-11-regular text-text-weak leading-4">
                 降低权限会影响正在运行回合的下一次工具门禁，提高权限会记录审计并影响后续工具门禁，已经发出去的模型请求不会被中途改写
               </div>
             </div>
-            <label class="mt-2 flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
+            <label class="mt-2 flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
               <span>
                 <span class="block text-12-medium text-text-strong">限制模型工具循环</span>
                 <span class="block text-11-regular text-text-weak">默认关闭，开启后超过设置步数会停止本轮，避免弱模型无限重复调用工具</span>
@@ -359,10 +364,10 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
                 onInput={(event) => void updateSecurity("stepBudgetEnabled", { stepBudgetEnabled: event.currentTarget.checked })}
               />
             </label>
-            <label class="mt-2 block rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
+            <label class="mt-2 block rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
               <span class="block text-12-medium text-text-strong">最大工具步数</span>
               <input
-                class="mt-2 h-8 w-full rounded-md border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-base outline-none focus:border-border-strong disabled:opacity-60"
+                class="mt-2 h-8 w-full rounded-md border border-border-weaker-base bg-surface-panel px-2 text-12-regular text-text-base outline-none focus:border-border-strong disabled:opacity-60"
                 type="number"
                 min="1"
                 max="10000"

@@ -15,6 +15,7 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@/shell/shell"
 import { ShellID } from "./shell/id"
+import { SessionSecurity } from "@/session/security"
 
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
@@ -266,7 +267,15 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
   return tree
 })
 
-const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan) {
+function commandLooksNetworked(command: string) {
+  return /\b(curl|wget|ping|dig|nslookup|npm\s+install|pnpm\s+install|yarn\s+(add|install)|bun\s+(add|install)|git\s+clone|ssh|scp|rsync|pip\s+install|uv\s+(pip\s+)?install)\b/i.test(command)
+}
+
+function activeTurn(ctx: Tool.Context) {
+  return ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
+}
+
+const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, options?: { skipShellPatterns?: boolean }) {
   if (scan.dirs.size > 0) {
     const globs = Array.from(scan.dirs).map((dir) => {
       if (process.platform === "win32") return AppFileSystem.normalizePathPattern(path.join(dir, "*"))
@@ -280,7 +289,7 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan)
     })
   }
 
-  if (scan.patterns.size === 0) return
+  if (options?.skipShellPatterns || scan.patterns.size === 0) return
   yield* ctx.ask({
     permission: ShellID.ToolID,
     patterns: Array.from(scan.patterns),
@@ -675,9 +684,10 @@ export const ShellTool = Tool.define(
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
               const instanceCtx = yield* InstanceState.context
+              const turn = activeTurn(ctx)
               const cwd = params.workdir
-                ? yield* resolvePath(params.workdir, ctx.turn?.cwd ?? instanceCtx.directory, shell)
-                : (ctx.turn?.cwd ?? instanceCtx.directory)
+                ? yield* resolvePath(params.workdir, turn?.cwd ?? ctx.turn?.cwd ?? instanceCtx.directory, shell)
+                : (turn?.cwd ?? ctx.turn?.cwd ?? instanceCtx.directory)
               yield* TurnSandbox.assertShellAccess(ctx, { cwd, command: params.command })
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
@@ -691,9 +701,33 @@ export const ShellTool = Tool.define(
                   )
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
-                  yield* ask(ctx, scan)
+                  if (turn?.command_policy === "ask") {
+                    yield* ctx.ask({
+                      permission: ShellID.ToolID,
+                      patterns: [params.command],
+                      always: [params.command],
+                      metadata: {
+                        reason: "command_policy",
+                        description: params.description,
+                      },
+                    })
+                  }
+                  yield* ask(ctx, scan, { skipShellPatterns: turn?.command_policy === "ask" })
                 }),
               )
+              let networkAccessForCommand = false
+              if (turn?.network_policy === "ask" && commandLooksNetworked(params.command)) {
+                yield* ctx.ask({
+                  permission: "network",
+                  patterns: [params.command],
+                  always: [params.command],
+                  metadata: {
+                    reason: "network_policy",
+                    description: params.description,
+                  },
+                })
+                networkAccessForCommand = true
+              }
 
               return yield* run(
                 {
@@ -703,7 +737,12 @@ export const ShellTool = Tool.define(
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
                   description: params.description,
-                  sandbox: yield* TurnSandbox.shellSandboxCommand(ctx, { shell, command: params.command, cwd }),
+                  sandbox: yield* TurnSandbox.shellSandboxCommand(ctx, {
+                    shell,
+                    command: params.command,
+                    cwd,
+                    networkAccess: networkAccessForCommand,
+                  }),
                 },
                 ctx,
               )

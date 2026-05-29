@@ -25,11 +25,17 @@ export type SecurityApprovalPolicy = typeof SecurityApprovalPolicy.Type
 
 export const SecurityExecutorBackend = Schema.Literals(["codex", "node-bun"])
 export type SecurityExecutorBackend = typeof SecurityExecutorBackend.Type
+export const SecurityNetworkPolicy = Schema.Literals(["off", "on", "ask"])
+export type SecurityNetworkPolicy = typeof SecurityNetworkPolicy.Type
+export const SecurityCommandPolicy = Schema.Literals(["ask", "workspace", "all", "read", "disabled"])
+export type SecurityCommandPolicy = typeof SecurityCommandPolicy.Type
 
 export const SecurityConfig = Schema.Struct({
   sessionID: Schema.String,
   permissionProfileID: SecurityPermissionProfileID,
   approvalPolicy: SecurityApprovalPolicy,
+  networkPolicy: SecurityNetworkPolicy,
+  commandPolicy: SecurityCommandPolicy,
   networkAccess: Schema.Boolean,
   executorBackend: SecurityExecutorBackend,
   environmentID: Schema.String,
@@ -44,6 +50,8 @@ export type SecurityConfig = typeof SecurityConfig.Type
 export const SecurityUpdatePayload = Schema.Struct({
   permissionProfileID: Schema.optional(SecurityPermissionProfileID),
   approvalPolicy: Schema.optional(SecurityApprovalPolicy),
+  networkPolicy: Schema.optional(SecurityNetworkPolicy),
+  commandPolicy: Schema.optional(SecurityCommandPolicy),
   networkAccess: Schema.optional(Schema.Boolean),
   executorBackend: Schema.optional(SecurityExecutorBackend),
   environmentID: Schema.optional(Schema.String),
@@ -55,6 +63,8 @@ export type SecurityUpdatePayload = typeof SecurityUpdatePayload.Type
 type StoredSecurityConfig = {
   permissionProfileID: SecurityConfig["permissionProfileID"]
   approvalPolicy: SecurityConfig["approvalPolicy"]
+  networkPolicy: SecurityConfig["networkPolicy"]
+  commandPolicy: SecurityConfig["commandPolicy"]
   networkAccess: boolean
   executorBackend: SecurityConfig["executorBackend"]
   environmentID: string
@@ -68,6 +78,8 @@ function defaultStored(): StoredSecurityConfig {
   return {
     permissionProfileID: ":workspace",
     approvalPolicy: "on-request",
+    networkPolicy: "ask",
+    commandPolicy: "ask",
     networkAccess: false,
     executorBackend: process.env.AIALRA_EXEC_BACKEND === "codex" ? "codex" : "node-bun",
     environmentID: "default",
@@ -138,6 +150,8 @@ function publicConfig(sessionID: string, cwd: string): SecurityConfig {
     sessionID,
     permissionProfileID: current.permissionProfileID,
     approvalPolicy: current.approvalPolicy,
+    networkPolicy: current.networkPolicy,
+    commandPolicy: current.commandPolicy,
     networkAccess: current.permissionProfileID === ":danger-full-access" ? true : current.networkAccess,
     executorBackend: current.executorBackend,
     environmentID: current.environmentID,
@@ -151,7 +165,7 @@ function publicConfig(sessionID: string, cwd: string): SecurityConfig {
 
 function emitChange(input: {
   sessionID: string
-  type: "sandbox.profile.changed" | "sandbox.network.changed" | "approval.policy.changed" | "executor.backend.changed" | "environment.selected"
+  type: "sandbox.profile.changed" | "sandbox.network.changed" | "sandbox.command.changed" | "approval.policy.changed" | "executor.backend.changed" | "environment.selected"
     | "turn.step_budget.changed"
   title: string
   from: unknown
@@ -225,7 +239,22 @@ export namespace SessionSecurity {
     const cwd = normalizeCwd(input.cwd)
     const previous = { ...stored(input.sessionID) }
     const next: StoredSecurityConfig = { ...previous, ...input.patch }
+    if ("networkAccess" in input.patch && !("networkPolicy" in input.patch)) {
+      next.networkPolicy = input.patch.networkAccess ? "on" : "off"
+    }
+    if ("permissionProfileID" in input.patch && !("commandPolicy" in input.patch) && previous.commandPolicy !== "ask") {
+      if (next.permissionProfileID === "disabled") next.commandPolicy = "disabled"
+      else if (next.permissionProfileID === ":read-only") next.commandPolicy = "read"
+      else if (next.permissionProfileID === ":danger-full-access") next.commandPolicy = "all"
+      else next.commandPolicy = "workspace"
+    }
     if (next.permissionProfileID === ":danger-full-access") next.networkAccess = true
+    if (next.networkPolicy === "on") next.networkAccess = true
+    if (next.networkPolicy === "off" || next.networkPolicy === "ask") next.networkAccess = false
+    if (next.commandPolicy === "disabled") next.permissionProfileID = "disabled"
+    if (next.commandPolicy === "read") next.permissionProfileID = ":read-only"
+    if (next.commandPolicy === "workspace") next.permissionProfileID = ":workspace"
+    if (next.commandPolicy === "all") next.permissionProfileID = ":danger-full-access"
     next.stepBudgetMaxSteps = normalizeStepBudgetMaxSteps(next.stepBudgetMaxSteps)
     configs.set(input.sessionID, next)
 
@@ -254,8 +283,27 @@ export namespace SessionSecurity {
         sessionID: input.sessionID,
         type: "sandbox.network.changed",
         title: "Sandbox network access changed",
-        from: previous.networkAccess ? "enabled" : "restricted",
-        to: next.networkAccess ? "enabled" : "restricted",
+        from: previous.networkPolicy,
+        to: next.networkPolicy,
+        cwd,
+      })
+    } else if (previous.networkPolicy !== next.networkPolicy) {
+      emitChange({
+        sessionID: input.sessionID,
+        type: "sandbox.network.changed",
+        title: "Sandbox network policy changed",
+        from: previous.networkPolicy,
+        to: next.networkPolicy,
+        cwd,
+      })
+    }
+    if (previous.commandPolicy !== next.commandPolicy) {
+      emitChange({
+        sessionID: input.sessionID,
+        type: "sandbox.command.changed",
+        title: "Sandbox command policy changed",
+        from: previous.commandPolicy,
+        to: next.commandPolicy,
         cwd,
       })
     }
@@ -322,6 +370,8 @@ export namespace SessionSecurity {
       }),
       activePermissionProfile: activePermissionProfile(config.permissionProfileID),
       environments: environments({ cwd: config.cwd, environmentID: config.environmentID }),
+      networkPolicy: config.networkPolicy,
+      commandPolicy: config.commandPolicy,
       stepBudget: {
         enabled: config.stepBudgetEnabled,
         max_steps: config.stepBudgetMaxSteps,
@@ -347,6 +397,8 @@ export namespace SessionSecurity {
       }),
       active_permission_profile: activePermissionProfile(config.permissionProfileID),
       environments: environments({ cwd: config.cwd, environmentID: config.environmentID }),
+      network_policy: config.networkPolicy,
+      command_policy: config.commandPolicy,
       step_budget: {
         enabled: config.stepBudgetEnabled,
         max_steps: config.stepBudgetMaxSteps,

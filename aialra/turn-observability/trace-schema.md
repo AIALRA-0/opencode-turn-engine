@@ -65,7 +65,7 @@ events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `tool.sandbox.denied`, `approval.requested`, `approval.resolved`, and
 `final.output`. Security-control events are also public now:
 `sandbox.profile.changed`, `sandbox.network.changed`,
-`sandbox.policy.changed`, `sandbox.control.changed`, `approval.policy.changed`,
+`sandbox.command.changed`, `sandbox.policy.changed`, `sandbox.control.changed`, `approval.policy.changed`,
 `executor.backend.changed`, `environment.selected`,
 `turn.step_budget.changed`, `security.override.requested`, and
 `security.override.resolved`. The public
@@ -125,6 +125,7 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `exec_server.fallback`
 - `sandbox.profile.changed`
 - `sandbox.network.changed`
+- `sandbox.command.changed`
 - `sandbox.policy.changed`
 - `sandbox.control.changed`
 - `approval.policy.changed`

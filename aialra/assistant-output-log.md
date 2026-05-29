@@ -752,3 +752,29 @@ Kimi 调查已写入 `aialra/turn-observability/kimi-performance-investigation-2
 第一次重跑 A/B 时发现 runner 自己有真实缺陷：`codex exec` 的底层子进程可能在 SIGTERM 后继续存活，导致整个 A/B 卡在第 10 个 CLI override 场景。已修复 `runCommand`，子进程现在用独立进程组启动，超时先 SIGTERM，5 秒后 SIGKILL，报告会记录 `timedOut`，不会把 A/B runner 卡死。
 
 修复后完整跑完 15 场三方 A/B，报告为 `aialra/turn-observability/ab-reports/ab-comparison-20260529211021.md`。总分：AIALRA OpenCode fork 301，原版 Codex CLI 292，debug1 原版 OpenCode 289。AIALRA 13/15 成功、8 个 SWE-style 测试通过、0 卡死/超时、0 越界写入、15/15 turn 终态、15/15 可解释。真实未完成也很明确：AIALRA 在自然语言沙箱场景和网络场景仍停在审批等待，说明 approval reviewer 和网络审批产品语义还没有完全收口，不能说已经达到 Codex 完整体。
+
+## 2026-05-30 实现记录：默认审批策略、V2 顶栏按钮和沙盒控制中心样式
+
+用户反馈新版页面最上方工具栏按钮变少、左侧项目框入口消失、沙盒控制中心视觉过灰、默认权限策略不符合预期，并要求解释为什么自然语言沙箱和网络任务会停在审批等待
+
+本轮先定位 UI 根因，官方 upstream 的新布局分支 `newLayoutDesigns` 会走 V2 titlebar，AIALRA 之前新增的文件树、Turn Inspector、Sandbox Control Center 按钮只挂在旧布局 fallback 分支里，所以打开新版布局后会看起来“按钮没了”，这不是左侧项目框被删除，而是新版顶栏没有暴露对应开关，现在 V2 顶栏也补回左侧项目栏开关、终端、文件树、回合检查器和沙盒控制中心按钮
+
+沙盒控制中心 UI 已从多层灰色卡片改成更接近 OpenCode 侧栏的分隔区块，外层仍跟文件树和 Turn Inspector 一样使用右侧面板背景，内部减少大面积灰色块，select 和输入框保持紧凑，标题下面仍不重复显示当前目录，目录只在“文件访问范围”里显示
+
+默认安全策略已按用户要求调整为：工作区可写、需要时询问、网络每次询问、命令每次询问、步骤上限关闭、优先 Codex 执行服务，后端新增 `networkPolicy` 和 `commandPolicy`，不再只是用 `networkAccess` 一个布尔值假装表达所有状态
+
+“命令每次询问”现在是真后端行为，`commandPolicy=ask` 时，bash 工具在执行任何命令前都会发 bash 审批，即使是 `pwd` 这种普通命令也会先问，已有测试证明 `pwd` 会产生 `reason=command_policy` 的审批请求
+
+“网络每次询问”也开始变成真实行为，bash 工具会识别常见网络命令，例如 `curl`、`wget`、`ping`、`npm install`、`git clone`、`pip install` 等，`networkPolicy=ask` 时，这类命令会先发 `network` 审批，用户批准后，只给这一次命令打开网络，不永久修改整个 session 网络开关，已有测试证明 `curl --version || true` 会产生 `reason=network_policy` 的审批请求
+
+这也解释了为什么上一份 A/B 报告里自然语言沙箱任务和网络任务会停在审批等待：AIALRA 的安全门禁已经能挡住危险操作，但默认策略偏“人工监督”，模型遇到外部写入、网络命令或不确定命令时会选择问用户，非交互 A/B 没有人点审批，所以脚本记录为等待审批，安全没有破口，但产品语义还要继续收口：在 benchmark 场景里应显式设置自动拒绝或预审批策略，在真实产品里应让用户清楚看到“这是需要你批准的动作”
+
+审批审计也修了一处真实问题，`Permission.ask` 之前收到 turnID、approval policy、permission profile、sandbox policy 后，在写入 bus payload 时没有保留这些字段，现在 approval 请求进入公共事件流时会保留这些上下文，Turn Inspector 能更准确地把审批挂到对应回合和工具调用下
+
+验证结果：`bun --cwd packages/opencode test test/tool/shell.test.ts test/tool/turn-sandbox.test.ts test/server/httpapi-public-event.test.ts --timeout 30000` 46 pass；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过，触碰的 UI/后端文件已扫描中文句号，没有新增中文句号字符
+
+追加验证和部署：`node --test aialra/turn-observability/tests/*.test.js` 通过；`AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 28 pass；`bun --cwd packages/app build` 通过；`bun --cwd packages/opencode build --single` 通过；`./aialra/opencode-deployment/scripts/build-opencode.sh` 部署版本 `0.0.0-dev-202605292231`；`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active；`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass；本地认证 API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp`、`/session/:id/message`、`/session/:id/security` 均为 200；`git diff --check` 通过；增量密钥扫描没有命中
+
+浏览器验收诚实记录：本机 `playwright_cli.sh` 缺少执行位，改用 `bash playwright_cli.sh` 后 `npx playwright-cli` 长时间无输出，已清理卡住进程，所以本轮没有把浏览器点击验收说成通过，UI 层以源码修复、构建通过、线上部署和用户刷新实测为准，后续应补稳定浏览器 runner
+
+三方 A/B 诚实记录：本轮没有完整重跑 15 场三方 A/B，因为新默认策略是命令每次询问、网络每次询问，非交互 runner 遇到 bash 或网络会按设计停在审批等待，下一步必须先给 A/B harness 加安全策略档案，区分真实用户默认安全模式和无人工 benchmark 模式

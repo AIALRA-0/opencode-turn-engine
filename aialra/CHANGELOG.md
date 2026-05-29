@@ -1,5 +1,37 @@
 # AIALRA changelog
 
+## 2026-05-30
+
+- Restored AIALRA session toolbar buttons in the upstream V2 titlebar branch.
+  The left project/sidebar toggle, terminal, file tree, Turn Inspector, and
+  Sandbox Control Center controls are now present in the new layout path as
+  well as the old layout path.
+- Polished Sandbox Control Center styling to match the surrounding OpenCode
+  side panels more closely. The panel now uses divider sections instead of
+  stacked gray cards, keeps controls compact, and still avoids Chinese full
+  stops in touched UI strings.
+- Added explicit session security policies for `networkPolicy` and
+  `commandPolicy`. The default is now workspace-write, approval on request,
+  network ask, command ask, Codex executor, and step budget disabled.
+- Made the default command/network policies real backend behavior. Bash now
+  asks for command approval when `commandPolicy=ask`, detects common network
+  commands such as curl/npm/git clone, asks for `network` approval when
+  `networkPolicy=ask`, and only opens the bwrap network namespace for that
+  approved command.
+- Fixed approval audit payload loss in `Permission.ask`. Approval requests now
+  preserve turnID, approval policy, permission profile, sandbox policy, and
+  tool call metadata when they enter the bus and public event stream.
+- Added public event support for `sandbox.command.changed` and Chinese Turn
+  Inspector summaries for command policy changes.
+- Added tests proving the new defaults are not UI-only: shell command policy
+  asks before a normal command, network policy asks before a network command,
+  Sandbox Control Center changes emit audit events, and prompt/schema still
+  passes 90 tests.
+- Deployed `0.0.0-dev-202605292231`. Web, login, and Codex exec-server
+  services are active; e2e smoke passed; API smoke returned 200 for config,
+  question, project/current, command, session/status, provider, lsp,
+  session message, and session security.
+
 ## 2026-05-29
 
 - Synced the fork with the latest upstream OpenCode `dev` branch. The merge

@@ -270,7 +270,8 @@ export const assertShellAccess = Effect.fn("TurnSandbox.assertShellAccess")(func
   }
 })
 
-function networkAllowed(turn: TurnContext) {
+function networkAllowed(turn: TurnContext, override?: boolean) {
+  if (override === true) return true
   if (turn.permission_profile.type === "disabled") return true
   if (turn.permission_profile.type === "external") return turn.permission_profile.network === "enabled"
   if (turn.permission_profile.network === "enabled") return true
@@ -355,7 +356,7 @@ function writableRoots(turn: TurnContext) {
 
 export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(function* (
   ctx: Tool.Context,
-  input: { shell: string; command: string; cwd: string },
+  input: { shell: string; command: string; cwd: string; networkAccess?: boolean },
 ) {
   const turn = ctx.turn ? effectiveTurn(ctx.turn) : undefined
   if (!turn) return undefined
@@ -421,7 +422,8 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
     "/dev",
   ]
   if (capability.bwrap.mountProcProbe.available) args.push("--proc", "/proc")
-  const networkIsolated = !networkAllowed(turn) && capability.bwrap.networkNamespaceProbe.available
+  const networkEnabled = networkAllowed(turn, input.networkAccess)
+  const networkIsolated = !networkEnabled && capability.bwrap.networkNamespaceProbe.available
   if (networkIsolated) args.splice(3, 0, "--unshare-net")
 
   for (const root of writableRoots(turn)) {
@@ -444,7 +446,7 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
       operation: "shell",
       target: input.cwd,
       sandbox: "bwrap",
-      network: networkAllowed(turn) ? "enabled" : networkIsolated ? "restricted" : "restricted-unenforced",
+      network: networkEnabled ? "enabled" : networkIsolated ? "restricted" : "restricted-unenforced",
       networkNamespaceAvailable: capability.bwrap.networkNamespaceProbe.available,
       writableRoots: writableRoots(turn),
       protectedMetadataMounts: protectedMounts.map((mount) => ({

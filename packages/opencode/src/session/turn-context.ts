@@ -96,6 +96,8 @@ export type UserTurn = {
   }
   personality?: string
   environments: TurnEnvironment[]
+  network_policy?: "off" | "on" | "ask"
+  command_policy?: "ask" | "workspace" | "all" | "read" | "disabled"
   step_budget?: {
     enabled: boolean
     max_steps?: number
@@ -222,6 +224,8 @@ export namespace CodexTurn {
     collaborationMode?: UserTurn["collaboration_mode"]
     personality?: string
     environments?: TurnEnvironment[]
+    networkPolicy?: UserTurn["network_policy"]
+    commandPolicy?: UserTurn["command_policy"]
     stepBudget?: UserTurn["step_budget"]
   }): TurnContext {
     const permissionProfile = input.permissionProfile ?? workspacePermissionProfile(input.cwd)
@@ -240,6 +244,8 @@ export namespace CodexTurn {
       collaboration_mode: input.collaborationMode ?? { kind: "default" },
       personality: input.personality,
       environments: input.environments?.length ? input.environments : [{ environmentID: "default", cwd: input.cwd }],
+      network_policy: input.networkPolicy,
+      command_policy: input.commandPolicy,
       step_budget: input.stepBudget,
       route: input.frame.route,
       sessionID: input.frame.sessionID,
@@ -297,6 +303,8 @@ export namespace CodexTurn {
       model: turn.model,
       collaboration_mode: turn.collaboration_mode,
       environments: turn.environments,
+      network_policy: turn.network_policy,
+      command_policy: turn.command_policy,
       step_budget: turn.step_budget,
       retry: turn.retry,
       items: {
