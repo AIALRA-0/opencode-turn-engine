@@ -21,6 +21,8 @@ const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
+class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
+
 // `offset` and `limit` were originally `z.coerce.number()` — the runtime
 // coercion was useful when the tool was called from a shell but serves no
 // purpose in the LLM tool-call path (the model emits typed JSON). The JSON

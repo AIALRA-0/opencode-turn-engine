@@ -351,7 +351,7 @@ export const ShellTool = Tool.define(
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
     const flags = yield* RuntimeFlags.Service
-    const defaultTimeout = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
+    const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
 
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
       const lines = yield* spawner
@@ -666,7 +666,7 @@ export const ShellTool = Tool.define(
         const shell = Shell.acceptable(cfg.shell)
         const name = Shell.name(shell)
         const limits = yield* trunc.limits()
-        const prompt = ShellPrompt.render(name, process.platform, limits)
+        const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
         log.info("shell tool using shell", { shell })
 
         return {
@@ -674,23 +674,23 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
-              const executeInstance = yield* InstanceState.context
+              const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
-                ? yield* resolvePath(params.workdir, ctx.turn?.cwd ?? executeInstance.directory, shell)
-                : (ctx.turn?.cwd ?? executeInstance.directory)
+                ? yield* resolvePath(params.workdir, ctx.turn?.cwd ?? instanceCtx.directory, shell)
+                : (ctx.turn?.cwd ?? instanceCtx.directory)
               yield* TurnSandbox.assertShellAccess(ctx, { cwd, command: params.command })
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? defaultTimeout
+              const timeout = params.timeout ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
                   const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
                     Effect.sync(() => tree.delete()),
                   )
-                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, executeInstance)
-                  if (!containsPath(cwd, executeInstance)) scan.dirs.add(cwd)
+                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
+                  if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
                   yield* ask(ctx, scan)
                 }),
               )
