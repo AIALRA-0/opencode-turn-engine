@@ -163,14 +163,19 @@ describe("public event HttpApi", () => {
         approvalPolicy: "never",
         networkAccess: false,
         executorBackend: "node-bun",
+        stepBudgetEnabled: true,
+        stepBudgetMaxSteps: 120,
       },
     })
 
     expect(next.permissionProfileID).toBe(":read-only")
+    expect(next.stepBudgetEnabled).toBe(true)
+    expect(next.stepBudgetMaxSteps).toBe(120)
     expect(PublicEventLog.list({ sessionID: "ses_security" })).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "sandbox.profile.changed", status: "changed" }),
         expect.objectContaining({ type: "approval.policy.changed", status: "changed" }),
+        expect.objectContaining({ type: "turn.step_budget.changed", status: "changed" }),
       ]),
     )
   })

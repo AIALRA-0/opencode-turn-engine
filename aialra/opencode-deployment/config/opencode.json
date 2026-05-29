@@ -45,6 +45,8 @@
       "options": {
         "baseURL": "https://api.kimi.com/coding/v1",
         "apiKey": "{env:OPENCODE_KIMI_API_KEY}",
+        "timeout": 600000,
+        "chunkTimeout": 60000,
         "headers": {
           "anthropic-version": "2023-06-01"
         }

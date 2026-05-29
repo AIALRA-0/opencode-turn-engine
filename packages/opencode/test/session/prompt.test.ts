@@ -49,6 +49,7 @@ import * as Database from "../../src/storage/db"
 import { Ripgrep } from "../../src/file/ripgrep"
 import { Format } from "../../src/format"
 import { Reference } from "../../src/reference/reference"
+import { RepositoryCache } from "../../src/reference/repository-cache"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { httpError, reply, TestLLMServer } from "../lib/llm-server"
@@ -245,6 +246,7 @@ function makeHttp(input?: { processor?: "blocking" }) {
     lsp,
     mcp,
     AppFileSystem.defaultLayer,
+    RepositoryCache.defaultLayer,
     BackgroundJob.defaultLayer,
     status,
     SyncEvent.defaultLayer,
@@ -300,8 +302,8 @@ function makeHttp(input?: { processor?: "blocking" }) {
   ).pipe(Layer.provide(summary))
 }
 
-const it = testEffect(makeHttp())
-const race = testEffect(makeHttp({ processor: "blocking" }))
+const it = testEffect(makeHttp() as any)
+const race = testEffect(makeHttp({ processor: "blocking" }) as any)
 const unix = process.platform !== "win32" ? it.instance : it.instance.skip
 
 // Config that registers a custom "test" provider with a "test-model" model

@@ -720,3 +720,35 @@ A/B harness 已升级为分层评测。`aialra/turn-observability/scripts/run-ab
 补充修复了一个真实 Linux 容器坑：工具测试暴露出当前环境里 `/usr/bin/bwrap` 存在，但 user namespace 会报 `setting up uid map: Permission denied`，network namespace 会报 `loopback: Failed RTM_NEWADDR: Operation not permitted`。之前只按“bwrap 存在”判断，会错误添加 `--unshare-net` 或直接启动不可用的 bwrap，导致普通 bash 也失败。现在 `linux-sandbox-capability.ts` 单独探测 user namespace 和 network namespace；network namespace 不可用时不再让普通 bash 全挂，而是在事件里记录网络沙箱降级为 `restricted-unenforced`。这不是完整网络隔离，硬隔离仍需要 Codex helper / seccomp / namespace 能力真的可用。
 
 本轮验证：`node --check aialra/turn-observability/scripts/run-ab-comparison.mjs` 通过；`AIALRA_AB_CASE_LIMIT=0 AIALRA_AB_REPORT_DIR=/tmp/aialra-ab-check node aialra/turn-observability/scripts/run-ab-comparison.mjs` 通过，说明脚本能初始化并写报告；`bun --cwd packages/app typecheck` 通过；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 通过，24 pass、3 skip；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 通过，90 pass；`bun --cwd packages/app build` 通过；`bun --cwd packages/opencode build --single` 通过，Linux x64 smoke 版本 `0.0.0-dev-202605192152`。尚未把完整三方 SWE-style A/B 全跑完和部署上线，不能把这一部分说成线上完成。
+
+## 2026-05-29 实现记录：upstream 同步、502 收口、步骤预算可选、审批按钮重做
+
+用户反馈线上页面仍会短暂出现 Cloudflare 502 HTML 大页，弱模型 80 step 默认硬停误伤长任务，审批按钮含义不清，沙盒控制中心切换体感不明显，A/B 报告缺少打分和完整 prompt，并要求同步 OpenCode 官方最新版本。
+
+本轮先同步官方 upstream。已 fetch `anomalyco/opencode` 的最新 `dev`，并合并到本地 `dev`，最新官方提交包含 ACP 正式化和 stats 修复。冲突风险文件没有盲目覆盖 AIALRA turn harness，而是保留 TurnContext、exec-server、Sandbox Control Center、public event 和工具门禁语义。
+
+502 收口做了两层。login proxy 现在遇到上游 socket reset、连接失败或超时，会对 GET/HEAD/OPTIONS 重试一次，最终失败时返回短 JSON 或短文本 503，并加 `x-aialra-proxy-error=upstream_unavailable`，不再把大段 HTML 错误页直接给前端。SDK error interceptor 也会识别 HTML 错误页，把它压成一行“OpenCode 服务暂时不可用”的错误，同时只在 cause 里保留短截断内容。
+
+步骤预算已从默认 80 改成默认关闭。现在默认无限执行，除非 agent 自己设置了 `steps`、环境变量 `AIALRA_TURN_MAX_STEPS` 显式设置，或者用户在沙盒控制中心开启“限制模型工具循环”。沙盒控制中心新增最大工具步数输入框，修改会写入 `turn.step_budget.changed`，下一次工具门禁会读取最新 TurnContext。
+
+审批 UI 已改成六个短按钮：拒绝、仅本次、本轮本命令、本轮全部、始终本命令、始终全部。完整含义放在 tooltip 里。当前 turn 的“本轮本命令”和“本轮全部”由前端记忆并自动回复后续同 turn 审批，不会改写文件沙箱或网络沙箱。“始终全部”仍只是自动处理审批，不等于绕过 Sandbox Control Center。
+
+Sandbox Control Center 文案和交互已清理。标题下面不再重复显示当前目录，因为文件访问范围里已有 cwd。没有交互的审计和高级详情模块已移除。原来的“本轮覆盖”改成“生效范围与步骤上限”，明确降低权限会影响正在运行回合的下一次工具门禁，提高权限会进入审计并影响后续工具门禁，已经发出去的模型请求不会被中途改写。`disabled` 改成“关闭内置门禁”，避免用户误以为是“禁用工具”。
+
+Turn Inspector 历史回合现在直接折叠，不再显示“已折叠历史回合日志”提示框。新增 `turn.step_budget.changed` 中文标题和摘要。
+
+A/B 报告脚本增加评分规则、单场分数、总分和完整提示词代码块。后续每份报告不仅说是否完成，还会写清楚 prompt、评分、耗时、工具调用数、turn 终态、是否等待审批、是否越界写入和谁最好。
+
+Kimi 调查已写入 `aialra/turn-observability/kimi-performance-investigation-2026-05-29.md`。当前能确认的是 Kimi 走 Anthropic 兼容路径，DeepSeek 走 OpenAI compatible 路径，并且 Kimi 部署配置之前缺少显式 `timeout/chunkTimeout`。本轮已给 Kimi provider 补上 `timeout=600000` 和 `chunkTimeout=60000`。这不是加速器，但能避免慢流更像无限卡死。真正速度差异需要下一步记录 first-token time、stream duration、retry count 和 context size。
+
+快速验证已完成：`node --test aialra/opencode-deployment/tests/login-proxy.test.js` 6 pass；`bun --cwd packages/app typecheck` 通过；`bun --cwd packages/opencode test test/server/httpapi-public-event.test.ts test/tool/turn-sandbox.test.ts --timeout 30000` 21 pass。后续还需要跑完整 prompt/schema、exec-server live、build、A/B、部署 smoke、密钥扫描、commit 和 push。
+
+## 2026-05-29 追加实现记录：完整测试、A/B 硬超时、15 场对比报告
+
+本轮把上游合并后的类型错位和测试卡点收掉。具体修复包括：OpenAI Responses 协议的 tool-result content 类型收窄、LLM 流事件从旧 `finish-step/start/finishReason` 对齐到新 `step-finish/step-start/reason`、prompt test 补 RepositoryCache layer、权限规则数组从 readonly 克隆成可写数组、默认模型 lookup 的错误改成内部 defect 收口，避免污染 prompt 公共错误类型。
+
+完整验证已跑完：`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`node --test aialra/turn-observability/tests/*.test.js` 1 pass；`AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 28 pass；`bun --cwd packages/opencode test test/server/httpapi-public-event.test.ts --timeout 30000` 4 pass；`node --test aialra/opencode-deployment/tests/login-proxy.test.js` 6 pass；`bun --cwd packages/opencode typecheck`、`bun --cwd packages/app typecheck`、`bun --cwd packages/app build`、`bun --cwd packages/opencode build --single` 均通过，线上构建版本为 `0.0.0-dev-202605292138`。
+
+第一次重跑 A/B 时发现 runner 自己有真实缺陷：`codex exec` 的底层子进程可能在 SIGTERM 后继续存活，导致整个 A/B 卡在第 10 个 CLI override 场景。已修复 `runCommand`，子进程现在用独立进程组启动，超时先 SIGTERM，5 秒后 SIGKILL，报告会记录 `timedOut`，不会把 A/B runner 卡死。
+
+修复后完整跑完 15 场三方 A/B，报告为 `aialra/turn-observability/ab-reports/ab-comparison-20260529211021.md`。总分：AIALRA OpenCode fork 301，原版 Codex CLI 292，debug1 原版 OpenCode 289。AIALRA 13/15 成功、8 个 SWE-style 测试通过、0 卡死/超时、0 越界写入、15/15 turn 终态、15/15 可解释。真实未完成也很明确：AIALRA 在自然语言沙箱场景和网络场景仍停在审批等待，说明 approval reviewer 和网络审批产品语义还没有完全收口，不能说已经达到 Codex 完整体。

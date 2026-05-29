@@ -22,6 +22,13 @@ export const todoState = (input: {
 }
 
 const idle = { type: "idle" as const }
+export type PermissionDecision =
+  | "reject"
+  | "once-command"
+  | "turn-command"
+  | "turn-all"
+  | "always-command"
+  | "always-all"
 
 export function createSessionComposerState(options?: { closeMs?: number | (() => number) }) {
   const params = useParams()
@@ -72,12 +79,17 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     return store.responding === perm.id
   })
 
-  const decide = (response: "once" | "always" | "reject") => {
+  const decide = (decision: PermissionDecision) => {
     const perm = permissionRequest()
     if (!perm) return
     if (store.responding === perm.id) return
 
     setStore("responding", perm.id)
+    if (decision === "turn-command") permission.enableTurnCommand(perm)
+    if (decision === "turn-all") permission.enableTurnAll(perm)
+    if (decision === "always-all") permission.enableAutoAccept(perm.sessionID, sdk.directory)
+    const response: "once" | "always" | "reject" =
+      decision === "reject" ? "reject" : decision === "always-command" ? "always" : ("once" as const)
     sdk.client.permission
       .respond({ sessionID: perm.sessionID, permissionID: perm.id, response })
       .catch((err: unknown) => {

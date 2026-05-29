@@ -24,6 +24,8 @@ const PUBLIC_UI_PATHS = new Set([
   "/apple-touch-icon-v3.png",
 ]);
 
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 function requiredEnv(name) {
   const value = process.env[name];
   if (!value) {
@@ -125,6 +127,37 @@ function clearCookieHeader() {
 function wantsHtml(req) {
   const accept = req.headers.accept || "";
   return req.method === "GET" && (accept.includes("text/html") || accept.includes("*/*"));
+}
+
+function safeEnd(res, body) {
+  if (res.destroyed || res.writableEnded) return;
+  res.end(body);
+}
+
+function proxyFailureBody(req, error) {
+  const payload = {
+    error: "upstream_unavailable",
+    message: "OpenCode upstream is temporarily unavailable",
+    method: req.method,
+    path: req.url,
+    detail: error?.code || error?.message || "unknown",
+  };
+  const accept = String(req.headers.accept || "");
+  if (accept.includes("application/json") || !wantsHtml(req)) return JSON.stringify(payload);
+  return `OpenCode upstream unavailable: ${payload.detail}`;
+}
+
+function sendProxyFailure(req, res, error, status = 503) {
+  const body = proxyFailureBody(req, error);
+  const isJSON = body.startsWith("{");
+  if (res.headersSent || res.destroyed || res.writableEnded) return;
+  res.writeHead(status, {
+    "content-type": isJSON ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "x-aialra-proxy-error": "upstream_unavailable",
+  });
+  safeEnd(res, body);
 }
 
 function loginPage({ error = "", next = "/" } = {}) {
@@ -233,7 +266,7 @@ function loginPage({ error = "", next = "/" } = {}) {
 <body>
   <main>
     <h1>OpenCode</h1>
-    <p>登录后进入 Web 工作台.</p>
+    <p>登录后进入 Web 工作台</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <form method="post" action="/login">
       <input type="hidden" name="next" value="${escapeHtml(next)}" />
@@ -410,7 +443,7 @@ function openCodeBootstrapScript() {
       '<div class="flex flex-wrap items-center gap-4 py-3 border-b border-border-weak-base last:border-none sm:flex-nowrap">' +
       '<div class="flex min-w-0 flex-1 flex-col gap-0.5">' +
       '<span class="text-14-medium text-text-strong">登录状态</span>' +
-      '<span class="text-12-regular text-text-weak">退出后会回到 OpenCode 登录页面。</span>' +
+      '<span class="text-12-regular text-text-weak">退出后会回到 OpenCode 登录页面</span>' +
       '</div>' +
       '<div class="flex w-full justify-end sm:w-auto sm:shrink-0">' +
       '<button type="button" class="aialra-logout-button" data-component="button" data-size="large" data-variant="ghost" data-aialra-action="logout">退出登录</button>' +
@@ -533,7 +566,7 @@ async function handleLogin(req, res, config) {
     timingSafeEqualString(password, config.password);
 
   if (!valid) {
-    sendLogin(res, { error: "用户名或密码不正确.", next }, 401);
+    sendLogin(res, { error: "用户名或密码不正确", next }, 401);
     return;
   }
 
@@ -543,7 +576,7 @@ async function handleLogin(req, res, config) {
   });
 }
 
-function proxyRequest(req, res, config) {
+function proxyRequest(req, res, config, attempt = 0) {
   const headers = { ...req.headers };
   headers.host = `${config.upstreamHost}:${config.upstreamPort}`;
   headers.authorization = config.upstreamAuthorization;
@@ -578,7 +611,7 @@ function proxyRequest(req, res, config) {
       upstreamRes.on("data", (chunk) => {
         size += chunk.length;
         if (size > MAX_HTML_BYTES) {
-          upstream.destroy(new Error("HTML response too large"));
+          upstream.destroy(Object.assign(new Error("HTML response too large"), { code: "EHTMLSIZE" }));
           return;
         }
         chunks.push(chunk);
@@ -599,15 +632,25 @@ function proxyRequest(req, res, config) {
   );
 
   upstream.on("error", (error) => {
-    const body = `OpenCode upstream unavailable: ${error.message}`;
-    res.writeHead(502, {
-      "content-type": "text/plain; charset=utf-8",
-      "content-length": Buffer.byteLength(body),
-    });
-    res.end(body);
+    if (!res.headersSent && attempt === 0 && IDEMPOTENT_METHODS.has(req.method || "")) {
+      setTimeout(() => proxyRequest(req, res, config, attempt + 1), 80);
+      return;
+    }
+    sendProxyFailure(req, res, error);
   });
 
-  req.pipe(upstream);
+  req.on("error", (error) => upstream.destroy(error));
+  res.on("error", () => upstream.destroy());
+  res.on("close", () => {
+    if (!res.writableEnded) upstream.destroy();
+  });
+
+  upstream.setTimeout(65_000, () => {
+    upstream.destroy(Object.assign(new Error("upstream request timed out"), { code: "ETIMEDOUT" }));
+  });
+
+  if (IDEMPOTENT_METHODS.has(req.method || "")) upstream.end();
+  else req.pipe(upstream);
 }
 
 function proxyUpgrade(req, socket, head, config) {

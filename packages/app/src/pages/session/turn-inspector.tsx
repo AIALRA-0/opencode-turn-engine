@@ -62,6 +62,7 @@ const typeLabels: Record<string, string> = {
   "turn.context.created": "创建回合上下文",
   "turn.started": "回合开始",
   "turn.warning": "回合警告",
+  "turn.step_budget.changed": "步骤上限已切换",
   "turn.completed": "回合完成",
   "turn.aborted": "回合中断",
   "model.request.started": "开始请求模型",
@@ -202,7 +203,9 @@ function localizedSummary(event: PublicEvent) {
     case "turn.started":
       return `本轮开始执行${cwd ? `，目录：${cwd}` : ""}`
     case "turn.warning":
-      return event.status === "budget_limited" ? "本轮达到步骤预算，已停止继续循环" : "本轮出现需要关注的执行模式"
+      return event.status === "budget_limited" ? "本轮达到工具步骤上限，已停止继续循环" : "本轮出现需要关注的执行模式"
+    case "turn.step_budget.changed":
+      return `工具步骤上限已变更${from || to ? `：${from ?? "未知"} -> ${to ?? "未知"}` : ""}`
     case "turn.completed":
       return `本轮正常收尾${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
     case "turn.aborted":
@@ -224,7 +227,7 @@ function localizedSummary(event: PublicEvent) {
         ? `Codex exec-server 文件操作已收尾：${method}${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
         : "Codex exec-server 进程已收尾"
     case "executor.fallback":
-      return "Codex exec-server 不可用，已回退到当前 Node/Bun 执行器"
+      return "Codex 执行服务不可用，已回退到当前 Node/Bun 旧执行器"
     case "tool.call.started":
       return `工具开始执行${tool ? `：${tool}` : ""}`
     case "tool.call.finished":
@@ -483,7 +486,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
     } catch (error) {
       const message =
         error instanceof DOMException && error.name === "AbortError"
-          ? "原始内容加载超时，请稍后重试。"
+          ? "原始内容加载超时，请稍后重试"
           : error instanceof Error
             ? error.message
             : String(error)
@@ -553,7 +556,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
               when={events().length > 0}
               fallback={
                 <div class="h-40 flex items-center justify-center text-center text-12-regular text-text-weak">
-                  这个会话还没有公共事件。
+                  这个会话还没有公共事件
                 </div>
               }
             >
@@ -578,15 +581,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
                       </div>
                       <Show
                         when={!isCollapsed(section)}
-                        fallback={
-                          <button
-                            type="button"
-                            class="rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2 text-left text-11-regular text-text-weak hover:text-text-base"
-                            onClick={() => toggleSection(section)}
-                          >
-                            已折叠历史回合日志。点击展开查看 {section.events.length} 条事件。
-                          </button>
-                        }
+                        fallback={<></>}
                       >
                         <For each={section.events}>
                           {(event) => {

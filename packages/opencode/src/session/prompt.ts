@@ -67,6 +67,7 @@ import { AialraTurnTrace } from "./turn-trace"
 import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
 import { CodexTurn, type TurnAbortReason, type TurnContext } from "./turn-context"
 import { SessionSecurity } from "./security"
+import type { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -89,13 +90,20 @@ const elog = EffectLogger.create({ service: "session.prompt" })
 const DEFAULT_AIALRA_TURN_MAX_STEPS = 80
 const REPEATED_TOOL_WARNING_THRESHOLD = 3
 
-function turnMaxSteps(agentSteps: number | undefined) {
+function normalizeTurnStepBudget(value: unknown, fallback = DEFAULT_AIALRA_TURN_MAX_STEPS) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback
+  return Math.max(1, Math.min(10_000, Math.trunc(value)))
+}
+
+function turnMaxSteps(agentSteps: number | undefined, turn?: TurnContext) {
   if (agentSteps !== undefined) return agentSteps
+  if (turn?.step_budget?.enabled) return normalizeTurnStepBudget(turn.step_budget.max_steps)
   const raw = process.env.AIALRA_TURN_MAX_STEPS
   if (raw === "0" || raw === "false") return Infinity
-  const parsed = raw === undefined ? DEFAULT_AIALRA_TURN_MAX_STEPS : Number(raw)
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_AIALRA_TURN_MAX_STEPS
-  return Math.max(1, Math.min(1_000, Math.trunc(parsed)))
+  if (raw === undefined || raw === "") return Infinity
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return Infinity
+  return Math.max(1, Math.min(10_000, Math.trunc(parsed)))
 }
 
 function toolLoopSignature(part: MessageV2.Part) {
@@ -278,7 +286,6 @@ export const layer = Layer.effect(
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
         prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
-        loop: (input: LoopInput) => loop(input),
       } satisfies TaskPromptOps
     })
 
@@ -463,7 +470,7 @@ export const layer = Layer.effect(
           messages: [{ role: "user", content: "Generate a title for this conversation:\n" }, ...msgs],
         })
         .pipe(
-          Stream.filter((e): e is Extract<LLM.Event, { type: "text-delta" }> => e.type === "text-delta"),
+          Stream.filter((e): e is Extract<LLMEvent, { type: "text-delta" }> => e.type === "text-delta"),
           Stream.map((e) => e.text),
           Stream.mkString,
           Effect.orDie,
@@ -1192,7 +1199,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         .findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
         .pipe(Effect.orDie)
       if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
-      return yield* provider.defaultModel()
+      return yield* provider.defaultModel().pipe(Effect.orDie)
     })
 
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
@@ -1887,6 +1894,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         permissionProfile: security.permissionProfile,
         activePermissionProfile: security.activePermissionProfile,
         environments: security.environments,
+        stepBudget: security.stepBudget,
       })
       if (message.info.format?.type === "json_schema") {
         turn.final_output_json_schema = message.info.format.schema
@@ -1917,7 +1925,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         },
       })
 
-      const permissions: Permission.Ruleset = []
+      const permissions: Permission.Rule[] = []
       for (const [t, enabled] of Object.entries(normalizedInput.tools ?? {})) {
         permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
       }
@@ -2175,7 +2183,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
-          const maxSteps = turnMaxSteps(agent.steps)
+          const activeTurnForStep = turn?.turnID === lastUser.id ? SessionSecurity.applyToTurn(turn) : undefined
+          if (activeTurnForStep) activeTurns.set(activeTurnForStep.sessionID, activeTurnForStep)
+          const maxSteps = turnMaxSteps(agent.steps, activeTurnForStep)
           if (step > maxSteps) {
             const msg: MessageV2.Assistant = {
               id: MessageID.ascending(),
@@ -2209,7 +2219,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 agent: agent.name,
               },
             })
-            if (turn?.turnID === lastUser.id) yield* emitTurnAborted(turn, "budget_limited")
+            if (activeTurnForStep) yield* emitTurnAborted(activeTurnForStep, "budget_limited")
             yield* status.set(sessionID, { type: "idle" })
             return { info: msg, parts: [] }
           }
@@ -2371,7 +2381,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               },
             })
             const activeProvider = yield* provider.getProvider(model.providerID)
-            const activeTurn = turn?.turnID === lastUser.id ? turn : undefined
+            const activeTurn = activeTurnForStep
             const result = yield* handle.process({
               user: lastUser,
               agent,

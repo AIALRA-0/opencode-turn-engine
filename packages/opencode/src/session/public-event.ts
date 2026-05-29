@@ -10,6 +10,7 @@ export type PublicEventType =
   | "turn.context.created"
   | "turn.started"
   | "turn.warning"
+  | "turn.step_budget.changed"
   | "turn.completed"
   | "turn.aborted"
   | "model.request.started"

@@ -96,6 +96,10 @@ export type UserTurn = {
   }
   personality?: string
   environments: TurnEnvironment[]
+  step_budget?: {
+    enabled: boolean
+    max_steps?: number
+  }
   route: TurnFrameRoute
   sessionID: SessionID
   messageID: MessageID
@@ -218,6 +222,7 @@ export namespace CodexTurn {
     collaborationMode?: UserTurn["collaboration_mode"]
     personality?: string
     environments?: TurnEnvironment[]
+    stepBudget?: UserTurn["step_budget"]
   }): TurnContext {
     const permissionProfile = input.permissionProfile ?? workspacePermissionProfile(input.cwd)
     return {
@@ -235,6 +240,7 @@ export namespace CodexTurn {
       collaboration_mode: input.collaborationMode ?? { kind: "default" },
       personality: input.personality,
       environments: input.environments?.length ? input.environments : [{ environmentID: "default", cwd: input.cwd }],
+      step_budget: input.stepBudget,
       route: input.frame.route,
       sessionID: input.frame.sessionID,
       messageID: input.frame.messageID,
@@ -250,8 +256,8 @@ export namespace CodexTurn {
     approvalPolicy: ApprovalPolicy
     base?: Permission.Ruleset
   }): Permission.Ruleset | undefined {
-    const base = [...(input.base ?? [])]
-    const output: Permission.Ruleset = []
+    const base: Permission.Rule[] = [...(input.base ?? [])]
+    const output: Permission.Rule[] = []
 
     if (input.profile.type === "managed") {
       if (input.profile.file_system.type === "restricted") {
@@ -291,6 +297,7 @@ export namespace CodexTurn {
       model: turn.model,
       collaboration_mode: turn.collaboration_mode,
       environments: turn.environments,
+      step_budget: turn.step_budget,
       retry: turn.retry,
       items: {
         count: turn.items.length,

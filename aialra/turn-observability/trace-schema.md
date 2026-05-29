@@ -67,7 +67,8 @@ events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `sandbox.profile.changed`, `sandbox.network.changed`,
 `sandbox.policy.changed`, `sandbox.control.changed`, `approval.policy.changed`,
 `executor.backend.changed`, `environment.selected`,
-`security.override.requested`, and `security.override.resolved`. The public
+`turn.step_budget.changed`, `security.override.requested`, and
+`security.override.resolved`. The public
 stream keeps the same redaction rule: show structure,
 state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
 model text, full tool output, or secrets.
@@ -129,6 +130,7 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `approval.policy.changed`
 - `executor.backend.changed`
 - `environment.selected`
+- `turn.step_budget.changed`
 - `security.override.requested`
 - `security.override.resolved`
 - `tool.sandbox.capability`

@@ -2,7 +2,6 @@ import { For, Show, createEffect, createMemo } from "solid-js"
 import type { JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Button } from "@opencode-ai/ui/button"
-import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
@@ -23,15 +22,24 @@ type SecurityConfig = {
   cwd: string
   remoteEnvironmentSupported: boolean
   remoteEnvironmentStatus: string
+  stepBudgetEnabled: boolean
+  stepBudgetMaxSteps: number
 }
 
-type SecurityPatch = Partial<Pick<SecurityConfig, "permissionProfileID" | "approvalPolicy" | "networkAccess" | "executorBackend">>
+type SecurityPatch = Partial<
+  Pick<
+    SecurityConfig,
+    "permissionProfileID" | "approvalPolicy" | "networkAccess" | "executorBackend" | "stepBudgetEnabled" | "stepBudgetMaxSteps"
+  >
+>
 
 const defaults: SecurityPatch = {
   permissionProfileID: ":workspace",
   approvalPolicy: "on-request",
   networkAccess: false,
   executorBackend: "codex",
+  stepBudgetEnabled: false,
+  stepBudgetMaxSteps: 80,
 }
 
 const profileOptions: Array<{
@@ -39,11 +47,11 @@ const profileOptions: Array<{
   label: string
   description: string
 }> = [
-  { value: ":read-only", label: "只读模式", description: "只能看文件和搜索，不能改文件，不能执行写入命令。" },
-  { value: ":workspace", label: "工作区可写", description: "可以修改当前项目，不能写项目外文件。" },
-  { value: ":danger-full-access", label: "完全访问", description: "放开更多本机访问能力，危险操作仍可要求审批。" },
-  { value: "external", label: "外部权限托管", description: "权限由外部系统决定，本机只记录和转交。" },
-  { value: "disabled", label: "禁用工具", description: "不允许 agent 使用本机工具。" },
+  { value: ":read-only", label: "只读模式", description: "只能看文件和搜索，不能改文件，不能执行写入命令" },
+  { value: ":workspace", label: "工作区可写", description: "可以修改当前项目，不能写项目外文件" },
+  { value: ":danger-full-access", label: "完全访问", description: "放开更多本机访问能力，危险操作仍可要求审批" },
+  { value: "external", label: "外部权限托管", description: "权限由外部系统决定，本机只记录和转交" },
+  { value: "disabled", label: "关闭内置门禁", description: "不使用本机内置权限门禁，适合外部系统接管权限，不等于禁用工具" },
 ]
 
 const approvalOptions: Array<{
@@ -51,25 +59,25 @@ const approvalOptions: Array<{
   label: string
   description: string
 }> = [
-  { value: "never", label: "永不询问，危险操作直接拒绝", description: "适合自动化任务，任何需要人工确认的动作都会直接失败。" },
-  { value: "on-request", label: "需要时询问", description: "适合人工监督，工具明确需要批准时会弹出审批。" },
-  { value: "on-failure", label: "失败后询问", description: "先尝试安全路径，失败后允许请求更高权限。" },
-  { value: "untrusted", label: "不可信操作询问", description: "普通安全动作直接执行，不可信或高风险动作先问你。" },
+  { value: "never", label: "永不询问，危险操作直接拒绝", description: "适合自动化任务，任何需要人工确认的动作都会直接失败" },
+  { value: "on-request", label: "需要时询问", description: "适合人工监督，工具明确需要批准时会弹出审批" },
+  { value: "on-failure", label: "失败后询问", description: "先尝试安全路径，失败后允许请求更高权限" },
+  { value: "untrusted", label: "不可信操作询问", description: "普通安全动作直接执行，不可信或高风险动作先问你" },
 ]
 
 const networkOptions = [
-  { value: "off", label: "关闭网络", description: "默认选项。命令运行时不能访问外网。", access: false },
-  { value: "https", label: "允许常规 HTTPS", description: "当前 Linux 执行底座按“允许网络”执行，后续会细分 HTTPS 白名单。", access: true },
-  { value: "all", label: "允许全部网络", description: "命令可以访问网络，所有开关变更都会进入审计事件。", access: true },
-  { value: "ask", label: "每次询问", description: "当前会按关闭网络执行；后续接入网络审批人后逐次询问。", access: false },
+  { value: "off", label: "关闭网络", description: "默认选项，命令运行时不能访问外网", access: false },
+  { value: "https", label: "允许常规 HTTPS", description: "当前 Linux 执行底座按允许网络执行，后续会细分 HTTPS 白名单", access: true },
+  { value: "all", label: "允许全部网络", description: "命令可以访问网络，所有开关变更都会进入审计事件", access: true },
+  { value: "ask", label: "每次询问", description: "当前会按关闭网络执行，后续接入网络审批人后逐次询问", access: false },
 ] as const
 
 const commandOptions = [
-  { value: "disabled", label: "禁止命令", description: "通过禁用工具档位实现，bash 不会执行。" },
-  { value: "read", label: "允许只读命令", description: "当前由只读权限档位近似执行，写入类命令会被拒绝。" },
-  { value: "workspace", label: "允许工作区命令", description: "当前工作区可写档位，命令只能影响当前项目。" },
-  { value: "all", label: "允许全部命令", description: "当前完全访问档位，仍会记录审计。" },
-  { value: "ask", label: "每次询问", description: "当前配合“需要时询问”审批策略使用。" },
+  { value: "disabled", label: "交给外部门禁", description: "切到关闭内置门禁档位，权限由外部系统接管" },
+  { value: "read", label: "允许只读命令", description: "当前由只读权限档位近似执行，写入类命令会被拒绝" },
+  { value: "workspace", label: "允许工作区命令", description: "当前工作区可写档位，命令只能影响当前项目" },
+  { value: "all", label: "允许全部命令", description: "当前完全访问档位，仍会记录审计" },
+  { value: "ask", label: "每次询问", description: "当前配合需要时询问审批策略使用" },
 ] as const
 
 const executorOptions: Array<{
@@ -77,8 +85,8 @@ const executorOptions: Array<{
   label: string
   description: string
 }> = [
-  { value: "codex", label: "Codex 执行服务", description: "优先让 Codex 风格 sidecar 接管 bash 和文件操作。" },
-  { value: "node-bun", label: "OpenCode 旧执行器", description: "兼容回退路径；如果 Codex 执行服务不可用会自动回退到这里。" },
+  { value: "codex", label: "Codex 执行服务", description: "优先让 Codex 风格 sidecar 接管 bash 和文件操作" },
+  { value: "node-bun", label: "OpenCode 旧执行器", description: "兼容回退路径，如果 Codex 执行服务不可用会自动回退到这里" },
 ]
 
 function authHeaders(server: ReturnType<typeof useServer>["current"]) {
@@ -155,8 +163,6 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
     loading: false,
     saving: undefined as string | undefined,
     error: undefined as string | undefined,
-    advanced: false,
-    turnOnly: true,
   })
 
   const securityURL = () => {
@@ -227,9 +233,7 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
         <div class="min-w-0">
           <div class="text-12-medium text-text-strong leading-4">沙盒控制中心</div>
           <div class="text-11-regular text-text-weak leading-3 truncate">
-            <Show when={config()} fallback={store.loading ? "正在读取安全配置" : "等待安全配置"}>
-              {(item) => `当前目录：${item().cwd}`}
-            </Show>
+            {store.loading ? "正在读取安全配置" : "控制权限、网络、审批和执行器"}
           </div>
         </div>
         <div class="flex items-center gap-1">
@@ -336,17 +340,41 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
             </div>
           </Section>
 
-          <Section title="本轮覆盖">
-            <label class="flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
+          <Section title="生效范围与步骤上限">
+            <div class="rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
+              <div class="text-12-medium text-text-strong">实时生效范围</div>
+              <div class="mt-1 text-11-regular text-text-weak leading-4">
+                降低权限会影响正在运行回合的下一次工具门禁，提高权限会记录审计并影响后续工具门禁，已经发出去的模型请求不会被中途改写
+              </div>
+            </div>
+            <label class="mt-2 flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
               <span>
-                <span class="block text-12-medium text-text-strong">只对本轮生效</span>
-                <span class="block text-11-regular text-text-weak">当前版本会影响本会话后续回合；真正单回合覆盖已列入下一批后端工作。</span>
+                <span class="block text-12-medium text-text-strong">限制模型工具循环</span>
+                <span class="block text-11-regular text-text-weak">默认关闭，开启后超过设置步数会停止本轮，避免弱模型无限重复调用工具</span>
               </span>
               <input
                 type="checkbox"
-                checked={store.turnOnly}
-                onInput={(event) => setStore("turnOnly", event.currentTarget.checked)}
+                checked={config()?.stepBudgetEnabled ?? false}
+                disabled={busy()}
+                onInput={(event) => void updateSecurity("stepBudgetEnabled", { stepBudgetEnabled: event.currentTarget.checked })}
               />
+            </label>
+            <label class="mt-2 block rounded-md border border-border-weaker-base bg-surface-panel px-2 py-2">
+              <span class="block text-12-medium text-text-strong">最大工具步数</span>
+              <input
+                class="mt-2 h-8 w-full rounded-md border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-base outline-none focus:border-border-strong disabled:opacity-60"
+                type="number"
+                min="1"
+                max="10000"
+                value={config()?.stepBudgetMaxSteps ?? 80}
+                disabled={busy() || !(config()?.stepBudgetEnabled ?? false)}
+                onChange={(event) =>
+                  void updateSecurity("stepBudgetMaxSteps", {
+                    stepBudgetMaxSteps: Number(event.currentTarget.value),
+                  })
+                }
+              />
+              <span class="mt-1 block text-11-regular text-text-weak">只在上面的开关开启时生效</span>
             </label>
             <div class="mt-2 flex gap-2">
               <Button
@@ -369,30 +397,6 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
               </Button>
             </div>
           </Section>
-
-          <Section title="审计">
-            <div class="text-11-regular text-text-weak leading-4">
-              每次修改都会写入公共事件流，事件名是 sandbox.control.changed。回合检查器可以看到“谁改了什么、改前是什么、改后是什么”。
-            </div>
-          </Section>
-
-          <button
-            type="button"
-            class="rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-left hover:bg-surface-panel"
-            onClick={() => setStore("advanced", !store.advanced)}
-          >
-            <div class="flex items-center justify-between gap-2 text-12-medium text-text-strong">
-              <span>高级详情</span>
-              <Icon name={store.advanced ? "chevron-down" : "chevron-right"} size="small" />
-            </div>
-            <Show when={store.advanced}>
-              <div class="mt-2 grid gap-1 text-11-regular text-text-weak leading-4">
-                <div>执行后端：Codex 执行服务用于贴近 Codex 的进程和文件访问控制；OpenCode 旧执行器用于兼容回退。</div>
-                <div>Landlock（Linux 内核文件限制）：当前仍在执行器底座收敛中，不在这里伪装成全量可控开关。</div>
-                <div>bwrap（Linux 进程隔离）：bash 命令会按本轮网络和写入策略进入沙箱。</div>
-              </div>
-            </Show>
-          </button>
         </div>
       </ScrollView>
 

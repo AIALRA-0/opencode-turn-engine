@@ -21,6 +21,10 @@ type PermissionRespondFn = (input: {
   directory?: string
 }) => void
 
+type TurnPermissionRequest = PermissionRequest & {
+  turnID?: string
+}
+
 function isNonAllowRule(rule: unknown) {
   if (!rule) return false
   if (typeof rule === "string") return rule !== "allow"
@@ -104,6 +108,8 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
     const RESPONDED_TTL_MS = 60 * 60 * 1000
     const responded = new Map<string, number>()
     const enableVersion = new Map<string, number>()
+    const turnAcceptCommand = new Map<string, boolean>()
+    const turnAcceptAll = new Map<string, boolean>()
 
     function pruneResponded(now: number) {
       for (const [id, ts] of responded) {
@@ -147,9 +153,49 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       return isDirectoryAutoAccepting(store.autoAccept, directory)
     }
 
+    function turnID(permission: PermissionRequest) {
+      const request = permission as TurnPermissionRequest
+      if (request.turnID) return request.turnID
+      const metadataTurnID = request.metadata?.turnID
+      if (typeof metadataTurnID === "string") return metadataTurnID
+      return request.tool?.messageID
+    }
+
+    function commandSignature(permission: PermissionRequest) {
+      return `${permission.permission}:${permission.patterns.join("\u0000")}`
+    }
+
+    function turnKey(permission: PermissionRequest) {
+      const id = turnID(permission)
+      if (!id) return
+      return `${permission.sessionID}:${id}`
+    }
+
+    function turnCommandKey(permission: PermissionRequest) {
+      const key = turnKey(permission)
+      if (!key) return
+      return `${key}:${commandSignature(permission)}`
+    }
+
     function shouldAutoRespond(permission: PermissionRequest, directory?: string) {
+      const key = turnKey(permission)
+      if (key && turnAcceptAll.get(key)) return true
+      const commandKey = turnCommandKey(permission)
+      if (commandKey && turnAcceptCommand.get(commandKey)) return true
       const session = directory ? serverSync.child(directory, { bootstrap: false })[0].session : []
       return autoRespondsPermission(store.autoAccept, session, permission, directory)
+    }
+
+    function enableTurnCommand(permission: PermissionRequest) {
+      const key = turnCommandKey(permission)
+      if (!key) return
+      turnAcceptCommand.set(key, true)
+    }
+
+    function enableTurnAll(permission: PermissionRequest) {
+      const key = turnKey(permission)
+      if (!key) return
+      turnAcceptAll.set(key, true)
     }
 
     function bumpEnableVersion(sessionID: string, directory?: string) {
@@ -263,6 +309,8 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
         if (isAutoAccepting(sessionID, directory)) return
         enable(sessionID, directory)
       },
+      enableTurnCommand,
+      enableTurnAll,
       disableAutoAccept(sessionID: string, directory?: string) {
         disable(sessionID, directory)
       },

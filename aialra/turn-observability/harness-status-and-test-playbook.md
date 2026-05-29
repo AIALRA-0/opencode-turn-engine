@@ -11,11 +11,24 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | 2 | Codex exec-server 研究/迁移 | bash、文件内容读写、目录列举已接源码构建 sidecar | 已查明“握手失败”不是泛泛失败：全局安装的 `codex-cli 0.125.0-alpha.3` 打印 ws 地址但不完成当前客户端需要的 HTTP 101；本机源码构建的 Codex binary 可以 `/readyz`、`initialize`、`process/start/read` 和 FS API。AIALRA 主服务默认连接 `aialra-codex-exec-server.service` 的 `ws://127.0.0.1:12650`；bash、read/write/edit/apply_patch、read directory 优先走 Codex exec-server，失败再 fallback。 | `packages/opencode/src/tool/codex-exec-server.ts`、`packages/opencode/src/tool/codex-fs.ts`、`aialra-codex-exec-server.service`、`test/tool/codex-exec-server.test.ts` |
 | 3 | Linux bwrap / Landlock parity | 已加强，仍非 Codex 绝对 1:1 | bash bwrap 现在有能力探测、更接近 Codex 的 `--new-session/--unshare-user/--die-with-parent` 参数、受限容器下自动跳过不可用 `/proc`、缺失 `.git/.agents/.codex` protected-create 防护。当前内核有 Landlock 配置，Codex Linux sandbox helper 的真实写入探测能挡住工作区外写入；但 Node/Bun 侧还没有直接调用 Landlock syscall。 | `linux-sandbox-capability.ts`、`probe-linux-sandbox.mjs`、turn-sandbox tests |
 | 4 | debug1 原版 OpenCode A/B | 已部署，评测体系已升级为 smoke + SWE-style + sandbox | `debug1.aialra.online` 已部署原版 anomalyco/opencode，对照组和 AIALRA fork 端口、systemd、数据目录、环境变量、日志全部隔离。A/B 脚本现在不再把“读 README / 写 txt”当主成绩；默认包含 5 个 smoke、8 个本地 SWE-style 失败测试仓库、2 个沙箱自然语言任务。 | `aialra/turn-observability/scripts/run-ab-comparison.mjs`、`ab-reports/`、`aialra-opencode-debug1-*` systemd services |
-| 5 | Kimi/弱模型卡死诊断 | 已实现第一批硬防护 | 默认每轮最多 80 个 agent loop step，可用 `AIALRA_TURN_MAX_STEPS=0` 关闭；超过后走 Codex reason `budget_limited`。重复工具模式会发 warning，先提示不拦截。 | `turn.budget_limited`、`turn.repeated_tool.warning` |
+| 5 | Kimi/弱模型卡死诊断 | 已改为用户可选硬防护 | 默认不限制工具步数；用户可在 Sandbox Control Center 开启“限制模型工具循环”并设置最大步数。超过后走 Codex reason `budget_limited`。重复工具模式会发 warning，先提示不拦截。 | `turn.step_budget.changed`、`turn.budget_limited`、`turn.repeated_tool.warning` |
 | 6 | 只优先 Linux 沙箱 | 已遵守 | 当前实现和验收只承诺 Linux，不做 macOS/Windows 沙箱。 | 计划边界 |
 | 7 | Approval UI 和 TurnContext 审计绑定 | 已实现 MVP | 审批请求会带 turnID、approval policy、permission profile、sandbox policy，并映射到公共事件。 | `approval.requested` / `approval.resolved` |
 | 8 | Profile parity 测试表 | 已扩展自动化，仍未覆盖网络/审批全矩阵 | 新增 read-only 读允许、write/edit/apply_patch 拒绝，full-access 外部写允许，workspace 外部写拒绝，disabled/external profile，bash network restricted/enabled，以及 TurnContext 下 legacy external-directory 不再制造重复审批等待。真实 HTTP/network 工具和 reviewer 语义还需要下一批。 | `test/tool/turn-sandbox.test.ts`、`test/tool/external-directory.test.ts` |
 | 9 | Turn Inspector / Sandbox Control Center | 已拆分为两个独立面板 | 回合检查器只负责“看这一轮发生了什么”；沙盒控制中心独立按钮在它右侧，负责“控制后续回合允许发生什么”。控制中心全中文、下拉框式交互，变更会真实进入 session security，再影响下一轮 TurnContext。 | `turn-inspector.tsx`、`sandbox-control-center.tsx`、`SessionSecurity.update` |
+
+## 0.0 2026-05-29 最新收口状态
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| 官方 upstream 同步 | fork 停在 2026-05-19 的本地魔改版本。 | 已合并 upstream `dev` 到 `7342e9409`，包含 ACP 正式化和 stats 修复；本地 TurnContext、exec-server、Sandbox Control Center 兼容保留。 | `git log --oneline --first-parent` 可见 `19615ae27` 官方合并提交。 | `prompt.ts` 等冲突文件按 AIALRA turn harness 语义保留本地实现，未盲目覆盖。 |
+| 页面 502 HTML 大页 | Cloudflare 或 login proxy 上游短暂不可用时，前端可能直接展示整段 HTML 错误页。 | login proxy 对上游不可用返回短 JSON/text 503，GET/HEAD/OPTIONS 瞬断会重试一次；SDK 客户端把 HTML 错误页压缩成一行中文错误。 | 再遇到 502 时不应看到大段 `<!DOCTYPE html>`；错误会说明 OpenCode 服务暂时不可用。 | 如果源站进程持续崩溃，仍需要查 systemd/nginx/Cloudflare 日志，本修复负责不把 HTML 大页轰到 UI。 |
+| 工具步数预算 | 默认 80 step 硬停，可能误伤超长任务。 | 默认关闭；用户在沙盒控制中心开启后才按用户设置的最大步数硬停，并写入 `turn.step_budget.changed`。 | 沙盒控制中心里“限制模型工具循环”默认关闭，可手动设置最大工具步数。 | `agent.steps` 显式配置仍优先于 UI 预算，这是 OpenCode agent 自身限制。 |
+| 审批按钮 | 只有拒绝、始终允许、允许一次，含义不够清晰。 | UI 变成六个短按钮：拒绝、仅本次、本轮本命令、本轮全部、始终本命令、始终全部；tooltip 写完整含义。 | 触发审批时看底部审批 dock。 | 当前 turn 内自动允许由前端记忆实现，不会绕过沙盒控制中心里的文件和网络限制。 |
+| Sandbox Control Center 生效 | 用户感觉切换档位没有明显效果。 | 工具门禁每次执行都会重新套用 SessionSecurity；新增测试证明只读切换后写入被拒绝，切回工作区可写后写入成功。 | 切到只读后让 agent 写文件应被拒绝；切回工作区可写后可以写当前工作区。 | 已发出的模型请求不会被中途改写，新的工具门禁会读最新配置。 |
+| Turn Inspector 折叠提示 | 历史回合折叠后仍显示提示框，增加视觉噪音。 | 历史回合默认直接折叠，不显示“已折叠历史回合日志”框子。 | 多轮对话后打开回合检查器，旧回合只显示分隔行和条数。 | 还不是虚拟列表，超长会话仍需后续做真正列表虚拟化。 |
+| A/B 报告 | 报告主要显示完成情况，缺少打分和完整 prompt。 | 报告现在有单场分数、总分、评分规则和每个 case 的完整提示词代码块。 | 新报告会写到 `aialra/turn-observability/ab-reports/`。 | A/B 是否全绿取决于线上模型和服务状态，需要每次部署后实跑。 |
+| 最新 15 场 A/B | 之前 9 场报告还没覆盖完整 SWE-style 和自然语言安全任务，也没有验证 runner 自己不会卡死。 | 已修复 A/B 子进程硬超时并跑完 15 场，最新报告 `ab-comparison-20260529211021.md`。AIALRA 总分 301 第一，Codex CLI 292 第二，debug1 原版 289 第三。 | AIALRA 仍在自然语言沙箱和网络任务里等待审批，这不是安全破口，但说明 approval reviewer 和网络审批产品语义还没完全收口。 | 打开 `aialra/turn-observability/ab-reports/ab-comparison-20260529211021.md`，每场都有完整 prompt、分数和输出摘要。 |
 
 ## 0.1 2026-05-18 网站体验修复验收矩阵
 
@@ -41,7 +54,7 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | protected-create | 如果工作区本来没有 `.git/.agents/.codex`，bash 里也不能偷偷创建这些目录。 | 让模型执行 `mkdir -p .git && echo bad > .git/config` 会失败，命令结束后宿主工作区不会留下 `.git`。 | Codex 在 bwrap builder 里有更完整的 synthetic mount/protected target 管理。 |
 | Landlock 评估 | 新增 `node aialra/turn-observability/scripts/probe-linux-sandbox.mjs`，输出 kernel、NoNewPrivs、Seccomp、userns、bwrap、Codex CLI 能力。 | 用户和运维能一条命令看当前服务器是否具备继续接 Landlock 的条件。 | 这不是 Landlock enforcement；真正限制文件访问还需要 Codex Rust helper 或 native syscall 层。 |
 | exec-server adapter | 新增 Codex exec-server JSON-RPC client，支持 `initialize`、`initialized`、`process/start`、`process/read`、`process/terminate`、`fs/readFile`、`fs/writeFile`、`fs/createDirectory`、`fs/readDirectory`、`fs/remove`，shell、文件内容工具和目录列举可用 `AIALRA_EXEC_BACKEND=codex` 优先走 sidecar，并失败回退。 | AIALRA 线上服务已指向 systemd sidecar；bash 和文件工具能优先走 sidecar，Turn Inspector 会记录 executor started/finished/fallback。 | 远程 environment、HTTP API、实时 stdout/stderr 分片 UI 还未接。 |
-| 弱模型 loop 防护 | 默认 80 step 硬预算；超过后写 assistant error、发 `turn.budget_limited`、`turn.aborted reason=budget_limited`，session 回 idle。重复工具模式发 warning。 | Kimi/弱模型反复工具调用时不会无限跑下去，用户能看到是“步骤预算耗尽”。 | 还需要更细的 token/output/tool pattern budget，以及 UI 里把 repeated tool 归组展示。 |
+| 弱模型 loop 防护 | 硬预算默认关闭；用户在 Sandbox Control Center 开启后才限制最大工具步数，超过后写 assistant error、发 `turn.budget_limited`、`turn.aborted reason=budget_limited`，session 回 idle。重复工具模式发 warning。 | 默认不削弱长任务泛用性；需要防循环时用户自己开启并设置上限。 | 还需要更细的 token/output/tool pattern budget，以及 UI 里把 repeated tool 归组展示。 |
 | profile parity 自动化 | 新增 read-only/full-access/workspace/protected metadata 组合测试。 | 权限语义更可预期，不是只靠口头说明。 | 网络访问、approval never/on-request、external/disabled、exec-server FS 后端还要继续补齐。 |
 
 ## 0.3 2026-05-19 A/B 对照和 exec-server 真实验收矩阵
@@ -54,7 +67,7 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | Codex exec-server 握手诊断 | 只知道“WebSocket 握手失败”，没有证据链。 | 已记录真实原因链：全局 `codex-cli 0.125.0-alpha.3` 的 exec-server 打印 ws 地址，但 `/readyz` 空响应、WebSocket 非 101；源码构建 binary `/srv/aialra/apps/codex-turn-engine/codex-rs/target/debug/codex` 可 `/readyz=200`，可 `initialize`，可 `process/start/read`、`fs/readFile/writeFile/readDirectory` 和 FS API。 | 还没有接 Codex remote environment、HTTP API 和实时 stdout/stderr 分片 UI。 | 看 `test/tool/codex-exec-server.test.ts` 和 systemd sidecar 状态。 | live adapter test 通过：process 和 FS API 均通过。 |
 | bash/文件工具默认走 Codex sidecar | bash 和文件工具只走 Node/Bun executor。 | AIALRA 主服务环境已配置 `AIALRA_EXEC_BACKEND=codex` 与 `AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650`；bash、read、write、edit、apply_patch 优先走 Codex exec-server，失败会 fallback 并进入事件流。 | 目录列举、远程 FS、HTTP API 未接；旧 Node/Bun executor 仍是可用 fallback。 | Turn Inspector 能看到 executor started/finished/fallback 事件；也可看 systemd sidecar。 | `AIALRA_EXEC_BACKEND=codex ... test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts` 通过。 |
 | Turn Inspector raw 展开 | raw endpoint 后端返回正常，但 UI 一直显示 loading。 | 修复 Solid store 合并导致的 `loading=true` 残留；成功和失败都会清掉 loading。 | raw 仍是当前进程 replay + 加密审计，不是长期数据库检索；重启前后的内存事件 replay 需要靠 audit 文件补历史产品化。 | 在 Turn Inspector 点“原始”，应显示 JSON，不再转圈。 | Playwright 验证：raw response 200，UI 显示 `prompt.received` JSON，`loading=false`。 |
-| Turn Inspector 历史 turn 性能 | 多轮日志一直堆叠展开。 | 新 turn 默认展开，旧 turn 默认折叠；旧 turn 可手动展开。 | 还没有虚拟列表；非常长会话后仍建议做列表虚拟化。 | 连续发两轮后打开 Inspector，应看到“已折叠历史回合日志”。 | Playwright 验证：2 个 turn section，历史折叠提示存在。 |
+| Turn Inspector 历史 turn 性能 | 多轮日志一直堆叠展开。 | 新 turn 默认展开，旧 turn 默认折叠；旧 turn 可手动展开；折叠后不再显示提示框。 | 还没有虚拟列表；非常长会话后仍建议做列表虚拟化。 | 连续发两轮后打开 Inspector，历史回合应直接收起，不再出现“已折叠历史回合日志”提示框。 | app typecheck 覆盖，浏览器 smoke 待本轮部署后复核。 |
 | bwrap 并发 protected-create | 并发 bash 可能互相清理 synthetic `.git/.agents/.codex` mount source，导致 bwrap 启动时报 `Can't get type of source`。 | synthetic protected mount 加 ref-count/锁，并发命令共享同一 mountpoint，最后一个释放时再清理。 | 这仍是 Node/Bun bwrap 管理；Codex Rust helper 有自己的 builder/runtime 结构。 | 混合任务里 `ls -la` 不应再因为 synthetic `.git` source 消失而失败。 | 新增并发测试通过；最新 A/B mixed 场景 AIALRA fork bash 全部成功。 |
 
 当前明确未完成：Landlock 尚未在 Node/Bun 工具层直接 syscall enforce；Codex remote/multi-environment、HTTP API、实时 stdout/stderr 分片 UI 还未完整产品化；审批 reviewer 语义还未做到 Codex 1:1；glob/grep 仍在 TurnContext 门禁之后使用 Node/Bun 路径。
@@ -91,6 +104,7 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | 项目 | 原来是什么 | 现在是什么 | 还没完成什么 | 用户怎么观察 |
 | --- | --- | --- | --- | --- |
 | A/B 主评测 | 主要靠 `OK/README/txt/bash` 这类 toy prompt。 | A/B 脚本默认生成 8 个 SWE-style 本地小仓库：日期边界、空输入、解析转义、缓存刷新、CLI 覆盖、cwd 路径、最小回归测试、弱模型循环风险。每个仓库都有失败测试，prompt 不告诉文件名、函数名或命令。 | 官方 SWE-bench Lite/Verified 样本导入器还没接；当前是本地可控 SWE-style fixtures。 | 跑 `node aialra/turn-observability/scripts/run-ab-comparison.mjs`，看报告里的测试通过、patch、diffStat、谁最好。 |
+| A/B runner 收口 | 子进程超时时只发 SIGTERM，部分 Codex CLI 底层进程会继续存活，导致整轮对比卡住。 | runner 现在用独立进程组启动子命令，超时 SIGTERM，5 秒后 SIGKILL，报告记录 timedOut 后继续下一项。 | 还需要把超时原因进一步分成模型慢、工具慢、审批等待、runner 异常。 | 看第 10 场 CLI override，Codex CLI 被记录为 90 秒超时但报告继续生成。 |
 | Sandbox Control Center 独立面板 | 控制区挤在回合检查器里，按钮混乱，中英混杂。 | 独立面板和独立按钮；UI 全中文；下拉框控制权限档位、审批策略、网络、命令和执行后端；高级底层说明折叠。 | 单回合覆盖、默认档案持久化、HTTPS 白名单、逐次网络审批还没后端全量实现。 | 标题栏里回合检查器按钮右侧的盾牌按钮。 |
 | 控制项真实生效 | 部分 UI 控制容易像“展示项”。 | 控制中心 PATCH `SessionSecurity`，下一轮 `UserTurn/TurnContext` 会读这些配置；read/write/edit/apply_patch/bash 继续通过 TurnContext 门禁。 | glob/grep 还没完全走 Codex FS API；approval reviewer 还未 1:1；Landlock 未在 Node/Bun 工具层 syscall enforce。 | 改成只读模式后让 agent 写文件，应被拒绝；开网络后 bash 沙箱不再加网络隔离。 |
 | 安全审计 | 只有分散的 profile/network/approval 变更事件。 | 新增统一 `sandbox.control.changed`，raw 里保存 before/after/changedBy/time，方便审计“用户改了什么”。 | 后续要把 reviewer 和每一次审批结果串到同一条审计链。 | Turn Inspector 过滤“沙箱”后查看。 |
@@ -133,7 +147,7 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | Linux `bubblewrap` | bash 命令被放进一个系统级受限环境。 | shell 主要靠 OpenCode 权限提示和进程 cwd。 | Linux managed sandbox 下 root 只读，workspace/tmp 可写。 | `echo bad > /srv/outside` 应失败。 | turn-sandbox bwrap 测试。 | 已实现 |
 | bwrap capability event | bash sandbox 开始前先记录系统沙箱能力。 | 以前只能猜 bwrap 为什么失败。 | 新增能力探测和 `tool.sandbox.capability` public event。 | Turn Inspector 能看到 bwrap 版本、user namespace、`/proc` 是否可挂载。 | `probe-linux-sandbox.mjs` 和 tool 测试。 | 已实现 |
 | protected-create for missing metadata | 即使 `.git/.agents/.codex` 原本不存在，bash 也不能新建。 | 以前只保护已经存在的敏感目录。 | 用只读空目录挂载模拟 Codex protected-create。 | 命令尝试创建 `.git/config` 失败，宿主不留下 `.git`。 | turn-sandbox 测试。 | 已实现 |
-| turn step budget | 弱模型循环太多步时硬停止。 | 以前主要依赖模型听从最后一步提醒。 | 默认 80 step 后 `budget_limited` 收口。 | 不再无限工具循环，Inspector 可见预算耗尽。 | prompt budget 测试。 | 已实现 |
+| turn step budget | 弱模型循环太多步时可选择硬停止。 | 以前默认 80 step 硬停，容易影响超长任务。 | 默认关闭；Sandbox Control Center 可开启并设置最大工具步数，开启后超过上限才 `budget_limited` 收口。 | 长任务默认不被 80 步卡住；用户需要防循环时可以手动开启。 | prompt budget env 测试、security event 测试。 | 已改为可选 |
 | repeated tool warning | 多次重复同一工具模式时记录警告。 | 以前只能事后翻工具调用。 | 第 3 次重复发 `turn.repeated_tool.warning`。 | 用户能看到模型可能陷入重复模式。 | trace/public event 映射。 | 已实现 |
 | Codex exec-server adapter | 接入 Codex exec-server 进程和文件协议。 | 没有 exec-server 通路。 | 已新增 JSON-RPC client；AIALRA 默认连接 systemd sidecar；bash 和文件内容工具优先走 sidecar，失败 fallback 且可见。 | 用户能在 Turn Inspector 看到 executor 事件；运维能看 sidecar `/readyz` 和 systemd 日志。 | live process/FS/sandbox 测试通过；目录列举和 remote environment 仍未接。 | 已实现第一版 |
 | symlink escape 拒绝 | 软链接指向工作区外时，不能借它写外部文件。 | 旧路径检查更容易只看表面路径。 | 同时检查目标路径和真实路径。 | 不能通过 `linked-outside/file` 逃逸。 | symlink 测试。 | 已实现 |

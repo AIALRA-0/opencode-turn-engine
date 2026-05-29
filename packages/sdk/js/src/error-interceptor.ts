@@ -19,6 +19,9 @@ export function wrapClientError(
   if (!opts?.throwOnError) return error
   if (error instanceof Error) return error
 
+  const html = sanitizeHtmlError(error, response)
+  if (html) return html
+
   // NamedError-shaped responses (the common case for opencode 4xx) come
   // through as POJOs — extract a useful message first, then wrap.
   if (typeof error === "object" && error !== null && Object.keys(error).length > 0) {
@@ -48,4 +51,24 @@ function describe(request: Request | undefined, response: Response | undefined) 
   const status = response?.status
   const statusText = response?.statusText
   return `${method} ${url}${status ? " → " + status : ""}${statusText ? " " + statusText : ""}`
+}
+
+function sanitizeHtmlError(error: unknown, response: Response | undefined) {
+  if (typeof error !== "string") return
+  const trimmed = error.trimStart()
+  if (!trimmed.startsWith("<!DOCTYPE html") && !trimmed.startsWith("<html")) return
+
+  const title = trimmed.match(/<title>(.*?)<\/title>/is)?.[1]?.replace(/\s+/g, " ").trim()
+  const status = response?.status ? `HTTP ${response.status}` : "HTTP error"
+  const message = title
+    ? `OpenCode 服务暂时不可用：${status}，${title}`
+    : `OpenCode 服务暂时不可用：${status}，服务器返回了 HTML 错误页`
+
+  return new Error(message, {
+    cause: {
+      body: trimmed.slice(0, 2048),
+      redacted: trimmed.length > 2048,
+      status: response?.status,
+    },
+  })
 }

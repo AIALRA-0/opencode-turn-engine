@@ -8,6 +8,7 @@ import {
   LLMEvent,
   Usage,
   type FinishReason,
+  type LLMError,
   type LLMRequest,
   type ProviderMetadata,
   type ReasoningPart,
@@ -320,7 +321,9 @@ const lowerToolResultOutput = Effect.fn("OpenAIResponses.lowerToolResultOutput")
   // Text/json/error results are encoded as a plain string for backward
   // compatibility with existing cassettes and provider expectations.
   if (part.result.type !== "content") return ProviderShared.toolResultText(part)
-  return yield* Effect.forEach(part.result.value, lowerToolResultContentItem)
+  // Preserve the narrowed array element type when compiled through a consumer package.
+  const content: ReadonlyArray<ToolResultContentPart> = part.result.value
+  return yield* Effect.forEach(content, lowerToolResultContentItem)
 })
 
 const lowerMessages = Effect.fn("OpenAIResponses.lowerMessages")(function* (request: LLMRequest) {
@@ -425,7 +428,9 @@ const lowerOptions = Effect.fn("OpenAIResponses.lowerOptions")(function* (reques
   }
 })
 
-const fromRequest = Effect.fn("OpenAIResponses.fromRequest")(function* (request: LLMRequest) {
+const fromRequest: (request: LLMRequest) => Effect.Effect<OpenAIResponsesBody, LLMError> = Effect.fn(
+  "OpenAIResponses.fromRequest",
+)(function* (request: LLMRequest) {
   const generation = request.generation
   return {
     model: request.model.id,

@@ -498,6 +498,38 @@ describe("Codex turn sandbox tool gates", () => {
     }),
   )
 
+  it.instance("applies live Sandbox Control Center permission profile changes to file writes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const active = turn(cwd)
+      const tool = yield* initWrite()
+
+      try {
+        SessionSecurity.update({
+          sessionID: active.sessionID,
+          cwd,
+          patch: { permissionProfileID: ":read-only" },
+        })
+        yield* expectFailure(
+          tool.execute({ filePath: "blocked-by-live-profile.txt", content: "blocked" }, ctx(active)),
+          "Codex turn sandbox denied write access",
+        )
+
+        SessionSecurity.update({
+          sessionID: active.sessionID,
+          cwd,
+          patch: { permissionProfileID: ":workspace" },
+        })
+        yield* tool.execute({ filePath: "allowed-by-live-profile.txt", content: "ok" }, ctx(active))
+        expect(yield* Effect.promise(() => fs.readFile(path.join(cwd, "allowed-by-live-profile.txt"), "utf8"))).toBe("ok")
+      } finally {
+        SessionSecurity.clearForTest()
+      }
+    }),
+  )
+
   it.instance("prevents bash from creating missing protected metadata directories", () =>
     Effect.gen(function* () {
       if (!canRunBwrapSandbox()) return

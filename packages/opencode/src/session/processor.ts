@@ -359,7 +359,7 @@ export const layer = Layer.effect(
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
-          case "start":
+          case "step-start":
             yield* status.set(ctx.sessionID, { type: "busy" })
             yield* AialraTurnTrace.emit({
               phase: "model.stream.started",
@@ -720,7 +720,7 @@ export const layer = Layer.effect(
               sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
               data: {
-                finish: value.finishReason,
+                finish: value.reason,
                 cost: usage.cost,
                 tokens: usage.tokens,
                 needsCompaction: ctx.needsCompaction,
@@ -955,7 +955,7 @@ export const layer = Layer.effect(
             yield* stream.pipe(
               Stream.tap((event) =>
                 Effect.gen(function* () {
-                  if (event.type === "finish" || event.type === "finish-step") sawTerminal = true
+                  if (event.type === "finish" || event.type === "step-finish") sawTerminal = true
                   if (
                     event.type === "text-delta" ||
                     event.type === "reasoning-delta" ||
@@ -985,6 +985,7 @@ export const layer = Layer.effect(
                   if (error instanceof StreamRetryableError) return yield* Effect.fail(error)
                   const shouldWrapStreamError =
                     message.toLowerCase().includes("timeout") ||
+                    message.toLowerCase().includes("timed out") ||
                     message.toLowerCase().includes("stream") ||
                     message.toLowerCase().includes("connection")
                   if (shouldWrapStreamError) {

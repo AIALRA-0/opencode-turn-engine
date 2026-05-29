@@ -36,6 +36,8 @@ export const SecurityConfig = Schema.Struct({
   cwd: Schema.String,
   remoteEnvironmentSupported: Schema.Boolean,
   remoteEnvironmentStatus: Schema.String,
+  stepBudgetEnabled: Schema.Boolean,
+  stepBudgetMaxSteps: Schema.Number,
 })
 export type SecurityConfig = typeof SecurityConfig.Type
 
@@ -45,6 +47,8 @@ export const SecurityUpdatePayload = Schema.Struct({
   networkAccess: Schema.optional(Schema.Boolean),
   executorBackend: Schema.optional(SecurityExecutorBackend),
   environmentID: Schema.optional(Schema.String),
+  stepBudgetEnabled: Schema.optional(Schema.Boolean),
+  stepBudgetMaxSteps: Schema.optional(Schema.Number),
 })
 export type SecurityUpdatePayload = typeof SecurityUpdatePayload.Type
 
@@ -54,6 +58,8 @@ type StoredSecurityConfig = {
   networkAccess: boolean
   executorBackend: SecurityConfig["executorBackend"]
   environmentID: string
+  stepBudgetEnabled: boolean
+  stepBudgetMaxSteps: number
 }
 
 const configs = new Map<string, StoredSecurityConfig>()
@@ -65,6 +71,8 @@ function defaultStored(): StoredSecurityConfig {
     networkAccess: false,
     executorBackend: process.env.AIALRA_EXEC_BACKEND === "codex" ? "codex" : "node-bun",
     environmentID: "default",
+    stepBudgetEnabled: false,
+    stepBudgetMaxSteps: 80,
   }
 }
 
@@ -78,6 +86,11 @@ function stored(sessionID: string) {
   const next = defaultStored()
   configs.set(sessionID, next)
   return next
+}
+
+function normalizeStepBudgetMaxSteps(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 80
+  return Math.max(1, Math.min(10_000, Math.trunc(value)))
 }
 
 function approvalPolicy(value: SecurityApprovalPolicy): ApprovalPolicy {
@@ -130,13 +143,16 @@ function publicConfig(sessionID: string, cwd: string): SecurityConfig {
     environmentID: current.environmentID,
     cwd: normalizeCwd(cwd),
     remoteEnvironmentSupported: false,
-    remoteEnvironmentStatus: "remote environment，远程环境，本轮只暴露入口，尚未接入远程执行。",
+    remoteEnvironmentStatus: "remote environment，远程环境，本轮只暴露入口，尚未接入远程执行",
+    stepBudgetEnabled: current.stepBudgetEnabled,
+    stepBudgetMaxSteps: current.stepBudgetMaxSteps,
   }
 }
 
 function emitChange(input: {
   sessionID: string
   type: "sandbox.profile.changed" | "sandbox.network.changed" | "approval.policy.changed" | "executor.backend.changed" | "environment.selected"
+    | "turn.step_budget.changed"
   title: string
   from: unknown
   to: unknown
@@ -210,6 +226,7 @@ export namespace SessionSecurity {
     const previous = { ...stored(input.sessionID) }
     const next: StoredSecurityConfig = { ...previous, ...input.patch }
     if (next.permissionProfileID === ":danger-full-access") next.networkAccess = true
+    next.stepBudgetMaxSteps = normalizeStepBudgetMaxSteps(next.stepBudgetMaxSteps)
     configs.set(input.sessionID, next)
 
     if (JSON.stringify(previous) !== JSON.stringify(next)) {
@@ -272,6 +289,19 @@ export namespace SessionSecurity {
         cwd,
       })
     }
+    if (
+      previous.stepBudgetEnabled !== next.stepBudgetEnabled ||
+      previous.stepBudgetMaxSteps !== next.stepBudgetMaxSteps
+    ) {
+      emitChange({
+        sessionID: input.sessionID,
+        type: "turn.step_budget.changed",
+        title: "Turn step budget changed",
+        from: previous.stepBudgetEnabled ? `${previous.stepBudgetMaxSteps}` : "disabled",
+        to: next.stepBudgetEnabled ? `${next.stepBudgetMaxSteps}` : "disabled",
+        cwd,
+      })
+    }
 
     return publicConfig(input.sessionID, cwd)
   }
@@ -292,6 +322,10 @@ export namespace SessionSecurity {
       }),
       activePermissionProfile: activePermissionProfile(config.permissionProfileID),
       environments: environments({ cwd: config.cwd, environmentID: config.environmentID }),
+      stepBudget: {
+        enabled: config.stepBudgetEnabled,
+        max_steps: config.stepBudgetMaxSteps,
+      },
     }
   }
 
@@ -313,6 +347,10 @@ export namespace SessionSecurity {
       }),
       active_permission_profile: activePermissionProfile(config.permissionProfileID),
       environments: environments({ cwd: config.cwd, environmentID: config.environmentID }),
+      step_budget: {
+        enabled: config.stepBudgetEnabled,
+        max_steps: config.stepBudgetMaxSteps,
+      },
     }
   }
 

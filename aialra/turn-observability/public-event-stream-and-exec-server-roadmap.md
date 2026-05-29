@@ -576,6 +576,7 @@ Public event stream（公共事件流）现在还承载 Sandbox Control Center�
 | `approval.policy.changed` | 用户切换审批策略 | `PATCH /session/:sessionID/security` | 记录 never/on-request/on-failure/untrusted |
 | `executor.backend.changed` | 用户切换执行后端偏好 | `PATCH /session/:sessionID/security` | 记录 codex/node-bun |
 | `environment.selected` | 用户选择执行环境 | `PATCH /session/:sessionID/security` | 当前只支持 local default，remote 标记 unsupported |
+| `turn.step_budget.changed` | 用户切换工具步骤上限 | `PATCH /session/:sessionID/security` | 记录 disabled 或最大步数 |
 | `security.override.requested` | 请求危险能力升级 | 预留给 reviewer 审批流 | 后续接 reviewer |
 | `security.override.resolved` | 危险能力升级已处理 | 预留给 reviewer 审批流 | 后续接 reviewer |
 

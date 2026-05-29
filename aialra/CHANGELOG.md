@@ -1,5 +1,50 @@
 # AIALRA changelog
 
+## 2026-05-29
+
+- Synced the fork with the latest upstream OpenCode `dev` branch. The merge
+  includes upstream ACP promotion and stats fixes, while preserving the AIALRA
+  TurnContext, sandbox, exec-server, public event, and UI control layers.
+- Changed the weak-model step budget from a default hard 80-step stop into an
+  explicit Sandbox Control Center option. The default is now unlimited unless
+  `agent.steps`, `AIALRA_TURN_MAX_STEPS`, or the user-enabled step budget says
+  otherwise.
+- Added session security fields and public event support for
+  `turn.step_budget.changed`, with tests proving Sandbox Control Center changes
+  can live-update tool gates.
+- Reworked approval UI actions into six clear choices: reject, allow once,
+  allow this command for this turn, allow all commands for this turn, always
+  allow this command, and always allow all commands. The current-turn choices
+  are remembered by the Web client without bypassing filesystem or network
+  sandbox gates.
+- Hardened the login proxy against transient upstream failures. Idempotent API
+  requests retry once after socket reset, upstream failures return compact JSON
+  or text 503 responses instead of large HTML error pages, and SDK client
+  errors redact Cloudflare-style HTML pages into short readable messages.
+- Polished Sandbox Control Center copy: removed the duplicate current-directory
+  subtitle, removed non-interactive audit/advanced blocks, clarified live
+  effect scope, renamed `disabled` to “关闭内置门禁”, and removed Chinese full
+  stops from touched UI strings.
+- Removed the visible folded-history notice from Turn Inspector. Old turns
+  still collapse by default, but the UI no longer renders the extra “已折叠历史回合日志” box.
+- Updated the A/B harness report format with scoring rules, per-case scores,
+  and full prompt text for every scenario.
+- Fixed the A/B harness timeout path so a stuck child process kills the whole
+  child process group, records a timeout, and lets the report finish instead
+  of wedging the comparison runner.
+- Re-ran the full 15-case A/B harness after the timeout fix. Report
+  `ab-comparison-20260529211021.md` ranks AIALRA OpenCode first by total score
+  at 301, Codex CLI second at 292, and debug1 original OpenCode third at 289.
+  AIALRA had 15/15 turn terminals and 0 outside writes, but still waited for
+  approval in the natural sandbox and network cases, so approval/reviewer
+  product behavior remains unfinished.
+- Verified the full regression set after the upstream merge and UI/security
+  changes: prompt/schema 90 pass, public-event HTTP 4 pass, exec-server plus
+  sandbox/external-directory 28 pass, login proxy 6 pass, app/opencode
+  typecheck, app build, and opencode single-binary build.
+- Added a Kimi performance investigation report and applied the simple config
+  fix of adding explicit `timeout` and `chunkTimeout` to the Kimi provider.
+
 ## 2026-05-19
 
 - Split Sandbox Control Center（沙盒控制中心） out of Turn Inspector（回合检查器）
