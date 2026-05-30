@@ -8,9 +8,17 @@
   original OpenCode with DeepSeek V4 Pro `max`, and AIALRA OpenCode with
   DeepSeek V4 Pro `max`.
 - The final run `20260530071350` produced 120/120 results with no duplicate rows
-  and no remaining infrastructure errors after targeted reruns. Codex CLI
-  resolved 7 verified cases, AIALRA DeepSeek V4 Pro resolved 5, debug1 DeepSeek
-  V4 Pro resolved 5, debug1 Kimicode resolved 4, and AIALRA Kimicode resolved 1.
+  and no remaining infrastructure errors after targeted reruns. The corrected
+  report no longer treats a fixed wall-clock budget as a benchmark timeout:
+  all legacy fixed-time timeouts were rerun or reclassified, leaving 0 fixed
+  timeouts and 9 progress-aware logical stalls. Codex CLI resolved 7 verified
+  cases, AIALRA DeepSeek V4 Pro resolved 5, debug1 DeepSeek V4 Pro resolved 6,
+  debug1 Kimicode resolved 3, and AIALRA Kimicode resolved 3.
+- Added progress-aware benchmark timeout detection. The runner now distinguishes
+  slow-but-working runs from real stalls by tracking message growth, tool calls,
+  public events, and git diff changes. It also detects non-productive tool churn
+  where the patch stops changing but the agent keeps issuing tool calls, as seen
+  in the final AIALRA Kimicode Element Web case.
 - Added benchmark runner resume and cleanup support. `AIALRA_REAL_BENCH_RUN_ID`
   resumes an existing run, completed target worktrees and official harness
   scratch directories are removed by default, `AIALRA_REAL_BENCH_KEEP_WORKTREES=1`

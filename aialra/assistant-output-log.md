@@ -868,3 +868,27 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 真实报告路径：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530051310.md`
 
 未完成边界：官方 harness 追加验证目前是手动对首个样本三方 patch 执行，`run-real-benchmark.mjs` 已有 `AIALRA_REAL_BENCH_VERIFY=official` 模式，但下一步要把“先跑 agent，再自动批量 official harness 验证，再合并官方结果”做成完全自动化流水线
+
+## 2026-05-30 追加实现记录：高难 benchmark 固定时间超时纠偏
+
+用户指出固定时间阈值会误伤慢但仍在工作的任务，这个判断正确
+
+本轮只处理 run `20260530071350` 中尚未正确完成的旧超时项，没有重跑已经完成的 120 组合
+
+`run-real-benchmark.mjs` 已改成 progress-aware timeout，进展感知超时：runner 会看 message，消息、tool call，工具调用、public event，公共事件、git diff，代码改动 是否变化，而不是只看总耗时
+
+旧固定时间超时已经全部清零，最终结果里 `fixedTimedOut=0`
+
+当前剩余 9 个 timeout 都是检测型结果，其中 8 个是 repeated tool loop，重复工具循环，1 个是 non-productive tool churn，非生产性工具循环
+
+关键纠偏案例：AIALRA Kimicode 的 `scikit-learn__scikit-learn-13241` 在旧固定预算下会被误判为超时，但继续跑完后耗时 3233 秒并通过验证，说明“慢但有进展”必须继续跑
+
+关键新发现：AIALRA Kimicode 的 `scikit-learn__scikit-learn-14092` 产出了验证通过的 patch，但随后继续重复工具调用，最终被标为逻辑循环。这类结果要单独看待：代码可能修对了，但 agent 没有学会收尾
+
+最后一个未完成项 `instance_element-hq__element-web-5e8488...` 从 21:28 后补丁不再变化，却继续跑到 338 次工具调用，主要反复探测 `jest`、`node_modules` 和包路径。该会话已手动中断并写入正式结果，原因记录为 non-productive tool churn，而不是固定时间超时
+
+最终统计：120/120 行，0 duplicate，0 fixed timeout，9 progress-aware timeout，24 个可验证通过。总分为 Codex CLI 475，AIALRA DeepSeek 425，debug1 DeepSeek 406，debug1 Kimicode 306，AIALRA Kimicode 285
+
+更新报告：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350.md`
+
+更新结构化结果：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350-results.json`

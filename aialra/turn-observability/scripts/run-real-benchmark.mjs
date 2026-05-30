@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
@@ -24,6 +25,14 @@ const DEEPSEEK_V4_PRO_MODEL = process.env.AIALRA_REAL_BENCH_DEEPSEEK_V4_PRO_MODE
 const DEEPSEEK_V4_PRO_VARIANT = process.env.AIALRA_REAL_BENCH_DEEPSEEK_V4_PRO_VARIANT ?? "max"
 const TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_TIMEOUT_MS ?? "900000")
 const OPENCODE_START_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_OPENCODE_START_TIMEOUT_MS ?? "180000")
+const PROGRESS_STALL_MS = Number(process.env.AIALRA_REAL_BENCH_PROGRESS_STALL_MS ?? "1800000")
+const EMERGENCY_MAX_MS = Number(process.env.AIALRA_REAL_BENCH_EMERGENCY_MAX_MS ?? "21600000")
+const REPEATED_TOOL_MIN_CALLS = Number(process.env.AIALRA_REAL_BENCH_REPEATED_TOOL_MIN_CALLS ?? "20")
+const REPEATED_TOOL_WINDOW = Number(process.env.AIALRA_REAL_BENCH_REPEATED_TOOL_WINDOW ?? "10")
+const REPEATED_TOOL_MAX_UNIQUE = Number(process.env.AIALRA_REAL_BENCH_REPEATED_TOOL_MAX_UNIQUE ?? "2")
+const REPEATED_TOOL_NO_DIFF_MS = Number(process.env.AIALRA_REAL_BENCH_REPEATED_TOOL_NO_DIFF_MS ?? "300000")
+const TOOL_CHURN_MIN_CALLS = Number(process.env.AIALRA_REAL_BENCH_TOOL_CHURN_MIN_CALLS ?? "120")
+const TOOL_CHURN_NO_DIFF_MS = Number(process.env.AIALRA_REAL_BENCH_TOOL_CHURN_NO_DIFF_MS ?? "1200000")
 const TEST_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_TEST_TIMEOUT_MS ?? "600000")
 const OFFICIAL_TIMEOUT_SECONDS = Number(process.env.AIALRA_REAL_BENCH_OFFICIAL_TIMEOUT_SECONDS ?? "1800")
 const CASE_LIMIT = Number(process.env.AIALRA_REAL_BENCH_LIMIT ?? "24")
@@ -31,6 +40,9 @@ const PARALLEL = Math.max(1, Number(process.env.AIALRA_REAL_BENCH_PARALLEL ?? "1
 const VERIFY_MODE = process.env.AIALRA_REAL_BENCH_VERIFY ?? "hybrid"
 const KEEP_WORKTREES = process.env.AIALRA_REAL_BENCH_KEEP_WORKTREES === "1"
 const DOCKER_PRUNE = process.env.AIALRA_REAL_BENCH_DOCKER_PRUNE === "1"
+const PROGRESS_AWARE_TIMEOUT = process.env.AIALRA_REAL_BENCH_PROGRESS_AWARE_TIMEOUT !== "0"
+const RERUN_TIMED_OUT = process.env.AIALRA_REAL_BENCH_RERUN_TIMED_OUT === "1"
+const READ_PUBLIC_EVENTS = process.env.AIALRA_REAL_BENCH_READ_PUBLIC_EVENTS !== "0"
 const CASE_FILTER = new Set(
   (process.env.AIALRA_REAL_BENCH_CASES ?? "")
     .split(",")
@@ -217,26 +229,63 @@ async function runCommand(command, args, options = {}) {
   }
 }
 
+function hashText(text) {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16)
+}
+
+function messageProgressSignature(messages, publicEvents, diffSignal) {
+  return hashText(
+    JSON.stringify({
+      messages: messages.map((message) => ({
+        id: message.id ?? message.info?.id,
+        role: message.role ?? message.info?.role,
+        parts: (message.parts ?? []).map((part) => ({
+          type: part.type,
+          id: part.id,
+          state: part.state?.status ?? part.state,
+          textLength: typeof part.text === "string" ? part.text.length : undefined,
+          outputLength: typeof part.output === "string" ? part.output.length : undefined,
+        })),
+      })),
+      publicEvents: publicEvents.map((event) => ({
+        id: event.id,
+        type: event.type,
+        status: event.status,
+        turnID: event.turnID,
+      })),
+      diffSignal,
+    }),
+  )
+}
+
+async function diffProgressSignal(worktree) {
+  const result = await runCommand("git", ["diff", "--shortstat"], { cwd: worktree, timeoutMs: 60_000 })
+  return result.stdout.trim()
+}
+
 async function requestJSON(url, options) {
   const controller = new AbortController()
   const timeoutMs = options?.timeoutMs ?? 30_000
   const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const fetchOptions = { ...(options ?? {}), signal: options?.signal ?? controller.signal }
-  delete fetchOptions.timeoutMs
-  const response = await fetch(url, fetchOptions)
-  const text = await response.text()
-  clearTimeout(timer)
-  let data
   try {
-    data = text ? JSON.parse(text) : undefined
-  } catch {
-    data = text
+    const fetchOptions = { ...(options ?? {}), signal: options?.signal ?? controller.signal }
+    delete fetchOptions.timeoutMs
+    const response = await fetch(url, fetchOptions)
+    const text = await response.text()
+    let data
+    try {
+      data = text ? JSON.parse(text) : undefined
+    } catch {
+      data = text
+    }
+    if (!response.ok) {
+      const body = typeof data === "string" ? data.slice(0, 300) : JSON.stringify(data).slice(0, 300)
+      throw new Error(`HTTP ${response.status}: ${body}`)
+    }
+    return data
+  } finally {
+    clearTimeout(timer)
   }
-  if (!response.ok) {
-    const body = typeof data === "string" ? data.slice(0, 300) : JSON.stringify(data).slice(0, 300)
-    throw new Error(`HTTP ${response.status}: ${body}`)
-  }
-  return data
 }
 
 async function loadProviderCatalog(target) {
@@ -269,16 +318,17 @@ async function validateTargets() {
 }
 
 async function readPublicEvents(target, sessionID, auth) {
-  if (!target.publicEvents) return []
+  if (!target.publicEvents || !READ_PUBLIC_EVENTS) return []
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 2000)
   let text = ""
+  let reader
   try {
     const response = await fetch(`${target.baseURL}/session/${sessionID}/events/public`, {
       headers: { authorization: auth },
       signal: controller.signal,
     })
-    const reader = response.body?.getReader()
+    reader = response.body?.getReader()
     if (!reader) return []
     const decoder = new TextDecoder()
     while (true) {
@@ -290,6 +340,8 @@ async function readPublicEvents(target, sessionID, auth) {
     // Public event streams are long-lived. A short read timeout captures replay.
   } finally {
     clearTimeout(timer)
+    await reader?.cancel().catch(() => undefined)
+    controller.abort()
   }
   return text
     .split(/\r?\n/)
@@ -316,6 +368,45 @@ function textFromMessages(messages) {
 
 function countToolCalls(messages) {
   return messages.reduce((sum, message) => sum + (message.parts ?? []).filter((part) => part.type === "tool").length, 0)
+}
+
+function toolCallKeys(messages) {
+  return messages.flatMap((message) =>
+    (message.parts ?? [])
+      .filter((part) => part.type === "tool")
+      .map((part) => {
+        const input = part.state?.input ?? {}
+        return [
+          part.tool,
+          input.command,
+          input.filePath ?? input.path,
+          input.pattern,
+          input.description,
+          input.query,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .slice(0, 240)
+      }),
+  )
+}
+
+function repeatedToolDeadlockReason(messages, diffSignal, lastDiffChangedAt) {
+  const keys = toolCallKeys(messages)
+  if (keys.length < REPEATED_TOOL_MIN_CALLS) return ""
+  if (Date.now() - lastDiffChangedAt < REPEATED_TOOL_NO_DIFF_MS) return ""
+  const recent = keys.slice(-REPEATED_TOOL_WINDOW)
+  const unique = new Set(recent)
+  if (unique.size > REPEATED_TOOL_MAX_UNIQUE) return ""
+  return `repeated tool loop: ${recent.length} recent calls collapsed to ${unique.size} unique command(s), diff=${diffSignal || "none"}`
+}
+
+function toolChurnDeadlockReason(messages, diffSignal, lastDiffChangedAt) {
+  const keys = toolCallKeys(messages)
+  if (keys.length < TOOL_CHURN_MIN_CALLS) return ""
+  if (Date.now() - lastDiffChangedAt < TOOL_CHURN_NO_DIFF_MS) return ""
+  return `non-productive tool churn: ${keys.length} tool calls while diff stayed ${diffSignal || "empty"} for ${TOOL_CHURN_NO_DIFF_MS}ms`
 }
 
 async function fetchJSON(url) {
@@ -436,7 +527,7 @@ async function ensureMirror(repo) {
 async function prepareWorktree(target, item, row) {
   const targetRoot = join(runRoot, target.id, item.instanceID)
   const worktree = join(targetRoot, "worktree")
-  await rm(worktree, { recursive: true, force: true })
+  await rm(targetRoot, { recursive: true, force: true })
   await mkdir(targetRoot, { recursive: true })
   const mirror = await ensureMirror(item.repo)
   const clone = await runCommand("git", ["clone", mirror, worktree], { timeoutMs: 600_000 })
@@ -522,7 +613,15 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
     let publicEvents = []
     let pollCount = 0
     let startTimedOut = false
-    while (Date.now() - started < TIMEOUT_MS) {
+    let progressTimedOut = false
+    let emergencyStopped = false
+    let timeoutReason = ""
+    let lastProgressAt = Date.now()
+    let lastProgressSignature = ""
+    let lastDiffSignal = ""
+    let lastDiffChangedAt = Date.now()
+    let lastProgressDescription = "created session"
+    while (true) {
       await new Promise((resolve) => setTimeout(resolve, 2000))
       pollCount++
       messages = await requestJSON(`${target.baseURL}/session/${sessionID}/message?${query}`, {
@@ -538,24 +637,75 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       const questions = await requestJSON(`${target.baseURL}/question?${query}`, {
         headers: { authorization: auth },
       }).catch(() => [])
+      if (pollCount % 10 === 0 || !lastProgressSignature) {
+        const nextDiffSignal = await diffProgressSignal(worktree).catch(() => lastDiffSignal)
+        if (nextDiffSignal !== lastDiffSignal) {
+          lastDiffSignal = nextDiffSignal
+          lastDiffChangedAt = Date.now()
+        }
+      }
       waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
       waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
       const idle = !status || !JSON.stringify(status).includes(sessionID) || !JSON.stringify(status).includes("busy")
       const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
-      if (target.publicEvents && pollCount % 5 === 0) publicEvents = await readPublicEvents(target, sessionID, auth)
+      if (target.publicEvents && READ_PUBLIC_EVENTS && pollCount % 5 === 0) {
+        publicEvents = await readPublicEvents(target, sessionID, auth)
+      }
       const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
       const hasModelActivity =
         hasAssistant ||
         countToolCalls(messages) > 0 ||
         publicEvents.some((event) => /^model\.|^tool\.|^command\.|^file\.|^final\./.test(event.type))
+      const progressSignature = messageProgressSignature(messages, publicEvents, lastDiffSignal)
+      if (progressSignature !== lastProgressSignature) {
+        lastProgressSignature = progressSignature
+        lastProgressAt = Date.now()
+        lastProgressDescription = [
+          `messages=${messages.length}`,
+          `tools=${countToolCalls(messages)}`,
+          `events=${publicEvents.length}`,
+          `diff=${lastDiffSignal || "none"}`,
+        ].join(" ")
+      }
       if (idle && !hasModelActivity && Date.now() - started >= OPENCODE_START_TIMEOUT_MS) {
         startTimedOut = true
+        timeoutReason = "assistant/model never started"
         break
       }
       if ((idle && (finalText || hasAssistant)) || hasTurnTerminal || waitingApproval || waitingQuestion) break
+      if (PROGRESS_AWARE_TIMEOUT && Date.now() - lastProgressAt >= PROGRESS_STALL_MS) {
+        progressTimedOut = true
+        timeoutReason = `no observable progress for ${PROGRESS_STALL_MS}ms after ${lastProgressDescription}`
+        break
+      }
+      const repeatedReason = PROGRESS_AWARE_TIMEOUT
+        ? repeatedToolDeadlockReason(messages, lastDiffSignal, lastDiffChangedAt)
+        : ""
+      if (repeatedReason) {
+        progressTimedOut = true
+        timeoutReason = repeatedReason
+        break
+      }
+      const churnReason = PROGRESS_AWARE_TIMEOUT
+        ? toolChurnDeadlockReason(messages, lastDiffSignal, lastDiffChangedAt)
+        : ""
+      if (churnReason) {
+        progressTimedOut = true
+        timeoutReason = churnReason
+        break
+      }
+      if (PROGRESS_AWARE_TIMEOUT && Date.now() - started >= EMERGENCY_MAX_MS) {
+        emergencyStopped = true
+        timeoutReason = `emergency cap reached after ${EMERGENCY_MAX_MS}ms`
+        break
+      }
+      if (!PROGRESS_AWARE_TIMEOUT && Date.now() - started >= TIMEOUT_MS) {
+        timedOut = true
+        timeoutReason = `fixed timeout reached after ${TIMEOUT_MS}ms`
+        break
+      }
     }
-    if (Date.now() - started >= TIMEOUT_MS) timedOut = true
-    if (timedOut || startTimedOut || waitingApproval || waitingQuestion) {
+    if (timedOut || startTimedOut || progressTimedOut || emergencyStopped || waitingApproval || waitingQuestion) {
       await requestJSON(`${target.baseURL}/session/${sessionID}/abort?${query}`, {
         method: "POST",
         headers: { authorization: auth, "content-type": "application/json" },
@@ -568,20 +718,28 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
     if (publicEvents.length) await writeFile(join(targetRoot, "opencode-public-events.json"), JSON.stringify(publicEvents, null, 2) + "\n")
     const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
     const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
-    const completedWithoutText = !timedOut && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
+    const stopped = timedOut || startTimedOut || progressTimedOut || emergencyStopped
+    const completedWithoutText = !stopped && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
     return {
       sessionID,
-      ok: !timedOut && !startTimedOut && !waitingApproval && !waitingQuestion && !completedWithoutText,
-      timedOut: timedOut || startTimedOut,
+      ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText,
+      timedOut: timedOut || startTimedOut || progressTimedOut || emergencyStopped,
+      timeoutReason,
+      progressAwareTimeout: stopped && (startTimedOut || progressTimedOut),
+      emergencyStopped,
+      lastProgressAgeMs: Date.now() - lastProgressAt,
       waitingApproval,
       waitingQuestion,
       durationMs: Date.now() - started,
-      hasTurnTerminal: hasTurnTerminal || (!timedOut && !waitingApproval && !waitingQuestion && !target.publicEvents && hasAssistant),
+      hasTurnTerminal:
+        hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && (!target.publicEvents || !READ_PUBLIC_EVENTS) && hasAssistant),
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
       error: startTimedOut
         ? `OpenCode did not start assistant/model activity within ${OPENCODE_START_TIMEOUT_MS}ms`
+        : progressTimedOut || emergencyStopped || timedOut
+          ? timeoutReason
         : completedWithoutText
           ? "session became idle without an assistant message"
           : "",
@@ -591,6 +749,9 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       sessionID,
       ok: false,
       timedOut: Date.now() - started >= TIMEOUT_MS,
+      timeoutReason: "",
+      progressAwareTimeout: false,
+      emergencyStopped: false,
       waitingApproval: false,
       waitingQuestion: false,
       durationMs: Date.now() - started,
@@ -818,6 +979,7 @@ function renderReport(manifest, selected, results) {
   lines.push(`- 测评组合数：\`${targets.length}\``)
   lines.push(`- 并发度：\`${PARALLEL}\``)
   lines.push(`- 验证模式：\`${VERIFY_MODE}\``)
+  lines.push(`- 超时判定：\`${PROGRESS_AWARE_TIMEOUT ? "progress-aware/logical-stall-detection" : "fixed-time-budget"}\``)
   lines.push(`- 说明：agent 只收到 problem statement，未收到 gold patch 或 test_patch`)
   lines.push("")
   lines.push("## 模型与推理档位")
@@ -847,11 +1009,11 @@ function renderReport(manifest, selected, results) {
     lines.push(`- 估算 token：\`${item.estimatedPromptTokens}\``)
     lines.push(`- F2P/P2P：\`${item.failToPassCount}/${item.passToPassCount}\``)
     lines.push("")
-    lines.push("| 对象 | 模型 / 档位 | 分数 | 完成 | patch | 验证模式 | 验证通过 | 测试补丁 | 超时 | 等待审批 | 工具调用 | 耗时 |")
-    lines.push("| --- | --- | ---: | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: |")
+    lines.push("| 对象 | 模型 / 档位 | 分数 | 完成 | patch | 验证模式 | 验证通过 | 测试补丁 | 超时 | 停止原因 | 等待审批 | 工具调用 | 耗时 |")
+    lines.push("| --- | --- | ---: | --- | ---: | --- | --- | --- | --- | --- | --- | ---: | ---: |")
     for (const result of caseResults) {
       lines.push(
-        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
+        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${(result.timeoutReason ?? "").replaceAll("|", "\\|") || "-"} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
       )
     }
     lines.push("")
@@ -955,6 +1117,10 @@ function mergeResults(existing, partial, jobs) {
   )
 }
 
+function stripTrailingWhitespace(text) {
+  return text.replace(/[ \t]+$/gm, "")
+}
+
 const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"))
 const selected = manifest.cases
   .filter((item) => CASE_FILTER.size === 0 || CASE_FILTER.has(item.instanceID) || CASE_FILTER.has(item.repo))
@@ -970,18 +1136,24 @@ for (const item of selected) {
 const partialResultsPath = join(runRoot, "results.partial.json")
 const partialReportPath = join(runRoot, "report.partial.md")
 const existingResults = await loadExistingResults(partialResultsPath)
-const completed = new Set(existingResults.map(resultKey))
+const selectedJobKeys = new Set(jobs.map(jobKey))
+const keepExistingResults = RERUN_TIMED_OUT
+  ? existingResults.filter((result) => !(result.timedOut && !result.progressAwareTimeout && selectedJobKeys.has(resultKey(result))))
+  : existingResults
+const completed = new Set(keepExistingResults.map(resultKey))
 const pendingJobs = jobs.filter((job) => !completed.has(jobKey(job)))
 if (existingResults.length > 0) {
-  console.log(`[real-bench] resume run=${runID} completed=${existingResults.length} pending=${pendingJobs.length}`)
+  console.log(
+    `[real-bench] resume run=${runID} completed=${keepExistingResults.length} pending=${pendingJobs.length} rerunTimedOut=${RERUN_TIMED_OUT}`,
+  )
 }
 const pendingResults = await runJobsWithLimit(pendingJobs, PARALLEL, async (partial) => {
-  const combined = mergeResults(existingResults, partial, jobs)
+  const combined = mergeResults(keepExistingResults, partial, jobs)
   await writeFile(partialResultsPath, JSON.stringify(combined, null, 2) + "\n")
-  await writeFile(partialReportPath, renderReport(manifest, selected, combined))
+  await writeFile(partialReportPath, stripTrailingWhitespace(renderReport(manifest, selected, combined)))
 })
-const results = mergeResults(existingResults, pendingResults, jobs)
-const report = renderReport(manifest, selected, results)
+const results = mergeResults(keepExistingResults, pendingResults, jobs)
+const report = stripTrailingWhitespace(renderReport(manifest, selected, results))
 const reportPath = join(REPORT_DIR, `real-benchmark-${runID}.md`)
 await writeFile(reportPath, report)
 await writeFile(join(runRoot, "results.json"), JSON.stringify(results, null, 2) + "\n")
