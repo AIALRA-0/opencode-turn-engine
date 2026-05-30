@@ -15,14 +15,22 @@ const REPO_CACHE = process.env.AIALRA_REAL_BENCH_REPO_CACHE ?? "/srv/aialra/cach
 const SECRETS_AIALRA = process.env.AIALRA_AB_AIALRA_ENV ?? "/srv/aialra/config/secrets/opencode.env"
 const SECRETS_DEBUG1 = process.env.AIALRA_AB_DEBUG1_ENV ?? "/srv/aialra/config/secrets/opencode-debug1.env"
 const CODEX_BIN = process.env.AIALRA_AB_CODEX_BIN ?? "codex"
-const CODEX_MODEL = process.env.AIALRA_AB_CODEX_MODEL
-const MODEL = process.env.AIALRA_AB_OPENCODE_MODEL ?? "deepseek/deepseek-v4-flash"
+const CODEX_MODEL = process.env.AIALRA_REAL_BENCH_CODEX_MODEL ?? process.env.AIALRA_AB_CODEX_MODEL ?? "gpt-5.5"
+const CODEX_EFFORT = process.env.AIALRA_REAL_BENCH_CODEX_EFFORT ?? "xhigh"
+const KIMICODE_MODEL = process.env.AIALRA_REAL_BENCH_KIMICODE_MODEL ?? "kimi/kimi-for-coding"
+const KIMICODE_VARIANT = process.env.AIALRA_REAL_BENCH_KIMICODE_VARIANT ?? ""
+const KIMICODE_EFFORT_LABEL = process.env.AIALRA_REAL_BENCH_KIMICODE_EFFORT_LABEL ?? "native coding model"
+const DEEPSEEK_V4_PRO_MODEL = process.env.AIALRA_REAL_BENCH_DEEPSEEK_V4_PRO_MODEL ?? "deepseek/deepseek-v4-pro"
+const DEEPSEEK_V4_PRO_VARIANT = process.env.AIALRA_REAL_BENCH_DEEPSEEK_V4_PRO_VARIANT ?? "max"
 const TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_TIMEOUT_MS ?? "900000")
+const OPENCODE_START_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_OPENCODE_START_TIMEOUT_MS ?? "180000")
 const TEST_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_TEST_TIMEOUT_MS ?? "600000")
 const OFFICIAL_TIMEOUT_SECONDS = Number(process.env.AIALRA_REAL_BENCH_OFFICIAL_TIMEOUT_SECONDS ?? "1800")
-const CASE_LIMIT = Number(process.env.AIALRA_REAL_BENCH_LIMIT ?? "1")
+const CASE_LIMIT = Number(process.env.AIALRA_REAL_BENCH_LIMIT ?? "24")
 const PARALLEL = Math.max(1, Number(process.env.AIALRA_REAL_BENCH_PARALLEL ?? "1"))
-const VERIFY_MODE = process.env.AIALRA_REAL_BENCH_VERIFY ?? "local"
+const VERIFY_MODE = process.env.AIALRA_REAL_BENCH_VERIFY ?? "hybrid"
+const KEEP_WORKTREES = process.env.AIALRA_REAL_BENCH_KEEP_WORKTREES === "1"
+const DOCKER_PRUNE = process.env.AIALRA_REAL_BENCH_DOCKER_PRUNE === "1"
 const CASE_FILTER = new Set(
   (process.env.AIALRA_REAL_BENCH_CASES ?? "")
     .split(",")
@@ -36,25 +44,59 @@ const TARGET_FILTER = new Set(
     .filter(Boolean),
 )
 
-const runID = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
+const runID = process.env.AIALRA_REAL_BENCH_RUN_ID ?? new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
 const runRoot = join(ROOT, runID)
 
 const allTargets = [
-  { id: "codex-cli", name: "原版 Codex CLI", kind: "codex" },
   {
-    id: "opencode-original",
-    name: "debug1 原版 OpenCode",
+    id: "codex-xhigh",
+    name: "原版 Codex CLI / xhigh 最大推理",
+    kind: "codex",
+    model: CODEX_MODEL,
+    effort: CODEX_EFFORT,
+  },
+  {
+    id: "debug1-kimicode-max",
+    name: "debug1 原版 OpenCode / Kimicode 最大努力",
     kind: "opencode",
     baseURL: process.env.AIALRA_AB_DEBUG1_URL ?? "http://127.0.0.1:12801",
     envFile: SECRETS_DEBUG1,
+    model: KIMICODE_MODEL,
+    variant: KIMICODE_VARIANT,
+    effortLabel: KIMICODE_EFFORT_LABEL,
     publicEvents: false,
   },
   {
-    id: "opencode-aialra",
-    name: "AIALRA OpenCode fork",
+    id: "aialra-kimicode-max",
+    name: "AIALRA OpenCode / Kimicode 最大努力",
     kind: "opencode",
     baseURL: process.env.AIALRA_AB_AIALRA_URL ?? "http://127.0.0.1:12601",
     envFile: SECRETS_AIALRA,
+    model: KIMICODE_MODEL,
+    variant: KIMICODE_VARIANT,
+    effortLabel: KIMICODE_EFFORT_LABEL,
+    publicEvents: true,
+  },
+  {
+    id: "debug1-deepseek-v4-pro-max",
+    name: "debug1 原版 OpenCode / DeepSeek V4 Pro max",
+    kind: "opencode",
+    baseURL: process.env.AIALRA_AB_DEBUG1_URL ?? "http://127.0.0.1:12801",
+    envFile: SECRETS_DEBUG1,
+    model: DEEPSEEK_V4_PRO_MODEL,
+    variant: DEEPSEEK_V4_PRO_VARIANT,
+    effortLabel: DEEPSEEK_V4_PRO_VARIANT,
+    publicEvents: false,
+  },
+  {
+    id: "aialra-deepseek-v4-pro-max",
+    name: "AIALRA OpenCode / DeepSeek V4 Pro max",
+    kind: "opencode",
+    baseURL: process.env.AIALRA_AB_AIALRA_URL ?? "http://127.0.0.1:12601",
+    envFile: SECRETS_AIALRA,
+    model: DEEPSEEK_V4_PRO_MODEL,
+    variant: DEEPSEEK_V4_PRO_VARIANT,
+    effortLabel: DEEPSEEK_V4_PRO_VARIANT,
     publicEvents: true,
   },
 ]
@@ -91,9 +133,21 @@ function authHeader(env) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
 }
 
-function providerModel() {
-  const [providerID, ...rest] = MODEL.split("/")
+function providerModel(model) {
+  const [providerID, ...rest] = model.split("/")
   return { providerID, modelID: rest.join("/") }
+}
+
+function containsDisallowedFastModel(target) {
+  if (!target.model) return false
+  return /\b(flash|fast|turbo)\b/i.test([target.model, target.variant, target.effort].filter(Boolean).join("/"))
+}
+
+function targetModelLabel(target) {
+  if (target.kind === "codex") return `${target.model} / effort=${target.effort}`
+  return `${target.model}${target.variant ? ` / variant=${target.variant}` : ""}${
+    target.effortLabel ? ` / effort=${target.effortLabel}` : ""
+  }`
 }
 
 async function exists(path) {
@@ -164,8 +218,14 @@ async function runCommand(command, args, options = {}) {
 }
 
 async function requestJSON(url, options) {
-  const response = await fetch(url, options)
+  const controller = new AbortController()
+  const timeoutMs = options?.timeoutMs ?? 30_000
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const fetchOptions = { ...(options ?? {}), signal: options?.signal ?? controller.signal }
+  delete fetchOptions.timeoutMs
+  const response = await fetch(url, fetchOptions)
   const text = await response.text()
+  clearTimeout(timer)
   let data
   try {
     data = text ? JSON.parse(text) : undefined
@@ -177,6 +237,35 @@ async function requestJSON(url, options) {
     throw new Error(`HTTP ${response.status}: ${body}`)
   }
   return data
+}
+
+async function loadProviderCatalog(target) {
+  const env = await envFromFile(target.envFile)
+  return requestJSON(`${target.baseURL}/provider?directory=${encodeURIComponent("/srv/aialra/turn-harness-target")}`, {
+    headers: { authorization: authHeader(env) },
+  })
+}
+
+function findCatalogModel(catalog, modelRef) {
+  const parsed = providerModel(modelRef)
+  const provider = (catalog.all ?? catalog.providers ?? []).find((item) => item.id === parsed.providerID)
+  return provider?.models?.[parsed.modelID]
+}
+
+async function validateTargets() {
+  if (targets.length === 0) throw new Error("No benchmark targets selected")
+  for (const target of targets) {
+    if (containsDisallowedFastModel(target)) {
+      throw new Error(`Target ${target.id} uses a disallowed fast/flash/turbo model: ${targetModelLabel(target)}`)
+    }
+    if (target.kind !== "opencode") continue
+    const model = findCatalogModel(await loadProviderCatalog(target), target.model)
+    if (!model) throw new Error(`Target ${target.id} model not found in provider catalog: ${target.model}`)
+    if (target.variant && !model.variants?.[target.variant]) {
+      throw new Error(`Target ${target.id} variant not found: ${target.model}/${target.variant}`)
+    }
+    if (!model.capabilities?.toolcall) throw new Error(`Target ${target.id} model has no tool calls: ${target.model}`)
+  }
 }
 
 async function readPublicEvents(target, sessionID, auth) {
@@ -363,7 +452,8 @@ async function prepareWorktree(target, item, row) {
 async function runCodex(target, item, row, worktree, targetRoot) {
   const prompt = buildAgentPrompt(row, item)
   const args = ["exec", "--json", "--full-auto", "--skip-git-repo-check", "-C", worktree]
-  if (CODEX_MODEL) args.push("-m", CODEX_MODEL)
+  if (target.model) args.push("-m", target.model)
+  if (target.effort) args.push("-c", `model_reasoning_effort="${target.effort}"`)
   args.push(prompt)
   const result = await runCommand(CODEX_BIN, args, { cwd: worktree, timeoutMs: TIMEOUT_MS })
   await writeFile(join(targetRoot, "codex-stdout.jsonl"), result.stdout)
@@ -399,7 +489,7 @@ async function runCodex(target, item, row, worktree, targetRoot) {
   }
 }
 
-async function runOpenCode(target, item, row, worktree) {
+async function runOpenCode(target, item, row, worktree, targetRoot) {
   const prompt = buildAgentPrompt(row, item)
   const env = await envFromFile(target.envFile)
   const auth = authHeader(env)
@@ -413,22 +503,28 @@ async function runOpenCode(target, item, row, worktree) {
       body: "{}",
     })
     sessionID = session.id
-    await requestJSON(`${target.baseURL}/session/${sessionID}/prompt_async?${query}`, {
+    const promptResponse = await requestJSON(`${target.baseURL}/session/${sessionID}/prompt_async?${query}`, {
       method: "POST",
       headers: { authorization: auth, "content-type": "application/json" },
       body: JSON.stringify({
         parts: [{ type: "text", text: prompt }],
-        model: providerModel(),
+        model: providerModel(target.model),
+        ...(target.variant ? { variant: target.variant } : {}),
       }),
     })
+    await writeFile(join(targetRoot, "opencode-prompt-async.json"), JSON.stringify(promptResponse, null, 2) + "\n")
     let messages = []
     let status
     let waitingApproval = false
     let waitingQuestion = false
     let timedOut = false
     let finalText = ""
+    let publicEvents = []
+    let pollCount = 0
+    let startTimedOut = false
     while (Date.now() - started < TIMEOUT_MS) {
       await new Promise((resolve) => setTimeout(resolve, 2000))
+      pollCount++
       messages = await requestJSON(`${target.baseURL}/session/${sessionID}/message?${query}`, {
         headers: { authorization: auth },
       }).catch(() => [])
@@ -445,31 +541,50 @@ async function runOpenCode(target, item, row, worktree) {
       waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
       waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
       const idle = !status || !JSON.stringify(status).includes(sessionID) || !JSON.stringify(status).includes("busy")
-      if ((idle && finalText) || waitingApproval || waitingQuestion) break
+      const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+      if (target.publicEvents && pollCount % 5 === 0) publicEvents = await readPublicEvents(target, sessionID, auth)
+      const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
+      const hasModelActivity =
+        hasAssistant ||
+        countToolCalls(messages) > 0 ||
+        publicEvents.some((event) => /^model\.|^tool\.|^command\.|^file\.|^final\./.test(event.type))
+      if (idle && !hasModelActivity && Date.now() - started >= OPENCODE_START_TIMEOUT_MS) {
+        startTimedOut = true
+        break
+      }
+      if ((idle && (finalText || hasAssistant)) || hasTurnTerminal || waitingApproval || waitingQuestion) break
     }
     if (Date.now() - started >= TIMEOUT_MS) timedOut = true
-    if (timedOut || waitingApproval || waitingQuestion) {
+    if (timedOut || startTimedOut || waitingApproval || waitingQuestion) {
       await requestJSON(`${target.baseURL}/session/${sessionID}/abort?${query}`, {
         method: "POST",
         headers: { authorization: auth, "content-type": "application/json" },
         body: "{}",
       }).catch(() => undefined)
     }
-    const publicEvents = await readPublicEvents(target, sessionID, auth)
+    publicEvents = await readPublicEvents(target, sessionID, auth)
+    await writeFile(join(targetRoot, "opencode-messages.json"), JSON.stringify(messages, null, 2) + "\n")
+    await writeFile(join(targetRoot, "opencode-status.json"), JSON.stringify(status ?? {}, null, 2) + "\n")
+    if (publicEvents.length) await writeFile(join(targetRoot, "opencode-public-events.json"), JSON.stringify(publicEvents, null, 2) + "\n")
+    const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+    const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
+    const completedWithoutText = !timedOut && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
     return {
       sessionID,
-      ok: !timedOut && !waitingApproval && !waitingQuestion,
-      timedOut,
+      ok: !timedOut && !startTimedOut && !waitingApproval && !waitingQuestion && !completedWithoutText,
+      timedOut: timedOut || startTimedOut,
       waitingApproval,
       waitingQuestion,
       durationMs: Date.now() - started,
-      hasTurnTerminal:
-        publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted") ||
-        (!timedOut && !waitingApproval && !waitingQuestion && target.id === "opencode-original"),
+      hasTurnTerminal: hasTurnTerminal || (!timedOut && !waitingApproval && !waitingQuestion && !target.publicEvents && hasAssistant),
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
-      error: "",
+      error: startTimedOut
+        ? `OpenCode did not start assistant/model activity within ${OPENCODE_START_TIMEOUT_MS}ms`
+        : completedWithoutText
+          ? "session became idle without an assistant message"
+          : "",
     }
   } catch (error) {
     return {
@@ -490,7 +605,7 @@ async function runOpenCode(target, item, row, worktree) {
 
 async function runAgent(target, item, row, worktree, targetRoot) {
   if (target.kind === "codex") return runCodex(target, item, row, worktree, targetRoot)
-  return runOpenCode(target, item, row, worktree)
+  return runOpenCode(target, item, row, worktree, targetRoot)
 }
 
 function localTestCommand(row, worktree) {
@@ -508,7 +623,7 @@ async function readPatch(worktree) {
   return diff.stdout
 }
 
-async function verifyOfficial(targetRoot, item, row, modelPatch) {
+async function verifyOfficial(targetRoot, item, row, modelPatch, target) {
   if (!item.dataset?.startsWith("SWE-bench/")) {
     return {
       mode: "official",
@@ -524,7 +639,7 @@ async function verifyOfficial(targetRoot, item, row, modelPatch) {
     predictionsPath,
     JSON.stringify({
       instance_id: item.instanceID,
-      model_name_or_path: `aialra-${item.instanceID}`,
+      model_name_or_path: `${target.id}-${item.instanceID}`,
       model_patch: modelPatch,
     }) + "\n",
   )
@@ -549,7 +664,7 @@ async function verifyOfficial(targetRoot, item, row, modelPatch) {
       "-t",
       String(OFFICIAL_TIMEOUT_SECONDS),
       "-id",
-      `${runID}-${item.instanceID}`.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 160),
+      `${runID}-${target.id}-${item.instanceID}`.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 160),
       "--report_dir",
       officialDir,
     ],
@@ -618,7 +733,11 @@ async function inspectAndVerify(targetRoot, worktree, item, row, target) {
   const diffNames = await runCommand("git", ["diff", "--name-only"], { cwd: worktree, timeoutMs: 60_000 })
   let verification
   if (VERIFY_MODE === "official") {
-    verification = await verifyOfficial(targetRoot, item, row, modelPatch)
+    verification = await verifyOfficial(targetRoot, item, row, modelPatch, target)
+  } else if (VERIFY_MODE === "hybrid") {
+    verification = item.dataset?.startsWith("SWE-bench/")
+      ? await verifyOfficial(targetRoot, item, row, modelPatch, target)
+      : await verifyLocal(targetRoot, worktree, row)
   } else if (VERIFY_MODE === "none") {
     verification = { mode: "none", attempted: false, passed: undefined }
   } else {
@@ -636,21 +755,36 @@ async function inspectAndVerify(targetRoot, worktree, item, row, target) {
 }
 
 async function runJob(target, item, row) {
-  const { targetRoot, worktree } = await prepareWorktree(target, item, row)
-  const agent = await runAgent(target, item, row, worktree, targetRoot)
-  const inspection = await inspectAndVerify(targetRoot, worktree, item, row, target)
-  const result = {
-    target: target.id,
-    targetName: target.name,
-    caseID: item.instanceID,
-    datasetKey: item.datasetKey,
-    repo: item.repo,
-    cwd: worktree,
-    ...agent,
-    ...inspection,
+  const targetRoot = join(runRoot, target.id, item.instanceID)
+  try {
+    const prepared = await prepareWorktree(target, item, row)
+    const agent = await runAgent(target, item, row, prepared.worktree, prepared.targetRoot)
+    const inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target)
+    const result = {
+      target: target.id,
+      targetName: target.name,
+      targetModel: targetModelLabel(target),
+      caseID: item.instanceID,
+      datasetKey: item.datasetKey,
+      repo: item.repo,
+      cwd: prepared.worktree,
+      ...agent,
+      ...inspection,
+    }
+    await writeFile(join(prepared.targetRoot, "result.json"), JSON.stringify(result, null, 2) + "\n")
+    return result
+  } finally {
+    await cleanupJobWorkspace(targetRoot)
   }
-  await writeFile(join(targetRoot, "result.json"), JSON.stringify(result, null, 2) + "\n")
-  return result
+}
+
+async function cleanupJobWorkspace(targetRoot) {
+  if (KEEP_WORKTREES) return
+  await rm(join(targetRoot, "worktree"), { recursive: true, force: true })
+  await rm(join(targetRoot, "official-harness"), { recursive: true, force: true })
+  if (DOCKER_PRUNE) {
+    await runCommand("docker", ["system", "prune", "-af"], { timeoutMs: 300_000 })
+  }
 }
 
 function scoreResult(result) {
@@ -676,25 +810,30 @@ function mark(value) {
 
 function renderReport(manifest, selected, results) {
   const lines = []
-  lines.push("# AIALRA 真实高难 Benchmark 三方报告")
+  lines.push("# AIALRA 真实高难 Benchmark 五组合报告")
   lines.push("")
   lines.push(`- 运行 ID：\`${runID}\``)
   lines.push(`- manifest：\`${MANIFEST_PATH}\``)
   lines.push(`- 运行目录：\`${runRoot}\``)
-  lines.push(`- OpenCode 模型：\`${MODEL}\``)
-  lines.push(`- Codex 模型：\`${CODEX_MODEL ?? "默认配置"}\``)
+  lines.push(`- 测评组合数：\`${targets.length}\``)
   lines.push(`- 并发度：\`${PARALLEL}\``)
   lines.push(`- 验证模式：\`${VERIFY_MODE}\``)
   lines.push(`- 说明：agent 只收到 problem statement，未收到 gold patch 或 test_patch`)
   lines.push("")
+  lines.push("## 模型与推理档位")
+  lines.push("")
+  lines.push("| 对象 | 模型 / 档位 |")
+  lines.push("| --- | --- |")
+  for (const target of targets) lines.push(`| ${target.name} | \`${targetModelLabel(target)}\` |`)
+  lines.push("")
   lines.push("## 总览")
   lines.push("")
-  lines.push("| 对象 | 总分 | 完成 | 有 patch | 验证通过 | 超时 | 等待审批 | turn 终态 |")
-  lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+  lines.push("| 对象 | 模型 / 档位 | 总分 | 完成 | 有 patch | 验证通过 | 超时 | 等待审批 | turn 终态 |")
+  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
   for (const target of targets) {
     const own = results.filter((item) => item.target === target.id)
     lines.push(
-      `| ${target.name} | ${own.reduce((sum, item) => sum + scoreResult(item), 0)} | ${own.filter((item) => item.ok).length}/${selected.length} | ${own.filter((item) => item.patchBytes > 0).length}/${selected.length} | ${own.filter((item) => item.verification?.passed).length}/${selected.length} | ${own.filter((item) => item.timedOut).length} | ${own.filter((item) => item.waitingApproval || item.waitingQuestion).length} | ${own.filter((item) => item.hasTurnTerminal).length}/${selected.length} |`,
+      `| ${target.name} | \`${targetModelLabel(target)}\` | ${own.reduce((sum, item) => sum + scoreResult(item), 0)} | ${own.filter((item) => item.ok).length}/${selected.length} | ${own.filter((item) => item.patchBytes > 0).length}/${selected.length} | ${own.filter((item) => item.verification?.passed).length}/${selected.length} | ${own.filter((item) => item.timedOut).length} | ${own.filter((item) => item.waitingApproval || item.waitingQuestion).length} | ${own.filter((item) => item.hasTurnTerminal).length}/${selected.length} |`,
     )
   }
   lines.push("")
@@ -708,11 +847,11 @@ function renderReport(manifest, selected, results) {
     lines.push(`- 估算 token：\`${item.estimatedPromptTokens}\``)
     lines.push(`- F2P/P2P：\`${item.failToPassCount}/${item.passToPassCount}\``)
     lines.push("")
-    lines.push("| 对象 | 分数 | 完成 | patch | 验证模式 | 验证通过 | 测试补丁 | 超时 | 等待审批 | 工具调用 | 耗时 |")
-    lines.push("| --- | ---: | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: |")
+    lines.push("| 对象 | 模型 / 档位 | 分数 | 完成 | patch | 验证模式 | 验证通过 | 测试补丁 | 超时 | 等待审批 | 工具调用 | 耗时 |")
+    lines.push("| --- | --- | ---: | --- | ---: | --- | --- | --- | --- | --- | ---: | ---: |")
     for (const result of caseResults) {
       lines.push(
-        `| ${result.targetName} | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
+        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
       )
     }
     lines.push("")
@@ -751,7 +890,7 @@ function renderReport(manifest, selected, results) {
   return lines.join("\n")
 }
 
-async function runJobsWithLimit(items, limit) {
+async function runJobsWithLimit(items, limit, onResult) {
   const results = []
   let next = 0
   async function worker(workerID) {
@@ -759,11 +898,14 @@ async function runJobsWithLimit(items, limit) {
       const current = items[next++]
       console.error(`[real-bench] worker=${workerID} ${current.target.id} ${current.item.instanceID}`)
       try {
-        results.push(await runJob(current.target, current.item, current.row))
+        const result = await runJob(current.target, current.item, current.row)
+        results.push(result)
+        await onResult?.(results)
       } catch (error) {
-        results.push({
+        const result = {
           target: current.target.id,
           targetName: current.target.name,
+          targetModel: targetModelLabel(current.target),
           caseID: current.item.instanceID,
           datasetKey: current.item.datasetKey,
           repo: current.item.repo,
@@ -777,7 +919,9 @@ async function runJobsWithLimit(items, limit) {
           toolCallCount: 0,
           verification: { mode: VERIFY_MODE, attempted: false, passed: false, output: "" },
           error: error instanceof Error ? error.message : String(error),
-        })
+        }
+        results.push(result)
+        await onResult?.(results)
       }
     }
   }
@@ -785,10 +929,37 @@ async function runJobsWithLimit(items, limit) {
   return results
 }
 
+async function loadExistingResults(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"))
+  } catch {
+    return []
+  }
+}
+
+function jobKey(job) {
+  return `${job.target.id}\u0000${job.item.instanceID}`
+}
+
+function resultKey(result) {
+  return `${result.target}\u0000${result.caseID}`
+}
+
+function mergeResults(existing, partial, jobs) {
+  const merged = new Map()
+  for (const result of existing) merged.set(resultKey(result), result)
+  for (const result of partial) merged.set(resultKey(result), result)
+  const order = new Map(jobs.map((job, index) => [jobKey(job), index]))
+  return Array.from(merged.values()).sort(
+    (left, right) => (order.get(resultKey(left)) ?? 1_000_000) - (order.get(resultKey(right)) ?? 1_000_000),
+  )
+}
+
 const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"))
 const selected = manifest.cases
   .filter((item) => CASE_FILTER.size === 0 || CASE_FILTER.has(item.instanceID) || CASE_FILTER.has(item.repo))
   .slice(0, CASE_LIMIT)
+await validateTargets()
 await mkdir(REPORT_DIR, { recursive: true })
 await mkdir(runRoot, { recursive: true })
 const rows = await loadFullRows(manifest, selected)
@@ -796,7 +967,20 @@ const jobs = []
 for (const item of selected) {
   for (const target of targets) jobs.push({ item, target, row: rows.get(item.instanceID) })
 }
-const results = await runJobsWithLimit(jobs, PARALLEL)
+const partialResultsPath = join(runRoot, "results.partial.json")
+const partialReportPath = join(runRoot, "report.partial.md")
+const existingResults = await loadExistingResults(partialResultsPath)
+const completed = new Set(existingResults.map(resultKey))
+const pendingJobs = jobs.filter((job) => !completed.has(jobKey(job)))
+if (existingResults.length > 0) {
+  console.log(`[real-bench] resume run=${runID} completed=${existingResults.length} pending=${pendingJobs.length}`)
+}
+const pendingResults = await runJobsWithLimit(pendingJobs, PARALLEL, async (partial) => {
+  const combined = mergeResults(existingResults, partial, jobs)
+  await writeFile(partialResultsPath, JSON.stringify(combined, null, 2) + "\n")
+  await writeFile(partialReportPath, renderReport(manifest, selected, combined))
+})
+const results = mergeResults(existingResults, pendingResults, jobs)
 const report = renderReport(manifest, selected, results)
 const reportPath = join(REPORT_DIR, `real-benchmark-${runID}.md`)
 await writeFile(reportPath, report)

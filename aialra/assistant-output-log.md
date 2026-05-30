@@ -1,5 +1,35 @@
 # Assistant Output Log
 
+## 2026-05-30 输出记录：24 题真实高难五组合 Benchmark 全量执行
+
+用户要求澄清并执行全量真实高难测评：24 个 benchmark 任务，每个任务跑 5 个组合，不允许使用 flash、fast、turbo 或非旗舰模型。最终组合为 Codex CLI `gpt-5.5 / xhigh`、debug1 原版 OpenCode + `kimi/kimi-for-coding`、AIALRA OpenCode + `kimi/kimi-for-coding`、debug1 原版 OpenCode + `deepseek/deepseek-v4-pro / max`、AIALRA OpenCode + `deepseek/deepseek-v4-pro / max`
+
+本轮先清理旧的无效 benchmark run，再启动正式 run `20260530071350`。执行过程中遇到一次真实磁盘满问题，错误为 `ENOSPC: no space left on device`，原因是 SWE-bench 官方验证拉起 Docker 镜像和大量真实仓库 worktree。处理方式不是重跑全量，而是先保护已完成 partial 结果，清理旧 SWE-bench 容器和 Docker 未使用镜像，再给 `run-real-benchmark.mjs` 增加断点续跑、自动清理 worktree、自动清理 official-harness、HTTP 请求超时保护，随后用同一个 runID 继续执行
+
+正式 run 完成后发现 3 条基建失败结果：两个 `fetch failed` 和一个 `ENOSPC`。这些不是模型能力失败，因此从 partial 结果里剔除并定向补跑。补跑确认只跑 `pending=3`，最终得到 120/120 结果，0 duplicate，0 infrastructure error
+
+最终主要结果：
+
+| 对象 | 可验证通过 | 超时 | 零补丁 | 平均耗时 | 平均工具调用 | patch 总量 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Codex CLI `gpt-5.5 / xhigh` | 7/24 | 0 | 0 | 652s | 0* | 271 KB |
+| AIALRA OpenCode + DeepSeek V4 Pro max | 5/24 | 3 | 1 | 989s | 64 | 134 KB |
+| debug1 OpenCode + DeepSeek V4 Pro max | 5/24 | 4 | 4 | 906s | 41 | 202 KB |
+| debug1 OpenCode + Kimicode | 4/24 | 6 | 6 | 860s | 60 | 800 KB |
+| AIALRA OpenCode + Kimicode | 1/24 | 12 | 12 | 1148s | 96 | 95 KB |
+
+`*` Codex CLI 工具调用数显示为 0 是 runner 尚未解析 Codex JSON stream 里的工具事件，不能和 OpenCode 的工具计数直接横比
+
+本轮关键解释：Codex CLI 仍是最稳基线，官方通过最多且无超时。AIALRA DeepSeek 和 debug1 DeepSeek 通过数相同，但 AIALRA 的零补丁更少、超时更少，代价是更慢、工具调用更多。debug1 Kimicode 偶尔能通过，但大补丁和超时更明显。AIALRA Kimicode 当前最弱，大量高工具调用不能转化成有效 patch
+
+本轮生成文件：
+
+- `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350.md`
+- `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350-analysis.md`
+- `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350-results.json`
+
+下一步建议已写入分析报告：优先做 verification-driven loop，验证驱动回路；weak-model loop intervention，弱模型循环干预；resource governor，资源治理器；patch quality gate，补丁质量门禁；benchmark dashboard，评测面板。结论很明确：当前最大差距已经不是“能不能调用工具”，而是“能不能根据验证反馈收敛”
+
 ## 2026-05-16 Turn Intake Gap Explanation
 
 这次回答已写入 [assistant-output-log.md](/srv/aialra/apps/opencode-turn-engine/aialra/assistant-output-log.md:1)。从这次开始，长技术解释我会先落盘再回复，避免后面回看时只剩零碎印象。

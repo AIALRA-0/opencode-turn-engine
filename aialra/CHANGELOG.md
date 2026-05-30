@@ -2,6 +2,26 @@
 
 ## 2026-05-30
 
+- Completed the first full 24-case high-difficulty real benchmark matrix across
+  five max-effort combinations: Codex CLI `gpt-5.5` with `xhigh`, debug1
+  original OpenCode with Kimicode, AIALRA OpenCode with Kimicode, debug1
+  original OpenCode with DeepSeek V4 Pro `max`, and AIALRA OpenCode with
+  DeepSeek V4 Pro `max`.
+- The final run `20260530071350` produced 120/120 results with no duplicate rows
+  and no remaining infrastructure errors after targeted reruns. Codex CLI
+  resolved 7 verified cases, AIALRA DeepSeek V4 Pro resolved 5, debug1 DeepSeek
+  V4 Pro resolved 5, debug1 Kimicode resolved 4, and AIALRA Kimicode resolved 1.
+- Added benchmark runner resume and cleanup support. `AIALRA_REAL_BENCH_RUN_ID`
+  resumes an existing run, completed target worktrees and official harness
+  scratch directories are removed by default, `AIALRA_REAL_BENCH_KEEP_WORKTREES=1`
+  preserves them, and `AIALRA_REAL_BENCH_DOCKER_PRUNE=1` can prune unused Docker
+  artifacts after each job.
+- Added timeout protection to benchmark HTTP JSON requests so unhealthy OpenCode
+  provider endpoints cannot hang the whole run during target validation.
+- Added the full benchmark report and machine-readable results under
+  `aialra/turn-observability/real-benchmark-reports/`, plus a dedicated analysis
+  report explaining pass rates, timeout/zero-patch behavior, architecture gaps,
+  and the next harness direction.
 - Added the first real benchmark execution runner. The runner loads the
   benchmark manifest, fetches the full public problem statement and test patch,
   clones the real GitHub repository, checks out the recorded base commit, runs

@@ -3,6 +3,19 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.0000 2026-05-30 真实高难 Benchmark 全量结果
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| 全量执行范围 | 之前只跑过 15 场 smoke、本地 SWE-style 和沙箱任务，能验证 harness 健康，但题目偏短，拉不开高难工程差距 | 已完成 run `20260530071350`，24 个真实公开 agent benchmark 任务，每题 5 个组合，共 120 次 agent run，最终 120/120 结果，无重复行，无剩余基建错误 | 打开 `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350.md` 和 `real-benchmark-20260530071350-results.json` | Pro 类任务有一部分没有可等价执行的 official pass/fail，本轮单独标为 unverified，未把它们伪装成通过 |
+| 模型和档位 | 旧 A/B 曾使用 flash 或默认模型，用户担心成绩不代表旗舰能力 | 本轮只保留最大努力组合：Codex CLI `gpt-5.5 / xhigh`，debug1 原版 OpenCode + Kimicode，AIALRA OpenCode + Kimicode，debug1 原版 OpenCode + DeepSeek V4 Pro max，AIALRA OpenCode + DeepSeek V4 Pro max | 报告顶部和每个 target summary 都写明 model、reasoning effort 和 variant | Kimicode 当前 OpenCode provider 没有可显式设置 `reasoning=max` 的字段，本轮使用实际能稳定返回助手响应的 `kimi/kimi-for-coding` |
+| 总体排名 | 之前只能说“这轮看起来谁更好”，没有统一高难得分 | 本轮官方/可验证通过数为 Codex CLI 7/24，AIALRA DeepSeek V4 Pro 5/24，debug1 DeepSeek V4 Pro 5/24，debug1 Kimicode 4/24，AIALRA Kimicode 1/24 | 看 `real-benchmark-20260530071350-analysis.md` 的总览矩阵 | 通过数只按可验证任务统计，未验证任务不计为成功 |
+| AIALRA vs 原版 OpenCode DeepSeek | 之前只能凭单个任务感知 AIALRA 是否更稳 | 两者通过数同为 5/24，AIALRA 超时更少，3 对 4，零补丁更少，1 对 4，但 AIALRA 平均耗时更长，989 秒对 906 秒，平均工具调用更多，64 对 41 | 对比 `aialra-deepseek-v4-pro-max` 与 `debug1-deepseek-v4-pro-max` 的 summary | AIALRA 的门禁和可观测性带来稳定收益，也带来执行开销，下一步要优化收敛效率 |
+| Codex CLI 基线 | 之前我们不知道和 Codex 的真实差距主要在哪 | Codex CLI 仍是最稳基线，7/24 可验证通过，0 超时，0 零补丁，平均耗时 652 秒 | 看 `codex-xhigh` summary | 当前 runner 没有解析 Codex JSON stream 里的工具事件，所以 Codex 工具调用数显示为 0，不能和 OpenCode 工具数横比 |
+| 弱模型表现 | 之前 Kimi 卡死主要靠主观感知 | AIALRA Kimicode 只有 1/24 可验证通过，12 次超时，12 次零补丁，平均 96 次工具调用，说明弱模型会消耗很多工具步骤但不能有效产出 patch | 看 `aialra-kimicode-max` summary 和单题 rows | 这不是单纯“沙箱太严”，而是缺少验证驱动回路和弱模型策略切换 |
+| Runner 稳定性 | 长跑过程中磁盘满或 provider hang 会让整轮重来 | `run-real-benchmark.mjs` 已支持 `AIALRA_REAL_BENCH_RUN_ID` 断点续跑，默认清理完成 worktree 和 official harness scratch，HTTP JSON 请求有超时保护，可选 `AIALRA_REAL_BENCH_DOCKER_PRUNE=1` 做 Docker 清理 | 看脚本参数和本轮 run 目录，最终结果不是全量重跑得来，而是同一 runID 断点续跑和定向补跑 | 大型 120+ run 仍建议使用更大磁盘或远程 worker，当前本机只有有限余量 |
+| 下一步方向 | 之前主要继续补沙箱、UI 和执行器 | 本轮说明最大差距已经从“能不能调用工具”转成“能不能根据测试失败收敛”，下一阶段优先做 verification-driven loop、weak-model loop intervention、resource governor、patch quality gate、benchmark dashboard | 看 `real-benchmark-20260530071350-analysis.md` 的下一步方向 | Codex exec-server 仍要继续靠拢，但 benchmark 结论表明验证反馈和失败恢复优先级更高 |
+
 ## 0.000 2026-05-30 高难度 benchmark 选题和 A/B 加速状态
 
 | 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
