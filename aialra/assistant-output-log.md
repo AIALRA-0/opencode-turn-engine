@@ -820,3 +820,21 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 为了让并发结果可信，旧脚本里共享的 `/srv/aialra/ab-outside-should-be-denied.txt` 已改成按 runID、target、case 生成唯一越界探测路径，避免并发时 A 对象留下的文件污染 B 对象的判定
 
 验证结果：`node --check` 已通过两个脚本，小样本 selector smoke 已通过，正式 selector 已成功生成 24 条真实 benchmark manifest，`AIALRA_AB_CASE_LIMIT=0 AIALRA_AB_PARALLEL=3` 的 runner 空任务 smoke 已通过
+
+## 2026-05-30 追加实现记录：真实 SWE-bench 三方执行和官方验证
+
+本轮新增 `run-real-benchmark.mjs`，真实 benchmark 执行器，能够读取 manifest，回源拉完整 problem statement 和 test_patch，clone 真实 GitHub 仓库，checkout 到 base commit，然后在同一题上并行运行 Codex CLI、debug1 原版 OpenCode 和 AIALRA OpenCode fork
+
+执行器保证 agent 只收到 problem statement，问题描述，不收到 gold patch，也不收到 test_patch，测试补丁。agent 完成后，runner 才收集 `git diff` 形成 model patch，再进入验证阶段
+
+首个真实三方样本选择 `psf__requests-2674`，来自 SWE-bench Lite，仓库是 `psf/requests`，并发度 3。三方都完成且都产生 patch，AIALRA 和 debug1 都改 `requests/adapters.py`，Codex CLI 改 `requests/adapters.py` 并额外补 `test_requests.py`
+
+本地验证阶段暴露了 runner 自身问题：第一次运行因为本机只有 `python3` 没有 `python` 导致 spawn ENOENT，已修复为命令不存在时写入报告而不是崩掉，并把 Python 验证命令切到 `python3`
+
+本地验证阶段还证明不能把本机 pytest 当最终结论：requests 旧仓库本机缺 `pytest`，且旧 vendored urllib3 对 Python 3.12 不干净，所以 local-test-patch 只是降级信号
+
+随后对同一轮 agent 产出的 patch 追加运行 SWE-bench 官方 Docker harness。官方结果：AIALRA OpenCode fork completed 1/1 resolved 1/1；原版 Codex CLI completed 1/1 resolved 1/1；debug1 原版 OpenCode completed 1/1 resolved 0/1
+
+真实报告路径：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530051310.md`
+
+未完成边界：官方 harness 追加验证目前是手动对首个样本三方 patch 执行，`run-real-benchmark.mjs` 已有 `AIALRA_REAL_BENCH_VERIFY=official` 模式，但下一步要把“先跑 agent，再自动批量 official harness 验证，再合并官方结果”做成完全自动化流水线

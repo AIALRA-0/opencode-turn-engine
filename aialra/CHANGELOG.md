@@ -2,6 +2,17 @@
 
 ## 2026-05-30
 
+- Added the first real benchmark execution runner. The runner loads the
+  benchmark manifest, fetches the full public problem statement and test patch,
+  clones the real GitHub repository, checks out the recorded base commit, runs
+  Codex CLI, debug1 original OpenCode, and the AIALRA fork on isolated worktrees,
+  saves each model patch, and writes a scored Markdown report.
+- Ran the first real three-way SWE-bench Lite task, `psf__requests-2674`, across
+  all three targets with parallel execution. AIALRA OpenCode and Codex CLI both
+  resolved the task under the official SWE-bench Docker harness; debug1
+  original OpenCode completed but did not resolve the task.
+- Hardened the real benchmark runner so a missing local test executable records
+  a verification failure instead of crashing the whole run.
 - Added a real agent benchmark case selector for A/B planning. The selector
   pulls public rows from SWE-bench Verified, SWE-bench Lite, and SWE-bench Pro,
   scores them by difficulty, fail-to-pass coverage, pass-to-pass coverage,

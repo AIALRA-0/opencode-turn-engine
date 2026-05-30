@@ -11,6 +11,8 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | token 消耗控制 | 旧任务几乎都很短，token 成本低但能力区分度也低 | 默认目标 3500 token，过滤 700 到 12000 token，选“足够复杂但不至于爆预算”的题 | `latest.md` 表格里有估算 token、patch 大小、测试数量和分数 | token 是按字符估算，不等于 provider 真实 tokenizer，但足够做预筛 |
 | 数据集多样性 | 只用本地手写 fixture | 默认拉 SWE-bench Verified、SWE-bench Lite、SWE-bench Pro，并限制同一仓库最多 2 道 | `latest.json` 的 `sources` 和每条 case 的 `datasetKey` 可追溯 | Terminal-Bench 这类终端任务还没有接入执行，只在下一步纳入执行器路线 |
 | A/B 重跑速度 | runner 串行跑 target 和 case，完整 15 场容易跑很久 | 新增 `AIALRA_AB_PARALLEL`，可以并发跑多个 target/case；每个工作区外写入探测路径按 runID、target、case 唯一化，避免并发污染 | 例如 `AIALRA_AB_PARALLEL=3 node aialra/turn-observability/scripts/run-ab-comparison.mjs`，报告顶部会显示并发度 | 默认仍是 1，避免线上模型限流；提高并发要看 provider 限速和服务器负载 |
+| 真实 SWE-bench 执行 | manifest 只有选题，没有 clone、checkout、三方执行和官方验证 | 新增 `run-real-benchmark.mjs`，可 clone 真实仓库、checkout base commit、只把 problem statement 给 agent、收集 model patch、应用 test_patch 或调用官方 harness | 首份报告 `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530051310.md` | 官方 harness 批量自动合并还没完全产品化，首个样本已手动追加官方验证 |
+| 首个官方验证结果 | 没有真实高难官方判定 | `psf__requests-2674` 中 AIALRA OpenCode fork 和 Codex CLI 都 official resolved，debug1 原版 OpenCode completed 但 unresolved | 看报告的“官方 SWE-bench Docker harness 追加验证” | 只覆盖 1 道真实样本，不能外推成全量 benchmark 结论 |
 
 ## 0.00 2026-05-30 最新修复状态
 
