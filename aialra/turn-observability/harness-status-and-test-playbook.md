@@ -3,6 +3,15 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.000 2026-05-30 高难度 benchmark 选题和 A/B 加速状态
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| A/B prompt 难度 | 15 场主要是 smoke、沙箱和本地小型 SWE-style，适合验证 harness 健康，但不适合拉开高难度工程能力差距 | 新增真实 benchmark 选题器，从 SWE-bench Verified、SWE-bench Lite、SWE-bench Pro 拉公开 issue，按难度、fail-to-pass 数、pass-to-pass 数、patch 复杂度和 prompt token 平衡打分 | 运行 `node aialra/turn-observability/scripts/select-agent-benchmark-cases.mjs`，查看 `aialra/turn-observability/benchmark-cases/latest.md` | 这一步是选题和 manifest，不是完整官方 SWE-bench 执行，下一步还要 clone 仓库、checkout base commit、运行 official harness |
+| token 消耗控制 | 旧任务几乎都很短，token 成本低但能力区分度也低 | 默认目标 3500 token，过滤 700 到 12000 token，选“足够复杂但不至于爆预算”的题 | `latest.md` 表格里有估算 token、patch 大小、测试数量和分数 | token 是按字符估算，不等于 provider 真实 tokenizer，但足够做预筛 |
+| 数据集多样性 | 只用本地手写 fixture | 默认拉 SWE-bench Verified、SWE-bench Lite、SWE-bench Pro，并限制同一仓库最多 2 道 | `latest.json` 的 `sources` 和每条 case 的 `datasetKey` 可追溯 | Terminal-Bench 这类终端任务还没有接入执行，只在下一步纳入执行器路线 |
+| A/B 重跑速度 | runner 串行跑 target 和 case，完整 15 场容易跑很久 | 新增 `AIALRA_AB_PARALLEL`，可以并发跑多个 target/case；每个工作区外写入探测路径按 runID、target、case 唯一化，避免并发污染 | 例如 `AIALRA_AB_PARALLEL=3 node aialra/turn-observability/scripts/run-ab-comparison.mjs`，报告顶部会显示并发度 | 默认仍是 1，避免线上模型限流；提高并发要看 provider 限速和服务器负载 |
+
 ## 0.00 2026-05-30 最新修复状态
 
 | 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |

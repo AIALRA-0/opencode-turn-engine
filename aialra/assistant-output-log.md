@@ -804,3 +804,19 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 部署记录：线上版本 `0.0.0-dev-202605300438` 已构建并部署，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass，本地认证 API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200
 
 当前未完成边界：完整 15 场三方 A/B 还没有在这次补丁后重跑，只做了失败场景定向复验；approval reviewer，审批人语义 仍未做到 Codex 1:1；A/B harness 仍需要 security profile，安全档案 区分真实用户默认监督模式和无人 benchmark 模式；Playwright 浏览器点击验收仍需稳定 runner
+
+## 2026-05-30 追加实现记录：真实 benchmark 选题和 A/B 并发加速
+
+用户指出现有 A/B prompt 太简单，只能验证 harness 是否健康，不能拉开复杂工程任务差距，这个判断正确
+
+本轮新增 `select-agent-benchmark-cases.mjs`，真实 benchmark 选题器，从 Hugging Face dataset server 拉 SWE-bench Verified、SWE-bench Lite、SWE-bench Pro 公开任务，再按难度、fail-to-pass 测试数量、pass-to-pass 测试数量、patch 复杂度、test patch 复杂度和 prompt token 平衡打分
+
+已生成正式选题清单：`aialra/turn-observability/benchmark-cases/agent-benchmark-selection-20260530045812.md`，本次拉取 600 条公开任务，239 条符合 token 范围，最终选出 24 条，前排包含 astropy、django、pytest、requests、matplotlib、NodeBB、ansible 等真实仓库任务
+
+这一步不是伪装成已完成 SWE-bench 执行，当前完成的是“真实高难任务选择和追溯”，下一步才是“clone 仓库、checkout base commit、只给 agent problem statement、执行后用 test patch 或 official harness 验证”
+
+本轮同时给 `run-ab-comparison.mjs` 增加 `AIALRA_AB_PARALLEL`，A/B runner 可按并发度跑多个 target/case，默认仍是 1，避免线上 provider 限速，用户需要加速时可以显式设置，例如 `AIALRA_AB_PARALLEL=3`
+
+为了让并发结果可信，旧脚本里共享的 `/srv/aialra/ab-outside-should-be-denied.txt` 已改成按 runID、target、case 生成唯一越界探测路径，避免并发时 A 对象留下的文件污染 B 对象的判定
+
+验证结果：`node --check` 已通过两个脚本，小样本 selector smoke 已通过，正式 selector 已成功生成 24 条真实 benchmark manifest，`AIALRA_AB_CASE_LIMIT=0 AIALRA_AB_PARALLEL=3` 的 runner 空任务 smoke 已通过

@@ -2,6 +2,18 @@
 
 ## 2026-05-30
 
+- Added a real agent benchmark case selector for A/B planning. The selector
+  pulls public rows from SWE-bench Verified, SWE-bench Lite, and SWE-bench Pro,
+  scores them by difficulty, fail-to-pass coverage, pass-to-pass coverage,
+  patch/test complexity, and prompt-token balance, then writes a traceable
+  Markdown and JSON manifest under `aialra/turn-observability/benchmark-cases/`.
+- Added `AIALRA_AB_PARALLEL` to the three-way A/B runner so smoke and benchmark
+  runs can execute multiple target/case jobs concurrently when model provider
+  rate limits allow it. The runner now gives every target/case pair a unique
+  outside-workspace probe path, so parallel runs do not contaminate one another.
+- Updated the harness playbook to separate smoke/harness checks from high
+  difficulty benchmark selection, and to state clearly that the new SWE-bench
+  manifest is a selection step, not a completed official SWE-bench execution.
 - Restored AIALRA session toolbar buttons in the upstream V2 titlebar branch.
   The left project/sidebar toggle, terminal, file tree, Turn Inspector, and
   Sandbox Control Center controls are now present in the new layout path as
