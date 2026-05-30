@@ -778,3 +778,29 @@ Kimi 调查已写入 `aialra/turn-observability/kimi-performance-investigation-2
 浏览器验收诚实记录：本机 `playwright_cli.sh` 缺少执行位，改用 `bash playwright_cli.sh` 后 `npx playwright-cli` 长时间无输出，已清理卡住进程，所以本轮没有把浏览器点击验收说成通过，UI 层以源码修复、构建通过、线上部署和用户刷新实测为准，后续应补稳定浏览器 runner
 
 三方 A/B 诚实记录：本轮没有完整重跑 15 场三方 A/B，因为新默认策略是命令每次询问、网络每次询问，非交互 runner 遇到 bash 或网络会按设计停在审批等待，下一步必须先给 A/B harness 加安全策略档案，区分真实用户默认安全模式和无人工 benchmark 模式
+
+## 2026-05-30 追加实现记录：TurnContext shell 门禁收口、A/B 定向复跑、线上部署
+
+用户要求继续执行直到完全完成，并指出另一个子对话误启动了 A/B 测试
+
+本轮先处理上一份完整 15 场 A/B 报告里的真实缺口：AIALRA 在 `14-sandbox-natural` 和 `15-network-natural` 两场里会停在“等待审批”
+
+根因不是文件越权，也不是 turn 没有终态，而是模型发起 bash 工具调用时，虽然已经有 TurnContext，回合上下文，但 shell 工具仍会额外走 OpenCode legacy shell-pattern approval，旧审批层会把非交互 A/B 卡住
+
+修复方式：当 shell 工具上下文里已经有 TurnContext 时，目录访问由 TurnSandbox，回合沙箱 检查，命令和网络由本轮 command policy，命令策略 与 network policy，网络策略 处理，不再叠加旧 shell-pattern 审批
+
+兼容边界：没有 TurnContext 的旧 OpenCode 调用仍保留 legacy approval，`commandPolicy=ask` 仍会显式审批，这不是绕过审批，而是避免同一条模型工具调用被两套门禁重复卡住
+
+新增测试：`test/tool/shell.test.ts` 增加 “turn workspace command policy does not open legacy shell approval”，证明 workspace 命令策略下不会触发旧审批
+
+A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精准重跑失败场景，避免每次都烧完整 15 场
+
+定向复跑结果：`aialra/turn-observability/ab-reports/ab-comparison-20260530035321.md` 只跑 AIALRA 的 `14-sandbox-natural` 和 `15-network-natural`，两场均 15/15，0 等待审批，0 越界写入，2/2 turn 终态，2/2 可解释
+
+误启动的额外 A/B 进程已停止，运行 ID 为 `20260530042450`，没有纳入本轮验收报告
+
+验证记录：`bun --cwd packages/opencode test test/tool/shell.test.ts test/tool/turn-sandbox.test.ts --timeout 30000` 43 pass；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`node --test aialra/turn-observability/tests/*.test.js` 1 pass；live Codex exec-server 工具测试 28 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过；`./aialra/opencode-deployment/scripts/build-opencode.sh` 构建通过
+
+部署记录：线上版本 `0.0.0-dev-202605300438` 已构建并部署，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass，本地认证 API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200
+
+当前未完成边界：完整 15 场三方 A/B 还没有在这次补丁后重跑，只做了失败场景定向复验；approval reviewer，审批人语义 仍未做到 Codex 1:1；A/B harness 仍需要 security profile，安全档案 区分真实用户默认监督模式和无人 benchmark 模式；Playwright 浏览器点击验收仍需稳定 runner

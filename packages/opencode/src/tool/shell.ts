@@ -277,16 +277,22 @@ function activeTurn(ctx: Tool.Context) {
 
 const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, options?: { skipShellPatterns?: boolean }) {
   if (scan.dirs.size > 0) {
-    const globs = Array.from(scan.dirs).map((dir) => {
-      if (process.platform === "win32") return AppFileSystem.normalizePathPattern(path.join(dir, "*"))
-      return path.join(dir, "*")
-    })
-    yield* ctx.ask({
-      permission: "external_directory",
-      patterns: globs,
-      always: globs,
-      metadata: {},
-    })
+    if (ctx.turn) {
+      for (const dir of scan.dirs) {
+        yield* TurnSandbox.assertFileAccess(ctx, "read", dir)
+      }
+    } else {
+      const globs = Array.from(scan.dirs).map((dir) => {
+        if (process.platform === "win32") return AppFileSystem.normalizePathPattern(path.join(dir, "*"))
+        return path.join(dir, "*")
+      })
+      yield* ctx.ask({
+        permission: "external_directory",
+        patterns: globs,
+        always: globs,
+        metadata: {},
+      })
+    }
   }
 
   if (options?.skipShellPatterns || scan.patterns.size === 0) return
@@ -712,7 +718,7 @@ export const ShellTool = Tool.define(
                       },
                     })
                   }
-                  yield* ask(ctx, scan, { skipShellPatterns: turn?.command_policy === "ask" })
+                  yield* ask(ctx, scan, { skipShellPatterns: !!turn })
                 }),
               )
               let networkAccessForCommand = false

@@ -31,6 +31,19 @@
   services are active; e2e smoke passed; API smoke returned 200 for config,
   question, project/current, command, session/status, provider, lsp,
   session message, and session security.
+- Routed bash commands that already have a `TurnContext` through the turn
+  sandbox gates instead of the legacy shell-pattern approval layer. This keeps
+  no-turn OpenCode compatibility, preserves explicit `commandPolicy=ask`
+  approvals, and fixes the A/B natural sandbox/network cases that previously
+  stopped at a generic approval prompt.
+- Added `AIALRA_AB_CASES` to the A/B harness so a failed subset can be
+  re-run by case id without burning the full benchmark. Targeted AIALRA re-run
+  `ab-comparison-20260530035321.md` covers `14-sandbox-natural` and
+  `15-network-natural`; both now complete with no approval wait, no outside
+  write, a turn terminal state, and score 15/15.
+- Deployed `0.0.0-dev-202605300438`. Web, login, and Codex exec-server
+  services are active; e2e smoke passed 11 tests; API smoke returned 200 for
+  config, question, project/current, command, session/status, provider, and lsp.
 
 ## 2026-05-29
 

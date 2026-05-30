@@ -13,12 +13,15 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | 网络每次询问 | UI 可以显示“每次询问”，但后端只是按网络关闭执行 | bash 检测到 `curl`、`wget`、`ping`、`npm install`、`git clone` 等网络命令时，先发 `network` 审批，批准后只给这一条命令打开网络 | 执行 curl 类命令时应先看到网络审批，批准后命令能走不带 `--unshare-net` 的沙箱 | 检测是工程规则，不是 LLM 理解，下一步要补更完整网络命令分类和白名单 |
 | 命令每次询问 | 有些命令只有涉及文件时才审批，`pwd` 这类普通命令可能直接跑 | `commandPolicy=ask` 时，每次 bash 命令都会先请求审批 | 让 agent 执行 `pwd`，默认会先出现命令审批 | 用户点“本轮全部”或“始终全部”后，同范围内后续命令不会再弹 |
 | 审批审计字段 | `Permission.ask` 构造 bus payload 时丢了 turnID 和策略字段 | approval 事件保留 turnID、approval policy、permission profile、sandbox policy、tool call | Turn Inspector 的 approval 事件能挂到对应回合和工具 | reviewer 语义还没有 Codex 1:1，但审计数据不再丢 |
+| TurnContext shell 门禁 | 有 TurnContext 的模型 bash 调用仍可能再走 OpenCode legacy shell-pattern 审批，非交互 A/B 会停在泛化审批等待 | 有 TurnContext 时，bash 先由本轮 sandbox/cwd/network/command policy 门禁处理，旧 shell-pattern 审批只保留给无 TurnContext 的兼容路径 | 自然语言沙箱和网络 A/B 不再卡在“等待审批”，而是完成并解释成功/拒绝原因 | `commandPolicy=ask` 仍会按设计审批，这是用户显式选择的强监督模式 |
 
-本轮部署验收：线上版本 `0.0.0-dev-202605292231` 已构建并部署，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，e2e smoke 11 pass，API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp`、`/session/:id/message`、`/session/:id/security` 均返回 200
+本轮部署验收：线上版本 `0.0.0-dev-202605300438` 已构建并部署，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，e2e smoke 11 pass，API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200
 
 浏览器级验收边界：`playwright_cli.sh` 没有执行位，改用 `bash playwright_cli.sh` 后 `npx playwright-cli` 在本机长时间无输出，本轮没有把浏览器点击验收伪装成通过，UI 结果需要用户刷新线上页面后确认，后续应把 agent-browser 或固定 Playwright 脚本纳入稳定验收链
 
 本轮没有重跑完整 15 场三方 A/B，原因是默认策略已改成“命令每次询问”和“网络每次询问”，非交互 benchmark 遇到 bash 或网络会自然停在审批等待，下一步需要先给 A/B harness 增加安全策略档案，例如 `interactive-default`、`noninteractive-auto-deny`、`trusted-full-auto`，否则会把产品安全默认值误判成模型能力下降
+
+已定向复跑上一份 15 场报告里 AIALRA 失败的两个场景，报告为 `aialra/turn-observability/ab-reports/ab-comparison-20260530035321.md`，覆盖 `14-sandbox-natural` 和 `15-network-natural`，AIALRA 两场均为 15/15，0 等待审批，0 越界写入，2/2 turn 终态，2/2 可解释
 
 ## 0. 2026-05-19 九项路线最新状态
 
@@ -45,7 +48,7 @@ Codex, what is still missing, and how a user can test the behavior directly.
 | Sandbox Control Center 生效 | 用户感觉切换档位没有明显效果。 | 工具门禁每次执行都会重新套用 SessionSecurity；新增测试证明只读切换后写入被拒绝，切回工作区可写后写入成功。 | 切到只读后让 agent 写文件应被拒绝；切回工作区可写后可以写当前工作区。 | 已发出的模型请求不会被中途改写，新的工具门禁会读最新配置。 |
 | Turn Inspector 折叠提示 | 历史回合折叠后仍显示提示框，增加视觉噪音。 | 历史回合默认直接折叠，不显示“已折叠历史回合日志”框子。 | 多轮对话后打开回合检查器，旧回合只显示分隔行和条数。 | 还不是虚拟列表，超长会话仍需后续做真正列表虚拟化。 |
 | A/B 报告 | 报告主要显示完成情况，缺少打分和完整 prompt。 | 报告现在有单场分数、总分、评分规则和每个 case 的完整提示词代码块。 | 新报告会写到 `aialra/turn-observability/ab-reports/`。 | A/B 是否全绿取决于线上模型和服务状态，需要每次部署后实跑。 |
-| 最新 15 场 A/B | 之前 9 场报告还没覆盖完整 SWE-style 和自然语言安全任务，也没有验证 runner 自己不会卡死。 | 已修复 A/B 子进程硬超时并跑完 15 场，最新报告 `ab-comparison-20260529211021.md`。AIALRA 总分 301 第一，Codex CLI 292 第二，debug1 原版 289 第三。 | AIALRA 仍在自然语言沙箱和网络任务里等待审批，这不是安全破口，但说明 approval reviewer 和网络审批产品语义还没完全收口。 | 打开 `aialra/turn-observability/ab-reports/ab-comparison-20260529211021.md`，每场都有完整 prompt、分数和输出摘要。 |
+| 最新 15 场 A/B | 之前 9 场报告还没覆盖完整 SWE-style 和自然语言安全任务，也没有验证 runner 自己不会卡死 | 已修复 A/B 子进程硬超时并跑完 15 场，报告 `ab-comparison-20260529211021.md` 中 AIALRA 总分 301 第一；之后又定向复跑原先等待审批的 `14-sandbox-natural` 和 `15-network-natural`，报告 `ab-comparison-20260530035321.md`，AIALRA 两场均 15/15 | 完整 15 场三方还没在 shell 门禁补丁后重跑，因为另一个误启动 A/B 已停止，当前先采用定向复跑证明缺口已收口 | 打开 `aialra/turn-observability/ab-reports/ab-comparison-20260529211021.md` 看完整 15 场，打开 `ab-comparison-20260530035321.md` 看失败场景复验 |
 
 ## 0.1 2026-05-18 网站体验修复验收矩阵
 

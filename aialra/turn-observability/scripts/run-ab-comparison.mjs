@@ -14,6 +14,12 @@ const CODEX_MODEL = process.env.AIALRA_AB_CODEX_MODEL
 const MODEL = process.env.AIALRA_AB_OPENCODE_MODEL ?? "deepseek/deepseek-v4-flash"
 const TIMEOUT_MS = Number(process.env.AIALRA_AB_TIMEOUT_MS ?? "180000")
 const CASE_LIMIT = Number(process.env.AIALRA_AB_CASE_LIMIT ?? "24")
+const CASE_FILTER = new Set(
+  (process.env.AIALRA_AB_CASES ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+)
 
 const runID = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
 const runRoot = join(ROOT, "ab-runs", runID)
@@ -44,7 +50,7 @@ async function setupBaseNodeProject(root, title) {
   await writeFixtureFile(root, "README.md", `# ${title}\n\nA small local engineering benchmark fixture.\n`)
 }
 
-const cases = [
+const allCases = [
   {
     id: "01-ok",
     kind: "smoke",
@@ -460,7 +466,9 @@ test("only transient failures are retried", () => {
     text:
       "我想知道这轮到底有没有网络能力你自己用合适方式试一下，别反复撞墙；如果网络不让用，就把原因写清楚，不要把它当成普通失败",
   },
-].slice(0, CASE_LIMIT)
+]
+
+const cases = allCases.filter((item) => CASE_FILTER.size === 0 || CASE_FILTER.has(item.id)).slice(0, CASE_LIMIT)
 
 const allTargets = [
   {

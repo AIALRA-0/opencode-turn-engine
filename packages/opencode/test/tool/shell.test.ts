@@ -238,6 +238,33 @@ describe("tool.shell", () => {
       )
     }),
   )
+
+  it.live("turn workspace command policy does not open legacy shell approval", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      const active = turn(tmp)
+      const noApproval = {
+        ...ctx,
+        sessionID: active.sessionID,
+        messageID: active.messageID,
+        turn: active,
+        ask: () =>
+          Effect.sync(() => {
+            throw new Error("unexpected legacy shell approval")
+          }),
+      }
+      yield* runIn(
+        tmp,
+        run(
+          {
+            command: "echo ok",
+            description: "Echo ok",
+          },
+          noApproval,
+        ),
+      )
+    }),
+  )
 })
 
 describe("tool.shell permissions", () => {
