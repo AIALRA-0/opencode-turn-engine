@@ -13,6 +13,19 @@ export type PublicEventType =
   | "turn.step_budget.changed"
   | "turn.completed"
   | "turn.aborted"
+  | "engineering.controls.changed"
+  | "engineering.mode.changed"
+  | "engineering.budget.changed"
+  | "engineering.run.started"
+  | "engineering.phase.changed"
+  | "engineering.verification.finished"
+  | "engineering.stop_gate.activated"
+  | "engineering.stop_gate.blocked_tool"
+  | "engineering.loop.warning"
+  | "engineering.loop.checkpoint"
+  | "engineering.loop.blocked"
+  | "engineering.reasoning.recorded"
+  | "engineering.run.finished"
   | "model.request.started"
   | "model.stream.started"
   | "model.retrying"
@@ -447,6 +460,16 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         title: "Turn aborted",
         summary: short(String(data.reason ?? "aborted")),
         status: "aborted",
+        data,
+      }
+    case "engineering.reasoning.recorded":
+      return {
+        ...base,
+        type: "engineering.reasoning.recorded",
+        severity: "info",
+        title: "Reasoning context recorded",
+        summary: short(`${data.chars ?? 0} chars`),
+        status: "recorded",
         data,
       }
     case "model.process.started":

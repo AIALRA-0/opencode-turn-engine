@@ -36,6 +36,7 @@ const TOOL_CHURN_NO_DIFF_MS = Number(process.env.AIALRA_REAL_BENCH_TOOL_CHURN_NO
 const TEST_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_TEST_TIMEOUT_MS ?? "600000")
 const OFFICIAL_TIMEOUT_SECONDS = Number(process.env.AIALRA_REAL_BENCH_OFFICIAL_TIMEOUT_SECONDS ?? "1800")
 const CASE_LIMIT = Number(process.env.AIALRA_REAL_BENCH_LIMIT ?? "24")
+const TIER = process.env.AIALRA_REAL_BENCH_TIER ?? "full-24"
 const PARALLEL = Math.max(1, Number(process.env.AIALRA_REAL_BENCH_PARALLEL ?? "1"))
 const VERIFY_MODE = process.env.AIALRA_REAL_BENCH_VERIFY ?? "hybrid"
 const KEEP_WORKTREES = process.env.AIALRA_REAL_BENCH_KEEP_WORKTREES === "1"
@@ -55,6 +56,24 @@ const TARGET_FILTER = new Set(
     .map((item) => item.trim())
     .filter(Boolean),
 )
+const regressionSix = new Set([
+  "django__django-12754",
+  "scikit-learn__scikit-learn-13241",
+  "scikit-learn__scikit-learn-14092",
+  "pytest-dev__pytest-7168",
+  "pylint-dev__pylint-7228",
+  "instance_element-hq__element-web-5e8488c2838ff4268f39db4a8cca7d74eecf5a7e-vnan",
+])
+
+function tierCases(cases) {
+  const filtered = cases.filter((item) => CASE_FILTER.size === 0 || CASE_FILTER.has(item.instanceID) || CASE_FILTER.has(item.repo))
+  if (TIER === "smoke") return filtered.slice(0, Math.min(CASE_LIMIT, 3))
+  if (TIER === "regression-6") {
+    const picked = filtered.filter((item) => regressionSix.has(item.instanceID))
+    return (picked.length >= 6 ? picked : filtered.slice(0, 6)).slice(0, Math.min(CASE_LIMIT, 6))
+  }
+  return filtered.slice(0, CASE_LIMIT)
+}
 
 const runID = process.env.AIALRA_REAL_BENCH_RUN_ID ?? new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
 const runRoot = join(ROOT, runID)
@@ -977,6 +996,7 @@ function renderReport(manifest, selected, results) {
   lines.push(`- manifest：\`${MANIFEST_PATH}\``)
   lines.push(`- 运行目录：\`${runRoot}\``)
   lines.push(`- 测评组合数：\`${targets.length}\``)
+  lines.push(`- 测评层级：\`${TIER}\``)
   lines.push(`- 并发度：\`${PARALLEL}\``)
   lines.push(`- 验证模式：\`${VERIFY_MODE}\``)
   lines.push(`- 超时判定：\`${PROGRESS_AWARE_TIMEOUT ? "progress-aware/logical-stall-detection" : "fixed-time-budget"}\``)
@@ -1122,9 +1142,7 @@ function stripTrailingWhitespace(text) {
 }
 
 const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"))
-const selected = manifest.cases
-  .filter((item) => CASE_FILTER.size === 0 || CASE_FILTER.has(item.instanceID) || CASE_FILTER.has(item.repo))
-  .slice(0, CASE_LIMIT)
+const selected = tierCases(manifest.cases)
 await validateTargets()
 await mkdir(REPORT_DIR, { recursive: true })
 await mkdir(runRoot, { recursive: true })

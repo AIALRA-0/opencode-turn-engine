@@ -67,6 +67,7 @@ import { AialraTurnTrace } from "./turn-trace"
 import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
 import { CodexTurn, type TurnAbortReason, type TurnContext } from "./turn-context"
 import { SessionSecurity } from "./security"
+import { EngineeringHarness } from "./engineering"
 import type { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
@@ -89,6 +90,13 @@ const log = Log.create({ service: "session.prompt" })
 const elog = EffectLogger.create({ service: "session.prompt" })
 const DEFAULT_AIALRA_TURN_MAX_STEPS = 80
 const REPEATED_TOOL_WARNING_THRESHOLD = 3
+
+function promptText(parts: MessageV2.Part[]) {
+  return parts
+    .filter((part) => part.type === "text" && !part.synthetic)
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n")
+}
 
 function normalizeTurnStepBudget(value: unknown, fallback = DEFAULT_AIALRA_TURN_MAX_STEPS) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback
@@ -624,6 +632,22 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return input.messages
     })
 
+    function insertEngineeringReminder(input: { messages: MessageV2.WithParts[]; turn?: TurnContext }) {
+      const text = EngineeringHarness.reminder(input.turn)
+      if (!text) return input.messages
+      const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
+      if (!userMessage) return input.messages
+      userMessage.parts.push({
+        id: PartID.ascending(),
+        messageID: userMessage.info.id,
+        sessionID: userMessage.info.sessionID,
+        type: "text",
+        text,
+        synthetic: true,
+      })
+      return input.messages
+    }
+
     const resolveTools = Effect.fn("SessionPrompt.resolveTools")(function* (input: {
       agent: Agent.Info
       model: Provider.Model
@@ -691,6 +715,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               Effect.gen(function* () {
                 const ctx = context(args, options)
                 ctx.extra = { ...ctx.extra, tool: item.id }
+                const gate = EngineeringHarness.beforeTool(ctx.turn, item.id, args)
+                if (gate.blocked) {
+                  return {
+                    title: "工程门禁已阻止工具调用",
+                    metadata: {
+                      blocked: true,
+                      tool: item.id,
+                    },
+                    output: gate.output,
+                  }
+                }
                 yield* plugin.trigger(
                   "tool.execute.before",
                   { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
@@ -732,6 +767,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           run.promise(
             Effect.gen(function* () {
               const ctx = context(args, opts)
+              const gate = EngineeringHarness.beforeTool(ctx.turn, key, args)
+              if (gate.blocked) {
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: gate.output,
+                    },
+                  ],
+                  isError: true,
+                }
+              }
               yield* plugin.trigger(
                 "tool.execute.before",
                 { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
@@ -1778,6 +1825,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           timeToFirstTokenMs: turn.timeToFirstTokenMs,
         },
       })
+      EngineeringHarness.finish(turn, "completed")
       yield* status.set(turn.sessionID, { type: "idle" })
     })
 
@@ -1807,6 +1855,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           durationMs: Math.max(0, completedAt - turn.startedAt),
         },
       })
+      EngineeringHarness.finish(turn, "aborted")
       yield* status.set(turn.sessionID, { type: "idle" })
     })
 
@@ -1880,6 +1929,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         sessionID: frame.sessionID,
         cwd,
       })
+      const userPromptText = promptText(message.parts)
+      const engineering = EngineeringHarness.snapshot({
+        controls: security.engineering.controls,
+        prompt: userPromptText,
+      })
       const turn = CodexTurn.fromFrame({
         frame,
         parts: message.parts,
@@ -1897,6 +1951,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         networkPolicy: security.networkPolicy,
         commandPolicy: security.commandPolicy,
         stepBudget: security.stepBudget,
+        engineering,
       })
       if (message.info.format?.type === "json_schema") {
         turn.final_output_json_schema = message.info.format.schema
@@ -1910,6 +1965,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         data: CodexTurn.traceSummary(turn),
       })
       yield* emitTurnStarted(turn, activeModel)
+      if (engineering.intake.taskClass !== "unknown" || engineering.intake.needsClarification) {
+        turn.engineering = EngineeringHarness.start({ turn, prompt: userPromptText })
+      }
       yield* AialraTurnTrace.emit({
         phase: "user_message.created",
         turnID: frame.turnID,
@@ -2227,6 +2285,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           }
           const isLastStep = step >= maxSteps
           msgs = yield* insertReminders({ messages: msgs, agent, session })
+          msgs = insertEngineeringReminder({ messages: msgs, turn: activeTurnForStep })
 
           const msg: MessageV2.Assistant = {
             id: MessageID.ascending(),

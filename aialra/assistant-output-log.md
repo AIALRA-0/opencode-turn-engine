@@ -892,3 +892,29 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 更新报告：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350.md`
 
 更新结构化结果：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260530071350-results.json`
+
+## 2026-05-31 实现记录：AIALRA 通用工程执行框架 v1
+
+用户要求把下一阶段从“零散增强”收束成通用工程 agent harness，而不是模型专属优化。本轮实现的核心是：所有模型进入 OpenCode 后，共用一套工程控制、阶段状态、验证闭环、停止门禁、循环干预和审计事件
+
+已新增 Engineering Controls，工程控制。沙盒控制中心现在有 fast、balanced、deep、long 四个工程模式。普通用户只选模式，不需要理解一堆参数；高级用户可以展开配置验证轮数、定位工具预算、重复工具阈值、工具调用总上限和单条命令最长时间
+
+已新增 EngineeringRun，工程运行。每个 turn 会带工程运行快照，阶段包括 intake、clarify、localize、plan、edit、verify、repair、finalize、blocked。Turn Inspector 能看到工程运行开始和阶段切换
+
+已接入工具执行门禁。工具每次执行前会读取 TurnContext 里的 engineering 设置。重复相同工具和输入会按用户模式产生 warning、checkpoint 或 block。验证通过后 stop gate 会阻止继续工具调用，让模型直接最终汇报
+
+已接入验证驱动的第一版。bash 命令如果像 `npm test`、`pytest`、`bun test`、`go test`、`cargo test`、`typecheck`，并且退出码是 0，系统会记录验证通过，开启通过即停止门禁。验证失败会进入 repair 阶段，给后续修复留下结构化事件
+
+已记录 reasoning context，推理上下文。模型如果返回 reasoning 内容，公共事件会记录 reasoning 字符数和 metadata keys，不返回 reasoning 的模型不会被伪造
+
+已做 benchmark 分层。真实高难 runner 支持 `AIALRA_REAL_BENCH_TIER=smoke|regression-6|full-24`，以后小改跑 smoke，大改跑 regression-6，阶段发布才跑 full-24
+
+已新增资源清理入口 `cleanup-benchmark-runs.mjs`。默认 dry-run，只写报告，不真删；必须设置 `AIALRA_BENCH_CLEANUP_APPLY=1` 才清理旧 worktree
+
+已新增 Claude Code + DeepSeek PoC runner。它会检查 claude CLI 和 Anthropic-compatible gateway，环境不足时只写明缺口，不把未运行伪装成成功
+
+已跑验证：`bun --cwd packages/opencode test test/session/engineering.test.ts test/server/httpapi-public-event.test.ts --timeout 30000` 7 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过；cleanup dry-run 和 Claude Code PoC 报告均已生成
+
+真实边界：official SWE-Bench harness 的失败摘要还没有自动回灌到同一轮 agent；stop gate 能阻止验证通过后的继续工具调用，但不会替模型写最终报告；EngineeringRun 第一版是结构化阶段状态机，不是 LLM 动态生成 DAG；Claude Code + DeepSeek 只是 PoC 入口，不是主线产品能力
+
+部署验收：执行 `./aialra/opencode-deployment/scripts/build-opencode.sh` 成功，构建版本为 `0.0.0-dev-202605310521`，随后重启 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service`，三个服务均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，源站认证 API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200。Playwright CLI wrapper 本轮仍然在 open/snapshot 阶段不退出，因此没有把它算作浏览器验收通过

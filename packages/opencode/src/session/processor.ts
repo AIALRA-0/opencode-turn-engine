@@ -280,6 +280,18 @@ export const layer = Layer.effect(
         ctx.reasoningMap[reasoningID].text = ctx.reasoningMap[reasoningID].text
         ctx.reasoningMap[reasoningID].time = { ...ctx.reasoningMap[reasoningID].time, end: Date.now() }
         yield* session.updatePart(ctx.reasoningMap[reasoningID])
+        yield* AialraTurnTrace.emit({
+          phase: "engineering.reasoning.recorded",
+          turnID: ctx.assistantMessage.parentID,
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            reasoningID,
+            chars: ctx.reasoningMap[reasoningID].text.length,
+            metadataKeys: ctx.reasoningMap[reasoningID].metadata ? Object.keys(ctx.reasoningMap[reasoningID].metadata).sort() : [],
+            rawPolicy: "encrypted_raw_ref_or_message_part",
+          },
+        })
         delete ctx.reasoningMap[reasoningID]
       })
 

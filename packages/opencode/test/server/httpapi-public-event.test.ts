@@ -166,6 +166,11 @@ describe("public event HttpApi", () => {
         executorBackend: "node-bun",
         stepBudgetEnabled: true,
         stepBudgetMaxSteps: 120,
+        engineering: {
+          mode: "deep",
+          advancedEnabled: true,
+          verificationRounds: 4,
+        },
       },
     })
 
@@ -174,6 +179,8 @@ describe("public event HttpApi", () => {
     expect(next.commandPolicy).toBe("read")
     expect(next.stepBudgetEnabled).toBe(true)
     expect(next.stepBudgetMaxSteps).toBe(120)
+    expect(next.engineering.mode).toBe("deep")
+    expect(next.engineering.verificationRounds).toBe(4)
     expect(PublicEventLog.list({ sessionID: "ses_security" })).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "sandbox.profile.changed", status: "changed" }),
@@ -181,6 +188,8 @@ describe("public event HttpApi", () => {
         expect.objectContaining({ type: "sandbox.command.changed", status: "changed" }),
         expect.objectContaining({ type: "approval.policy.changed", status: "changed" }),
         expect.objectContaining({ type: "turn.step_budget.changed", status: "changed" }),
+        expect.objectContaining({ type: "engineering.mode.changed", status: "changed" }),
+        expect.objectContaining({ type: "engineering.controls.changed", status: "changed" }),
       ]),
     )
   })

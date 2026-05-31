@@ -26,6 +26,24 @@ type SecurityConfig = {
   remoteEnvironmentStatus: string
   stepBudgetEnabled: boolean
   stepBudgetMaxSteps: number
+  engineering: EngineeringControls
+}
+
+type EngineeringControls = {
+  mode: "fast" | "balanced" | "deep" | "long"
+  advancedEnabled: boolean
+  verificationRounds: number
+  localizeToolMax: number
+  repeatedToolWarning: number
+  repeatedToolCheckpoint: number
+  repeatedToolStop: number
+  noProgressMinutes: number
+  patchMaxFiles: number
+  patchMaxBytes: number
+  testOutputMaxBytes: number
+  totalToolCallsMax: number
+  singleCommandTimeoutMs: number
+  longRun: boolean
 }
 
 type SecurityPatch = Partial<
@@ -40,7 +58,7 @@ type SecurityPatch = Partial<
     | "stepBudgetEnabled"
     | "stepBudgetMaxSteps"
   >
->
+> & { engineering?: Partial<EngineeringControls> }
 
 const defaults: SecurityPatch = {
   permissionProfileID: ":workspace",
@@ -50,7 +68,22 @@ const defaults: SecurityPatch = {
   executorBackend: "codex",
   stepBudgetEnabled: false,
   stepBudgetMaxSteps: 80,
+  engineering: {
+    mode: "balanced",
+    advancedEnabled: false,
+  },
 }
+
+const engineeringModeOptions: Array<{
+  value: EngineeringControls["mode"]
+  label: string
+  description: string
+}> = [
+  { value: "fast", label: "快速", description: "少读少试，适合小 bug 和小改动" },
+  { value: "balanced", label: "平衡", description: "默认推荐，速度和质量折中，适合普通工程任务" },
+  { value: "deep", label: "深度", description: "允许更多定位和验证，适合复杂 bug" },
+  { value: "long", label: "长跑", description: "不轻易中止，只在明确重复空转时提醒，适合大型重构和疑难问题" },
+]
 
 const profileOptions: Array<{
   value: SecurityConfig["permissionProfileID"]
@@ -156,6 +189,30 @@ function SelectField<T extends string>(props: {
   )
 }
 
+function NumberField(props: {
+  label: string
+  value: number | undefined
+  min: number
+  max: number
+  disabled?: boolean
+  onChange: (value: number) => void
+}) {
+  return (
+    <label class="block rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
+      <span class="block text-12-medium text-text-strong">{props.label}</span>
+      <input
+        class="mt-2 h-8 w-full rounded-md border border-border-weaker-base bg-surface-panel px-2 text-12-regular text-text-base outline-none focus:border-border-strong disabled:opacity-60"
+        type="number"
+        min={props.min}
+        max={props.max}
+        value={props.value ?? props.min}
+        disabled={props.disabled}
+        onChange={(event) => props.onChange(Number(event.currentTarget.value))}
+      />
+    </label>
+  )
+}
+
 function Section(props: { title: string; children: JSX.Element }) {
   return (
     <section class="border-b border-border-weaker-base px-3 py-3 last:border-b-0">
@@ -225,6 +282,14 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
     }
   }
 
+  const updateEngineering = (patch: Partial<EngineeringControls>) =>
+    updateSecurity("engineering", {
+      engineering: {
+        ...config()?.engineering,
+        ...patch,
+      },
+    })
+
   createEffect(() => {
     if (!props.active || !props.sessionID) return
     void fetchSecurity()
@@ -233,6 +298,7 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
   const config = () => store.config
   const network = createMemo(() => currentNetworkValue(config()))
   const command = createMemo(() => currentCommandValue(config()))
+  const engineering = createMemo(() => config()?.engineering)
   const busy = () => store.loading || store.saving !== undefined
 
   return (
@@ -280,6 +346,76 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
 
       <ScrollView class="flex-1 min-h-0" data-scrollable>
         <div class="flex flex-col">
+          <Section title="工程控制">
+            <SelectField
+              label="工程模式"
+              value={engineering()?.mode}
+              disabled={busy()}
+              options={engineeringModeOptions}
+              detail={optionDescription(engineeringModeOptions, engineering()?.mode)}
+              onChange={(value) => void updateEngineering({ mode: value })}
+            />
+            <div class="mt-2 rounded-md border border-border-weaker-base bg-background-base px-2 py-2 text-11-regular text-text-weak leading-4">
+              当前模式会写进下一轮 TurnContext，回合上下文 它控制定位预算、验证轮数、重复工具干预和单条命令最长时间
+            </div>
+            <label class="mt-2 flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
+              <span>
+                <span class="block text-12-medium text-text-strong">高级工程参数</span>
+                <span class="block text-11-regular text-text-weak">普通用户只选模式即可，打开后可以微调验证轮数和循环阈值</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={engineering()?.advancedEnabled ?? false}
+                disabled={busy()}
+                onInput={(event) => void updateEngineering({ advancedEnabled: event.currentTarget.checked })}
+              />
+            </label>
+            <Show when={engineering()?.advancedEnabled}>
+              <div class="mt-2 grid gap-2">
+                <NumberField
+                  label="最大验证轮数"
+                  value={engineering()?.verificationRounds}
+                  min={0}
+                  max={50}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ verificationRounds: value })}
+                />
+                <NumberField
+                  label="定位工具预算"
+                  value={engineering()?.localizeToolMax}
+                  min={1}
+                  max={1000}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ localizeToolMax: value })}
+                />
+                <NumberField
+                  label="重复工具阻止阈值"
+                  value={engineering()?.repeatedToolStop}
+                  min={0}
+                  max={10000}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ repeatedToolStop: value })}
+                />
+                <NumberField
+                  label="工具调用总上限"
+                  value={engineering()?.totalToolCallsMax}
+                  min={0}
+                  max={100000}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ totalToolCallsMax: value })}
+                />
+                <NumberField
+                  label="单条命令最长毫秒"
+                  value={engineering()?.singleCommandTimeoutMs}
+                  min={1000}
+                  max={86400000}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ singleCommandTimeoutMs: value })}
+                />
+              </div>
+            </Show>
+          </Section>
+
           <Section title="执行权限">
             <SelectField
               label="权限档位"

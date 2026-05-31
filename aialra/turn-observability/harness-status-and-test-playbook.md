@@ -3,6 +3,20 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.00000 2026-05-31 AIALRA General Engineering Harness v1
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| 工程控制 | 只有安全、网络、审批和执行器开关，工程任务本身没有统一档位 | Sandbox Control Center 新增 Engineering Controls，工程控制，提供 fast、balanced、deep、long 四个档位，高级预算折叠 | 打开沙盒控制中心，顶部可选择工程模式，打开高级后可调验证轮数、定位预算、重复工具阻止阈值、总工具调用上限和单条命令超时 | 设置目前是 session 级，下一轮 turn 生效；已发出的模型请求不会被中途改写 |
+| 工程状态机 | 用户只能看到模型在“思考中”，不知道它是在定位、修改还是验证 | 新增 EngineeringRun，工程运行，阶段包括 intake、clarify、localize、plan、edit、verify、repair、finalize、blocked | Turn Inspector 会出现 `engineering.run.started` 和 `engineering.phase.changed` | 第一版阶段由工具行为和验证命令驱动，不是完整 LLM 生成 DAG |
+| 验证驱动 | agent 跑完测试后是否继续瞎跑主要靠模型自觉 | bash 命令如果像 `npm test`、`pytest`、`bun test`、`go test`、`cargo test`、`typecheck` 且 exit 0，会记录 `engineering.verification.finished` 并开启 stop gate | Turn Inspector 会显示“验证通过”和“通过即停止已开启” | official SWE-Bench harness 的失败摘要还没有自动回灌到同一轮 repair |
+| 通过即停止 | 验证已经通过后，弱模型仍可能继续读文件、跑命令、改代码 | stop gate 开启后会阻止后续工具调用，并要求模型直接最终汇报 | 验证通过后如果模型还想调用 bash/read/write，会看到 `engineering.stop_gate.blocked_tool` | 这阻止的是工具继续执行，不会替模型生成最终报告 |
+| 循环干预 | 只有重复工具 warning 和可选 step budget，容易等到很后面才收口 | 按用户模式配置 warning、checkpoint、stop 阈值，同输入重复工具会逐级预警、要求换方向或阻止继续空转 | Turn Inspector 的“工程”分类里看 `engineering.loop.warning/checkpoint/blocked` | 长跑模式下 repeatedToolStop 默认 0，不会硬停，只记录和引导 |
+| 推理留痕 | reasoning part 会进入消息，但公共事件里不清楚模型是否返回推理 | reasoning 结束时记录 `engineering.reasoning.recorded`，包含字符数和 metadata keys | Turn Inspector 看到“推理内容已记录” | 不返回推理的模型不会伪造；raw 内容仍受审计和加密策略控制 |
+| benchmark 分层 | 大改小改都容易想跑 full-24，成本高 | `run-real-benchmark.mjs` 支持 `AIALRA_REAL_BENCH_TIER=smoke|regression-6|full-24` | 报告顶部会显示测评层级 | regression-6 是固定代表集，不替代阶段发布前 full-24 |
+| 资源治理 | 清理大型 benchmark worktree 靠手工 | 新增 `cleanup-benchmark-runs.mjs`，默认 dry-run，显式 `AIALRA_BENCH_CLEANUP_APPLY=1` 才删除 | 脚本输出 `benchmark-cleanup-*.md` 报告 | 默认不会真删，避免误操作 |
+| Claude Code + DeepSeek 对照 | 只有想法，没有可运行入口 | 新增 PoC runner，检查 claude CLI 和 Anthropic-compatible gateway，Anthropic 兼容网关 | 运行后写 `claude-code-deepseek-poc-*.md` | 未满足环境时只记录缺口，不纳入主线能力矩阵 |
+
 ## 0.0000 2026-05-30 真实高难 Benchmark 全量结果
 
 | 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |

@@ -10,6 +10,7 @@ import {
   type TurnContext,
   type TurnEnvironment,
 } from "./turn-context"
+import { EngineeringControls, EngineeringControlsPatch, EngineeringHarness } from "./engineering"
 
 export const SecurityPermissionProfileID = Schema.Literals([
   ":read-only",
@@ -44,6 +45,7 @@ export const SecurityConfig = Schema.Struct({
   remoteEnvironmentStatus: Schema.String,
   stepBudgetEnabled: Schema.Boolean,
   stepBudgetMaxSteps: Schema.Number,
+  engineering: EngineeringControls,
 })
 export type SecurityConfig = typeof SecurityConfig.Type
 
@@ -57,6 +59,7 @@ export const SecurityUpdatePayload = Schema.Struct({
   environmentID: Schema.optional(Schema.String),
   stepBudgetEnabled: Schema.optional(Schema.Boolean),
   stepBudgetMaxSteps: Schema.optional(Schema.Number),
+  engineering: Schema.optional(EngineeringControlsPatch),
 })
 export type SecurityUpdatePayload = typeof SecurityUpdatePayload.Type
 
@@ -70,6 +73,7 @@ type StoredSecurityConfig = {
   environmentID: string
   stepBudgetEnabled: boolean
   stepBudgetMaxSteps: number
+  engineering: EngineeringControls
 }
 
 const configs = new Map<string, StoredSecurityConfig>()
@@ -85,6 +89,7 @@ function defaultStored(): StoredSecurityConfig {
     environmentID: "default",
     stepBudgetEnabled: false,
     stepBudgetMaxSteps: 80,
+    engineering: EngineeringHarness.defaults(),
   }
 }
 
@@ -160,13 +165,22 @@ function publicConfig(sessionID: string, cwd: string): SecurityConfig {
     remoteEnvironmentStatus: "remote environment，远程环境，本轮只暴露入口，尚未接入远程执行",
     stepBudgetEnabled: current.stepBudgetEnabled,
     stepBudgetMaxSteps: current.stepBudgetMaxSteps,
+    engineering: current.engineering,
   }
 }
 
 function emitChange(input: {
   sessionID: string
-  type: "sandbox.profile.changed" | "sandbox.network.changed" | "sandbox.command.changed" | "approval.policy.changed" | "executor.backend.changed" | "environment.selected"
+  type:
+    | "sandbox.profile.changed"
+    | "sandbox.network.changed"
+    | "sandbox.command.changed"
+    | "approval.policy.changed"
+    | "executor.backend.changed"
+    | "environment.selected"
     | "turn.step_budget.changed"
+    | "engineering.mode.changed"
+    | "engineering.budget.changed"
   title: string
   from: unknown
   to: unknown
@@ -237,8 +251,22 @@ export namespace SessionSecurity {
 
   export function update(input: { sessionID: string; cwd: string; patch: SecurityUpdatePayload }) {
     const cwd = normalizeCwd(input.cwd)
-    const previous = { ...stored(input.sessionID) }
-    const next: StoredSecurityConfig = { ...previous, ...input.patch }
+    const previousValue = stored(input.sessionID)
+    const previous = { ...previousValue, engineering: { ...previousValue.engineering } }
+    const patch = { ...input.patch }
+    delete patch.engineering
+    const next: StoredSecurityConfig = {
+      ...previous,
+      ...patch,
+      engineering: input.patch.engineering
+        ? EngineeringHarness.normalize(
+            input.patch.engineering.mode && input.patch.engineering.advancedEnabled !== true
+              ? EngineeringHarness.applyMode(previous.engineering, input.patch.engineering.mode)
+              : { ...previous.engineering, ...input.patch.engineering },
+            previous.engineering,
+          )
+        : previous.engineering,
+    }
     if ("networkAccess" in input.patch && !("networkPolicy" in input.patch)) {
       next.networkPolicy = input.patch.networkAccess ? "on" : "off"
     }
@@ -256,6 +284,7 @@ export namespace SessionSecurity {
     if (next.commandPolicy === "workspace") next.permissionProfileID = ":workspace"
     if (next.commandPolicy === "all") next.permissionProfileID = ":danger-full-access"
     next.stepBudgetMaxSteps = normalizeStepBudgetMaxSteps(next.stepBudgetMaxSteps)
+    next.engineering = EngineeringHarness.normalize(next.engineering)
     configs.set(input.sessionID, next)
 
     if (JSON.stringify(previous) !== JSON.stringify(next)) {
@@ -350,6 +379,48 @@ export namespace SessionSecurity {
         cwd,
       })
     }
+    if (previous.engineering.mode !== next.engineering.mode) {
+      emitChange({
+        sessionID: input.sessionID,
+        type: "engineering.mode.changed",
+        title: "Engineering mode changed",
+        from: previous.engineering.mode,
+        to: next.engineering.mode,
+        cwd,
+      })
+    }
+    if (JSON.stringify(previous.engineering) !== JSON.stringify(next.engineering)) {
+      emitChange({
+        sessionID: input.sessionID,
+        type: "engineering.budget.changed",
+        title: "Engineering budget changed",
+        from: previous.engineering.mode,
+        to: next.engineering.mode,
+        cwd,
+      })
+      PublicEventLog.recordManual({
+        type: "engineering.controls.changed",
+        severity: "info",
+        sessionID: input.sessionID,
+        title: "Engineering controls changed",
+        summary: "工程控制参数已更新",
+        status: "changed",
+        data: {
+          before: previous.engineering,
+          after: next.engineering,
+          cwd,
+          scope: "session_next_turn_and_live_tool_gates",
+          actor: "current_user",
+        },
+        raw: {
+          source: "session.security",
+          before: previous.engineering,
+          after: next.engineering,
+          cwd,
+          actor: "current_user",
+        },
+      })
+    }
 
     return publicConfig(input.sessionID, cwd)
   }
@@ -376,6 +447,10 @@ export namespace SessionSecurity {
         enabled: config.stepBudgetEnabled,
         max_steps: config.stepBudgetMaxSteps,
       },
+      engineering: EngineeringHarness.snapshot({
+        controls: config.engineering,
+        prompt: "",
+      }),
     }
   }
 
@@ -403,6 +478,15 @@ export namespace SessionSecurity {
         enabled: config.stepBudgetEnabled,
         max_steps: config.stepBudgetMaxSteps,
       },
+      engineering: turn.engineering
+        ? {
+            ...turn.engineering,
+            controls: config.engineering,
+          }
+        : EngineeringHarness.snapshot({
+            controls: config.engineering,
+            prompt: "",
+          }),
     }
   }
 

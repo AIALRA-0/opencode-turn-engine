@@ -68,7 +68,14 @@ events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `sandbox.command.changed`, `sandbox.policy.changed`, `sandbox.control.changed`, `approval.policy.changed`,
 `executor.backend.changed`, `environment.selected`,
 `turn.step_budget.changed`, `security.override.requested`, and
-`security.override.resolved`. The public
+`security.override.resolved`. Engineering harness events are public as well:
+`engineering.controls.changed`, `engineering.mode.changed`,
+`engineering.budget.changed`, `engineering.run.started`,
+`engineering.phase.changed`, `engineering.verification.finished`,
+`engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
+`engineering.loop.warning`, `engineering.loop.checkpoint`,
+`engineering.loop.blocked`, `engineering.reasoning.recorded`, and
+`engineering.run.finished`. The public
 stream keeps the same redaction rule: show structure,
 state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
 model text, full tool output, or secrets.
@@ -102,6 +109,16 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `turn.aborted`
 - `turn.budget_limited`
 - `turn.repeated_tool.warning`
+- `engineering.run.started`
+- `engineering.phase.changed`
+- `engineering.verification.finished`
+- `engineering.stop_gate.activated`
+- `engineering.stop_gate.blocked_tool`
+- `engineering.loop.warning`
+- `engineering.loop.checkpoint`
+- `engineering.loop.blocked`
+- `engineering.reasoning.recorded`
+- `engineering.run.finished`
 - `loop.started`
 - `loop.step.started`
 - `loop.exit_condition.met`

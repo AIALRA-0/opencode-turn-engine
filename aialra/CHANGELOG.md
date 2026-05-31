@@ -1,5 +1,18 @@
 # AIALRA changelog
 
+## 2026-05-31
+
+- Added AIALRA General Engineering Harness v1, a shared engineering-control layer for all models. The new layer adds four user-facing modes: fast, balanced, deep, and long. Advanced budgets cover verification rounds, localization tool budget, repeated-tool thresholds, total tool calls, patch limits, output limits, no-progress minutes, and single-command timeout.
+- Extended Sandbox Control Center with Engineering Controls. The main UI stays simple with one engineering mode selector; advanced numeric controls are hidden until explicitly enabled.
+- Added internal `EngineeringRun` state with phases: intake, clarify, localize, plan, edit, verify, repair, finalize, and blocked. New public events include `engineering.run.started`, `engineering.phase.changed`, `engineering.verification.finished`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`, `engineering.loop.warning`, `engineering.loop.checkpoint`, `engineering.loop.blocked`, `engineering.reasoning.recorded`, and `engineering.run.finished`.
+- Connected tool execution to the engineering gate. Repeated identical tool calls now emit warning/checkpoint/block events based on the user-selected mode. Total tool-call budgets are also enforced when configured.
+- Added a verification-driven stop gate for shell commands that look like test or validation commands. When a command such as `npm test`, `pytest`, `bun test`, `go test`, `cargo test`, or `typecheck` exits successfully, the turn records verification success, enters finalize phase, and blocks further read/bash/edit/write/apply_patch style tool calls so the model must produce the final report.
+- Recorded provider reasoning context availability through `engineering.reasoning.recorded`. This records size and metadata keys, not raw secrets; raw reasoning remains governed by the existing raw/audit policy.
+- Added benchmark tiering to `run-real-benchmark.mjs`: `AIALRA_REAL_BENCH_TIER=smoke`, `regression-6`, or `full-24`. This lets us run cheap daily smoke checks, medium regression checks, and full expensive release benchmarks separately.
+- Added benchmark cleanup and Claude Code + DeepSeek PoC entry scripts. Cleanup is dry-run by default and only deletes with `AIALRA_BENCH_CLEANUP_APPLY=1`. The Claude Code PoC records missing environment prerequisites instead of pretending the comparison is complete.
+- Added focused tests for EngineeringHarness lifecycle, verification stop gate, repeated-tool intervention, and public security event updates.
+- Deployed version `0.0.0-dev-202605310521` to `opencode.aialra.online`. `aialra-opencode-web.service`, `aialra-opencode-login.service`, and `aialra-codex-exec-server.service` were restarted and active. E2E smoke passed, and `/config`, `/question`, `/project/current`, `/command`, `/session/status`, `/provider`, and `/lsp` returned 200 from the authenticated origin smoke.
+
 ## 2026-05-30
 
 - Completed the first full 24-case high-difficulty real benchmark matrix across

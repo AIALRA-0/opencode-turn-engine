@@ -3,6 +3,7 @@ import type { Permission } from "@/permission"
 import type { Provider } from "@/provider/provider"
 import type { MessageV2 } from "./message-v2"
 import type { MessageID, SessionID } from "./schema"
+import type { EngineeringRunSnapshot } from "./engineering"
 import type { TurnFrame, TurnFrameRoute } from "./turn-frame"
 
 export const DEFAULT_REQUEST_MAX_RETRIES = 4
@@ -102,6 +103,7 @@ export type UserTurn = {
     enabled: boolean
     max_steps?: number
   }
+  engineering?: EngineeringRunSnapshot
   route: TurnFrameRoute
   sessionID: SessionID
   messageID: MessageID
@@ -227,6 +229,7 @@ export namespace CodexTurn {
     networkPolicy?: UserTurn["network_policy"]
     commandPolicy?: UserTurn["command_policy"]
     stepBudget?: UserTurn["step_budget"]
+    engineering?: UserTurn["engineering"]
   }): TurnContext {
     const permissionProfile = input.permissionProfile ?? workspacePermissionProfile(input.cwd)
     return {
@@ -247,6 +250,7 @@ export namespace CodexTurn {
       network_policy: input.networkPolicy,
       command_policy: input.commandPolicy,
       step_budget: input.stepBudget,
+      engineering: input.engineering,
       route: input.frame.route,
       sessionID: input.frame.sessionID,
       messageID: input.frame.messageID,
@@ -306,6 +310,7 @@ export namespace CodexTurn {
       network_policy: turn.network_policy,
       command_policy: turn.command_policy,
       step_budget: turn.step_budget,
+      engineering: turn.engineering,
       retry: turn.retry,
       items: {
         count: turn.items.length,

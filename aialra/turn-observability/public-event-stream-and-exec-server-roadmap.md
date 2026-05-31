@@ -51,6 +51,36 @@
 - Landlock 已确认内核配置存在，Codex Linux sandbox helper 真实探测能挡住
   workspace 外写入；但 Node/Bun 工具层还没有直接 syscall 级 Landlock enforce。
 
+## 0.1 2026-05-31 General Engineering Harness v1 状态
+
+本阶段新增的不是模型专属优化，而是统一工程执行规则：
+
+- Sandbox Control Center 已新增 Engineering Controls，工程控制。普通用户只选
+  fast、balanced、deep、long 四个档位；高级预算折叠显示。
+- TurnContext 现在携带 `engineering` 快照，记录本轮工程模式、验证轮数、
+  定位预算、重复工具阈值、总工具调用上限、单条命令超时等设置。
+- Public event stream 已新增工程事件：`engineering.run.started`、
+  `engineering.phase.changed`、`engineering.verification.finished`、
+  `engineering.stop_gate.activated`、`engineering.stop_gate.blocked_tool`、
+  `engineering.loop.warning`、`engineering.loop.checkpoint`、
+  `engineering.loop.blocked`、`engineering.reasoning.recorded`、
+  `engineering.run.finished`。
+- bash 工具会识别常见验证命令，例如 `npm test`、`pytest`、`bun test`、
+  `go test`、`cargo test`、`typecheck`。验证通过后开启 stop gate，
+  通过即停止门禁，后续工具调用会被阻止，模型只能最终汇报。
+- 重复工具调用不再只靠最后硬杀。达到 warning 阈值时记录预警，达到
+  checkpoint 阈值时要求换方向，达到 stop 阈值时按用户模式阻止继续空转。
+- benchmark runner 已支持 `AIALRA_REAL_BENCH_TIER=smoke|regression-6|full-24`，
+  便于用小测验证大改，而不是每次都烧完整 24 题 x 5 组合。
+
+真实边界：
+
+- 第一版 verification loop，验证闭环，是基于 bash 验证命令的返回码触发，
+  还没有把 official SWE-Bench harness 的失败摘要自动塞回同一轮 agent。
+- stop gate，停止门禁 已经能阻止验证通过后的继续工具调用，但不会替模型写最终报告。
+- Claude Code + DeepSeek 目前只有 PoC runner，缺少可用 `ANTHROPIC_BASE_URL`
+  或 claude CLI 时会诚实记录未运行。
+
 ## 1. 下一阶段优先级
 
 | 顺序 | 事项 | 人话解释 | 为什么排这里 | 交付物 |

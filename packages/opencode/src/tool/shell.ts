@@ -26,6 +26,7 @@ import { BashArity } from "@/permission/arity"
 import { TurnSandbox, type ShellSandboxCommand } from "./turn-sandbox"
 import { CodexExecServer } from "./codex-exec-server"
 import { AialraTurnTrace } from "@/session/turn-trace"
+import { EngineeringHarness } from "@/session/engineering"
 
 export { Parameters } from "./shell/prompt"
 
@@ -698,7 +699,7 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? defaultTimeoutMs
+              const timeout = params.timeout ?? turn?.engineering?.controls.singleCommandTimeoutMs ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -735,7 +736,7 @@ export const ShellTool = Tool.define(
                 networkAccessForCommand = true
               }
 
-              return yield* run(
+              const result = yield* run(
                 {
                   shell,
                   command: params.command,
@@ -752,6 +753,13 @@ export const ShellTool = Tool.define(
                 },
                 ctx,
               )
+              EngineeringHarness.recordVerification({
+                turn,
+                command: params.command,
+                exit: typeof result.metadata.exit === "number" ? result.metadata.exit : null,
+                output: result.output,
+              })
+              return result
             }),
         }
       })

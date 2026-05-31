@@ -35,7 +35,18 @@ export type PublicEvent = {
   }
 }
 
-type Filter = "all" | "error" | "model" | "tool" | "file" | "command" | "approval" | "sandbox" | "network" | "executor"
+type Filter =
+  | "all"
+  | "error"
+  | "model"
+  | "engineering"
+  | "tool"
+  | "file"
+  | "command"
+  | "approval"
+  | "sandbox"
+  | "network"
+  | "executor"
 
 type EventSection = {
   key: string
@@ -47,6 +58,7 @@ const filterLabels: Record<Filter, string> = {
   all: "全部",
   error: "错误",
   model: "模型",
+  engineering: "工程",
   tool: "工具",
   file: "文件",
   command: "命令",
@@ -65,6 +77,19 @@ const typeLabels: Record<string, string> = {
   "turn.step_budget.changed": "步骤上限已切换",
   "turn.completed": "回合完成",
   "turn.aborted": "回合中断",
+  "engineering.controls.changed": "工程控制已变更",
+  "engineering.mode.changed": "工程模式已切换",
+  "engineering.budget.changed": "工程预算已变更",
+  "engineering.run.started": "工程运行开始",
+  "engineering.phase.changed": "工程阶段切换",
+  "engineering.verification.finished": "工程验证结束",
+  "engineering.stop_gate.activated": "通过即停止已开启",
+  "engineering.stop_gate.blocked_tool": "停止门禁阻止工具",
+  "engineering.loop.warning": "循环风险预警",
+  "engineering.loop.checkpoint": "循环检查点",
+  "engineering.loop.blocked": "循环已阻止",
+  "engineering.reasoning.recorded": "推理内容已记录",
+  "engineering.run.finished": "工程运行结束",
   "model.request.started": "开始请求模型",
   "model.stream.started": "模型流开始",
   "model.retrying": "模型重试",
@@ -120,6 +145,11 @@ const statusLabels: Record<string, string> = {
   reject: "已拒绝",
   output: "输出",
   warning: "警告",
+  passed: "已通过",
+  blocked: "已阻止",
+  checkpoint: "检查点",
+  active: "已开启",
+  recorded: "已记录",
   changed: "已变更",
   restricted: "已限制",
   enabled: "已开启",
@@ -127,6 +157,7 @@ const statusLabels: Record<string, string> = {
 
 const typeGroup = (type: string): Filter | "turn" | "final" => {
   if (type.startsWith("tool.sandbox.") || type.startsWith("sandbox.")) return "sandbox"
+  if (type.startsWith("engineering.")) return "engineering"
   if (type.includes("network")) return "network"
   if (type.startsWith("executor.")) return "executor"
   if (type.startsWith("tool.")) return "tool"
@@ -148,6 +179,7 @@ const groupIcon = (event: PublicEvent): IconProps["name"] => {
   if (group === "network") return "link"
   if (group === "executor") return "server"
   if (group === "tool") return "code"
+  if (group === "engineering") return "status"
   if (group === "model") return "brain"
   if (group === "final") return "check-small"
   return "status"
@@ -211,6 +243,32 @@ function localizedSummary(event: PublicEvent) {
       return `本轮正常收尾${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
     case "turn.aborted":
       return `本轮被中断${reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
+    case "engineering.controls.changed":
+      return "工程控制参数已更新，后续回合会按新设置执行"
+    case "engineering.mode.changed":
+      return `工程模式从 ${from ?? "未知"} 切换到 ${to ?? "未知"}`
+    case "engineering.budget.changed":
+      return "工程预算已更新，包括验证轮数、重复工具阈值和命令超时等"
+    case "engineering.run.started":
+      return event.summary || "工程运行已开始"
+    case "engineering.phase.changed":
+      return `工程阶段切换${from || to ? `：${from ?? "未知"} -> ${to ?? "未知"}` : ""}`
+    case "engineering.verification.finished":
+      return event.status === "passed" ? "验证命令通过，系统将进入最终汇报" : "验证命令失败，系统会把失败信息反馈给模型继续修"
+    case "engineering.stop_gate.activated":
+      return "验证已通过，通过即停止门禁已开启，后续工具调用会被拦住"
+    case "engineering.stop_gate.blocked_tool":
+      return `验证已通过，系统阻止继续调用工具${tool ? `：${tool}` : ""}`
+    case "engineering.loop.warning":
+      return "模型出现重复工具调用，系统已记录预警"
+    case "engineering.loop.checkpoint":
+      return "模型重复路线过多，系统要求换方向"
+    case "engineering.loop.blocked":
+      return "模型达到用户设置的循环阻止条件，系统已拦截继续空转"
+    case "engineering.reasoning.recorded":
+      return `模型推理内容已记录${numberValue(data.chars) !== undefined ? `，${numberValue(data.chars)} 字符` : ""}`
+    case "engineering.run.finished":
+      return event.summary || "工程运行已收尾"
     case "model.request.started":
       return `模型请求已发出${provider || model ? `：${[provider, model].filter(Boolean).join("/")}` : ""}`
     case "model.stream.started":
