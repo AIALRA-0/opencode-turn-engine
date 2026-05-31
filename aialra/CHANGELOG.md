@@ -2,6 +2,72 @@
 
 ## 2026-05-31
 
+- Completed the V3 full-24 AIALRA-only validation gate after the regression-6
+  lift. The corrected summary is
+  `aialra/turn-observability/real-benchmark-reports/real-benchmark-202605312120-full24-aialra-v3-corrected-summary.md`.
+  Final corrected result: 24 cases, total score 452, patch quality average 58,
+  23/24 completed, 20/24 non-empty patches, 4/24 zero patches, 7/24 official
+  verified passes, 13/24 official verification attempts, 1 progress-aware
+  logical timeout, 0 approval stalls, and 24/24 turn terminal events.
+- Fixed two benchmark runner correctness issues discovered during the full-24
+  gate. Repair verification now writes and reads attempt-specific official
+  harness directories such as `official-harness-repair-1`, so a repair run
+  cannot accidentally reuse the initial failed report. Repository mirror cache
+  promises are now revalidated on disk before reuse, so manual disk cleanup
+  cannot leave the runner pointing at a deleted bare mirror.
+- Added a TurnContext search-scope gate for `glob` and `grep`. Recursive search
+  outside the selected environment workspace now goes through
+  `tool.sandbox.denied` for workspace-scoped profiles instead of allowing a
+  model to accidentally scan `/` and stall a high-difficulty task.
+- Added corrected benchmark rerun reports for the infrastructure-affected rows:
+  `real-benchmark-202605312120-full24-aialra-v3-rerun-infra.md` and
+  `real-benchmark-202605312120-full24-aialra-v3-rerun-infra-results.json`.
+  These replace the two rows where a manual repo-cache cleanup caused worktree
+  preparation failures, and the corrected summary clearly marks those rows as
+  `infra rerun`.
+- Added the AIALRA General Engineering Harness V3 planning set under
+  `aialra/turn-observability/project-plans/v3-general-engineering-harness/`.
+  The folder contains a master plan plus 16 per-target project plans so future
+  implementation can resume from files instead of depending on chat context.
+- Started V3 engineering defect closure. Engineering controls now include
+  `zeroPatchRecoveryMax`, exposed in Sandbox Control Center advanced settings.
+  Engineering turns that are expected to produce a diff but try to finish before
+  any write-like tool activity now emit `engineering.zero_patch.detected`,
+  request repair through `engineering.zero_patch.recovery_requested`, and
+  eventually emit `engineering.zero_patch.exhausted` when the user-configured
+  recovery budget is spent.
+- Added terminal reconciliation visibility. Completed turns now emit
+  `turn.terminal.reconciled`, and empty assistant finals emit
+  `turn.terminal.anomaly` before the normal `turn.completed` event so users and
+  benchmark reports can distinguish a clean final from an empty-output anomaly.
+- Extended Turn Inspector labels and summaries for zero-patch recovery and
+  terminal reconciliation events.
+- Extended the real benchmark report with patch quality scoring. Reports now
+  include a per-target average quality score and per-case explanations for
+  verification status, non-empty patch, source-file relevance, test-file
+  changes, patch size, generated-file churn, clean terminal state, and repair
+  success.
+- Upgraded `EngineeringRun` to `aialra.engineering_run.v3`. Each engineering
+  turn now carries structured artifacts: suspected files, edit plan,
+  verification plan, verification results, repair feedback, and final summary.
+  Updates emit `engineering.artifact.updated` so Turn Inspector can explain what
+  the agent has learned or changed without showing raw JSON first.
+- Tightened zero-patch recovery. The prompt loop now checks `git status
+  --porcelain` from the selected environment cwd before accepting a final answer.
+  If the model called write-like tools but the workspace still has no diff or
+  untracked file, the harness feeds the zero-patch problem back into repair.
+- Extended TurnContext parity fields and trace output with `approvals_reviewer`,
+  `effort`, `summary`, `service_tier`, `selected_environment_id`,
+  selected-environment cwd, and `http_context`. Path resolution now uses the
+  selected environment cwd instead of only the legacy single cwd string.
+- Extended approval audit scope. The six approval buttons now send an auditable
+  scope such as `turn-command`, `turn-all`, `always-command`, or `always-all`;
+  public events and Turn Inspector can distinguish what the user actually chose.
+- Added Codex exec-server adapter entry points for `fs/copy` and `http/request`
+  and mapped exec-server HTTP phases into the public event stream. These are
+  protocol adapters; product use still depends on the sidecar supporting the
+  corresponding method.
+
 - Completed AIALRA General Engineering Harness v2 validation. Regression-6 run
   `20260531080150` improved the AIALRA DeepSeek V4 Pro max target from the prior
   3/6 baseline to 4/6 verified passes, so the release gate allowed an

@@ -91,7 +91,9 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     const response: "once" | "always" | "reject" =
       decision === "reject" ? "reject" : decision === "always-command" ? "always" : ("once" as const)
     sdk.client.permission
-      .respond({ sessionID: perm.sessionID, permissionID: perm.id, response })
+      .respond({ sessionID: perm.sessionID, permissionID: perm.id, response, scope: decision } as Parameters<
+        typeof sdk.client.permission.respond
+      >[0])
       .catch((err: unknown) => {
         const description = err instanceof Error ? err.message : String(err)
         showToast({ title: language.t("common.requestFailed"), description })

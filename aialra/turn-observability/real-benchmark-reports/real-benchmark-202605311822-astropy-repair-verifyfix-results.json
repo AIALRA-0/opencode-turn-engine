@@ -1,0 +1,77 @@
+[
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "astropy__astropy-13398",
+    "datasetKey": "swe-bench-verified",
+    "repo": "astropy/astropy",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/202605311822-astropy-repair-verifyfix/aialra-deepseek-v4-pro-max/astropy__astropy-13398/worktree",
+    "sessionID": "ses_1809bc1dfffe2rGTmTwim50eeO",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 2064,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 556083,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "toolCallCount": 44,
+    "eventCount": 541,
+    "finalText": "",
+    "error": "",
+    "changedFiles": [
+      "astropy/coordinates/builtin_frames/__init__.py"
+    ],
+    "patchBytes": 582,
+    "diffStat": "astropy/coordinates/builtin_frames/__init__.py | 1 +\n 1 file changed, 1 insertion(+)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": false,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/202605311822-astropy-repair-verifyfix/aialra-deepseek-v4-pro-max/astropy__astropy-13398/official-harness-repair-1/aialra-deepseek-v4-pro-max-astropy__astropy-13398.202605311822-astropy-repair-verifyfix-aialra-deepseek-v4-pro-max-astropy__astropy-13398-repair-1.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 0\nInstances unresolved: 1\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-astropy__astropy-13398.202605311822-astropy-repair-verifyfix-aialra-deepseek-v4-pro-max-astropy__astropy-13398-repair-1.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-05-31 21:09:16,946 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-31 21:09:16,947 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-31 21:09:16,967 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Verified/91aa3ed51b709be6457e12d00300a6a596d4c6a3/README.md \"HTTP/1.1 200 OK\"\n2026-05-31 21:09:17,076 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/91aa3ed51b709be6457e12d00300a6a596d4c6a3/SWE-bench_Verified.py \"HTTP/1.1 404 Not Found\"\n2026-05-31 21:09:17,409 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Verified/SWE-bench/SWE-bench_Verified.py \"HTTP/1.1 404 Not Found\"\n2026-05-31 21:09:17,535 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Verified/revision/91aa3ed51b709be6457e12d00300a6a596d4c6a3 \"HTTP/1.1 200 OK\"\n2026-05-31 21:09:17,653 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/91aa3ed51b709be6457e12d00300a6a596d4c6a3/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-05-31 21:09:17,803 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Verified \"HTTP/1.1 200 OK\"\n2026-05-31 21:09:17,917 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Verified/tree/91aa3ed51b709be6457e12d00300a6a596d4c6a3/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-05-31 21:09:18,046 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Verified/tree/91aa3ed51b709be6457e12d00300a6a596d4c6a3?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-05-31 21:09:18,169 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-ben"
+    },
+    "repairRounds": 1,
+    "repairs": [
+      {
+        "round": 1,
+        "beforePassed": false,
+        "repairOk": true,
+        "repairTimedOut": false,
+        "repairWaitingApproval": false,
+        "repairWaitingQuestion": false,
+        "repairDurationMs": 15039,
+        "repairToolCallCount": 44
+      }
+    ],
+    "patchQuality": {
+      "score": 50,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 1,
+      "testFileCount": 0,
+      "patchBytes": 582,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证未通过 +0",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "未包含测试文件 +0",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  }
+]

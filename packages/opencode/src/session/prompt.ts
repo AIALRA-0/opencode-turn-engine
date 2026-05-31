@@ -98,6 +98,30 @@ function promptText(parts: MessageV2.Part[]) {
     .join("\n")
 }
 
+function stringOption(options: Record<string, unknown> | undefined, keys: string[]) {
+  for (const key of keys) {
+    const value = options?.[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  return undefined
+}
+
+function workspaceHasGitChange(turn: TurnContext) {
+  return Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(["git", "-C", CodexTurn.environmentCwd(turn), "status", "--porcelain"], {
+        stdout: "pipe",
+        stderr: "ignore",
+      })
+      const text = await new Response(proc.stdout).text()
+      const code = await proc.exited
+      if (code !== 0) return undefined
+      return text.trim().length > 0
+    },
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+}
+
 function assistantText(messageID: MessageID) {
   return MessageV2.parts(messageID)
     .filter((part) => part.type === "text")
@@ -1813,6 +1837,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       closedTurns.add(turn.turnID)
       activeTurns.delete(turn.sessionID)
       const completedAt = Date.now()
+      const finalText =
+        lastAgentMessage && !turn.noReply ? assistantText(lastAgentMessage).trim() : undefined
+      const terminalAnomaly = EngineeringHarness.terminalAnomaly({
+        turn,
+        lastAgentMessage,
+        finalText,
+      })
+      if (terminalAnomaly) {
+        yield* AialraTurnTrace.emit({
+          phase: "turn.terminal.anomaly",
+          turnID: turn.turnID,
+          sessionID: turn.sessionID,
+          messageID: lastAgentMessage,
+          data: {
+            reason: terminalAnomaly,
+            finalTextChars: finalText?.length ?? 0,
+            toolCallCount: EngineeringHarness.state(turn.turnID)?.loop.toolCalls,
+          },
+        })
+      }
       yield* bus.publish(Session.Event.TurnCompleted, {
         turnID: turn.turnID,
         sessionID: turn.sessionID,
@@ -1830,9 +1874,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           completedAt,
           durationMs: Math.max(0, completedAt - turn.startedAt),
           timeToFirstTokenMs: turn.timeToFirstTokenMs,
+          terminalAnomaly,
         },
       })
-      EngineeringHarness.finish(turn, "completed")
+      yield* AialraTurnTrace.emit({
+        phase: "turn.terminal.reconciled",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: lastAgentMessage,
+        data: {
+          outcome: "completed",
+          terminalAnomaly,
+          completedAt,
+        },
+      })
+      EngineeringHarness.finish(turn, "completed", finalText)
       yield* status.set(turn.sessionID, { type: "idle" })
     })
 
@@ -1860,6 +1916,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           reason,
           completedAt,
           durationMs: Math.max(0, completedAt - turn.startedAt),
+        },
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "turn.terminal.reconciled",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          outcome: "aborted",
+          reason,
+          completedAt,
         },
       })
       EngineeringHarness.finish(turn, "aborted")
@@ -1951,10 +2018,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         }),
         startedAt: receivedAt,
         approvalPolicy: security.approvalPolicy,
+        approvalsReviewer: security.approvalsReviewer,
         sandboxPolicy: security.sandboxPolicy,
         permissionProfile: security.permissionProfile,
         activePermissionProfile: security.activePermissionProfile,
         environments: security.environments,
+        selectedEnvironmentID: security.selectedEnvironmentID,
+        effort: stringOption(activeModel?.options, ["reasoningEffort", "reasoning_effort", "effort", "thinkingLevel"]),
+        summary: stringOption(activeModel?.options, ["reasoningSummary", "reasoning_summary", "summary"]),
+        serviceTier: stringOption(activeModel?.options, ["serviceTier", "service_tier"]),
+        httpContext: security.httpContext,
         networkPolicy: security.networkPolicy,
         commandPolicy: security.commandPolicy,
         stepBudget: security.stepBudget,
@@ -2489,6 +2562,44 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 tokens: handle.message.tokens,
               },
             })
+
+            const workspaceChanged = activeTurn ? yield* workspaceHasGitChange(activeTurn) : undefined
+            const zeroPatchPrompt = EngineeringHarness.zeroPatchPrompt(activeTurn, assistantText(handle.message.id), {
+              workspaceChanged,
+            })
+            if (zeroPatchPrompt) {
+              const continuation: MessageV2.User = {
+                id: MessageID.ascending(),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+                tools: lastUser.tools,
+                system: lastUser.system,
+                format: lastUser.format,
+              }
+              yield* sessions.updateMessage(continuation)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continuation.id,
+                sessionID,
+                type: "text",
+                text: zeroPatchPrompt,
+                synthetic: true,
+              } satisfies MessageV2.TextPart)
+              yield* AialraTurnTrace.emit({
+                phase: "engineering.zero_patch.recovery_requested",
+                turnID: activeTurn?.turnID,
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                data: {
+                  continuationID: continuation.id,
+                },
+              })
+              return "continue" as const
+            }
 
             const prematureFinalPrompt = EngineeringHarness.prematureFinalPrompt(
               activeTurn,

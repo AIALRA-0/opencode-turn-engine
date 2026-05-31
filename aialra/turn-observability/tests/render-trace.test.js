@@ -70,6 +70,15 @@ test("selects newest trace file and renders a structural timeline", () => {
         },
         {
           trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:00.290Z",
+          phase: "engineering.artifact.updated",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "turn_test",
+          data: { artifact: "suspectedFiles", path: "src/tool.js" },
+        },
+        {
+          trace: "aialra.turn.v1",
           ts: "2026-05-15T00:00:00.300Z",
           phase: "user_message.created",
           turnID: "turn_test",
@@ -133,6 +142,15 @@ test("selects newest trace file and renders a structural timeline", () => {
           messageID: "msg_test",
           data: { durationMs: 1600, timeToFirstTokenMs: 700 },
         },
+        {
+          trace: "aialra.turn.v1",
+          ts: "2026-05-15T00:00:01.610Z",
+          phase: "turn.terminal.reconciled",
+          turnID: "turn_test",
+          sessionID: "ses_test",
+          messageID: "msg_test",
+          data: { outcome: "completed" },
+        },
       ]
         .map((event) => JSON.stringify(event))
         .join("\n") + "\n",
@@ -147,10 +165,12 @@ test("selects newest trace file and renders a structural timeline", () => {
     assert.match(rendered, /turn\.frame\.created/)
     assert.match(rendered, /turn\.context\.created/)
     assert.match(rendered, /turn\.started/)
+    assert.match(rendered, /engineering\.artifact\.updated/)
     assert.match(rendered, /prompt\.explicit_context_resolved/)
     assert.match(rendered, /processor\.process\.started/)
     assert.match(rendered, /prompt\.completed/)
     assert.match(rendered, /turn\.completed/)
+    assert.match(rendered, /turn\.terminal\.reconciled/)
     assert.match(rendered, /model\.process\.finished/)
     assert.doesNotMatch(rendered, /secret prompt/)
   } finally {

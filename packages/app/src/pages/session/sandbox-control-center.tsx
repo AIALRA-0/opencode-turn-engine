@@ -41,6 +41,7 @@ type EngineeringControls = {
   patchMaxFiles: number
   patchMaxBytes: number
   testOutputMaxBytes: number
+  zeroPatchRecoveryMax: number
   totalToolCallsMax: number
   singleCommandTimeoutMs: number
   longRun: boolean
@@ -376,6 +377,14 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
                   max={50}
                   disabled={busy()}
                   onChange={(value) => void updateEngineering({ verificationRounds: value })}
+                />
+                <NumberField
+                  label="零补丁恢复次数"
+                  value={engineering()?.zeroPatchRecoveryMax}
+                  min={0}
+                  max={50}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ zeroPatchRecoveryMax: value })}
                 />
                 <NumberField
                   label="定位工具预算"

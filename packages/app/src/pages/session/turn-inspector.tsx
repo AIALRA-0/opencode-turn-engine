@@ -77,14 +77,20 @@ const typeLabels: Record<string, string> = {
   "turn.step_budget.changed": "步骤上限已切换",
   "turn.completed": "回合完成",
   "turn.aborted": "回合中断",
+  "turn.terminal.anomaly": "终态异常",
+  "turn.terminal.reconciled": "终态已校准",
   "engineering.controls.changed": "工程控制已变更",
   "engineering.mode.changed": "工程模式已切换",
   "engineering.budget.changed": "工程预算已变更",
   "engineering.run.started": "工程运行开始",
   "engineering.phase.changed": "工程阶段切换",
+  "engineering.artifact.updated": "工程产物已更新",
   "engineering.verification.finished": "工程验证结束",
   "engineering.phase_gate.blocked_tool": "阶段门禁阻止工具",
   "engineering.phase_gate.premature_final": "阶段门禁继续执行",
+  "engineering.zero_patch.detected": "检测到零补丁",
+  "engineering.zero_patch.recovery_requested": "请求零补丁恢复",
+  "engineering.zero_patch.exhausted": "零补丁恢复耗尽",
   "engineering.stop_gate.activated": "通过即停止已开启",
   "engineering.stop_gate.blocked_tool": "停止门禁阻止工具",
   "engineering.loop.warning": "循环风险预警",
@@ -145,6 +151,11 @@ const statusLabels: Record<string, string> = {
   once: "允许一次",
   always: "总是允许",
   reject: "已拒绝",
+  "once-command": "仅允许一次本命令",
+  "turn-command": "本对话单轮允许本命令",
+  "turn-all": "本对话单轮允许全部命令",
+  "always-command": "本对话始终允许本命令",
+  "always-all": "本对话始终允许全部命令",
   output: "输出",
   warning: "警告",
   passed: "已通过",
@@ -223,6 +234,7 @@ function localizedSummary(event: PublicEvent) {
   const provider = textValue(data.providerID)
   const reason = textValue(data.reason)
   const reply = localizedStatus(textValue(data.reply))
+  const scope = localizedStatus(textValue(data.scope))
   const method = textValue(data.method)
   const outputChars = numberValue(data.outputChars)
   const durationMs = numberValue(data.durationMs)
@@ -245,6 +257,10 @@ function localizedSummary(event: PublicEvent) {
       return `本轮正常收尾${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
     case "turn.aborted":
       return `本轮被中断${reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
+    case "turn.terminal.anomaly":
+      return `本轮收尾时发现异常${reason ? `：${localizedStatus(reason) ?? reason}` : ""}`
+    case "turn.terminal.reconciled":
+      return `本轮终态已校准${status ? `，状态：${localizedStatus(status) ?? status}` : ""}`
     case "engineering.controls.changed":
       return "工程控制参数已更新，后续回合会按新设置执行"
     case "engineering.mode.changed":
@@ -255,12 +271,20 @@ function localizedSummary(event: PublicEvent) {
       return event.summary || "工程运行已开始"
     case "engineering.phase.changed":
       return `工程阶段切换${from || to ? `：${from ?? "未知"} -> ${to ?? "未知"}` : ""}`
+    case "engineering.artifact.updated":
+      return event.summary || "工程状态机更新了定位、修改或验证产物"
     case "engineering.verification.finished":
       return event.status === "passed" ? "验证命令通过，系统将进入最终汇报" : "验证命令失败，系统会把失败信息反馈给模型继续修"
     case "engineering.phase_gate.blocked_tool":
       return `模型在当前工程阶段过早调用工具，系统已阻止${tool ? `：${tool}` : ""}`
     case "engineering.phase_gate.premature_final":
       return "模型找到修复点后提前停住，系统已要求继续做最小修改和验证"
+    case "engineering.zero_patch.detected":
+      return "模型准备结束，但当前工程任务还没有任何代码改动"
+    case "engineering.zero_patch.recovery_requested":
+      return "系统已把零补丁问题反馈给模型，要求继续修改或明确阻塞原因"
+    case "engineering.zero_patch.exhausted":
+      return "零补丁恢复次数已用完，本轮进入阻塞收口"
     case "engineering.stop_gate.activated":
       return "验证已通过，通过即停止门禁已开启，后续工具调用会被拦住"
     case "engineering.stop_gate.blocked_tool":
@@ -316,7 +340,7 @@ function localizedSummary(event: PublicEvent) {
     case "approval.requested":
       return `等待用户审批${tool ? `：${tool}` : ""}`
     case "approval.resolved":
-      return `审批已处理${reply ? `：${reply}` : ""}`
+      return `审批已处理${scope || reply ? `：${scope ?? reply}` : ""}`
     case "final.output":
       return "最终回复已更新"
     case "sandbox.profile.changed":

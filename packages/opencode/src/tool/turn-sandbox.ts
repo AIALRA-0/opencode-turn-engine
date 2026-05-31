@@ -9,6 +9,7 @@ import type {
   SandboxPolicy,
   TurnContext,
 } from "@/session/turn-context"
+import { CodexTurn } from "@/session/turn-context"
 import { SessionSecurity } from "@/session/security"
 import type * as Tool from "./tool"
 import { Shell } from "@/shell/shell"
@@ -63,7 +64,7 @@ function accessRank(access: FileAccess) {
 }
 
 function turnCwd(turn: TurnContext) {
-  return path.resolve(turn.cwd)
+  return path.resolve(CodexTurn.environmentCwd(turn))
 }
 
 function effectiveTurn(turn: TurnContext) {
@@ -241,6 +242,36 @@ export const assertFileAccess = Effect.fn("TurnSandbox.assertFileAccess")(functi
   })
   if (!allowed) {
     return yield* Effect.die(new Error(denyMessage({ operation, target, turn })))
+  }
+})
+
+export const assertSearchScope = Effect.fn("TurnSandbox.assertSearchScope")(function* (ctx: Tool.Context, target: string) {
+  const turn = ctx.turn ? effectiveTurn(ctx.turn) : undefined
+  if (!turn) return
+  if (turn.sandbox_policy.type === "danger-full-access") return
+  if (turn.permission_profile.type === "disabled") return
+  if (turn.permission_profile.type === "managed" && turn.permission_profile.file_system.type === "unrestricted") return
+
+  const canonical = yield* Effect.promise(() => canonicalForAccess(target, "read"))
+  const allowed = workspaceRoots(turn).some((root) => contains(root, target) || contains(root, canonical))
+  yield* AialraTurnTrace.emit({
+    phase: allowed ? "tool.sandbox.checked" : "tool.sandbox.denied",
+    turnID: turn.turnID,
+    sessionID: turn.sessionID,
+    messageID: ctx.messageID,
+    data: {
+      tool: ctx.extra?.["tool"],
+      operation: "search",
+      target,
+      canonicalTarget: canonical === target ? undefined : canonical,
+      sandbox_policy: turn.sandbox_policy.type,
+      active_permission_profile: turn.active_permission_profile,
+    },
+  })
+  if (!allowed) {
+    return yield* Effect.die(
+      new Error(`Codex turn sandbox denied recursive search outside the selected workspace: ${target}. Active policy: ${describePolicy(turn)}.`),
+    )
   }
 })
 

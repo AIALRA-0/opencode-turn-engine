@@ -18,9 +18,13 @@ export type PublicEventType =
   | "engineering.budget.changed"
   | "engineering.run.started"
   | "engineering.phase.changed"
+  | "engineering.artifact.updated"
   | "engineering.verification.finished"
   | "engineering.phase_gate.blocked_tool"
   | "engineering.phase_gate.premature_final"
+  | "engineering.zero_patch.detected"
+  | "engineering.zero_patch.recovery_requested"
+  | "engineering.zero_patch.exhausted"
   | "engineering.stop_gate.activated"
   | "engineering.stop_gate.blocked_tool"
   | "engineering.loop.warning"
@@ -58,6 +62,8 @@ export type PublicEventType =
   | "environment.selected"
   | "security.override.requested"
   | "security.override.resolved"
+  | "turn.terminal.anomaly"
+  | "turn.terminal.reconciled"
 
 export type PublicEventSeverity = "info" | "warning" | "error"
 
@@ -464,6 +470,26 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         status: "aborted",
         data,
       }
+    case "turn.terminal.anomaly":
+      return {
+        ...base,
+        type: "turn.terminal.anomaly",
+        severity: "warning",
+        title: "Turn terminal anomaly",
+        summary: short(String(data.reason ?? "anomaly")),
+        status: "anomaly",
+        data,
+      }
+    case "turn.terminal.reconciled":
+      return {
+        ...base,
+        type: "turn.terminal.reconciled",
+        severity: "info",
+        title: "Turn terminal reconciled",
+        summary: short(String(data.outcome ?? "reconciled")),
+        status: "reconciled",
+        data,
+      }
     case "engineering.reasoning.recorded":
       return {
         ...base,
@@ -551,6 +577,26 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         severity: "info",
         title: "Codex exec-server file operation finished",
         summary: short(`${data.method ?? "fs"} ${data.path ?? ""}`),
+        status: "finished",
+        data,
+      }
+    case "exec_server.http.started":
+      return {
+        ...base,
+        type: "executor.started",
+        severity: "info",
+        title: "Codex exec-server HTTP request started",
+        summary: short(`${data.method ?? "GET"} ${data.url ?? ""}`),
+        status: "started",
+        data,
+      }
+    case "exec_server.http.finished":
+      return {
+        ...base,
+        type: "executor.finished",
+        severity: "info",
+        title: "Codex exec-server HTTP request finished",
+        summary: short(`${data.durationMs ?? ""} ms ${data.url ?? ""}`),
         status: "finished",
         data,
       }
@@ -699,6 +745,7 @@ function makeBusEvents(input: BusRecordInput): PublicEventDraft[] {
         data: {
           requestID,
           reply: props.reply,
+          scope: props.scope,
         },
       },
     ]

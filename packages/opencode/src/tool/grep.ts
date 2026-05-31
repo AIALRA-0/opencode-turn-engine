@@ -8,6 +8,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
 import * as Tool from "./tool"
 import { Reference } from "@/reference/reference"
+import { TurnSandbox } from "./turn-sandbox"
 
 const MAX_LINE_LENGTH = 2000
 
@@ -54,9 +55,9 @@ export const GrepTool = Tool.define(
           })
 
           const ins = yield* InstanceState.context
-          const requested = path.isAbsolute(params.path ?? ins.directory)
-            ? (params.path ?? ins.directory)
-            : path.join(ins.directory, params.path ?? ".")
+          const requested = TurnSandbox.resolvePath(ctx, params.path ?? ".", ins.directory)
+          yield* TurnSandbox.assertFileAccess(ctx, "read", requested)
+          yield* TurnSandbox.assertSearchScope(ctx, requested)
           yield* reference.ensure(requested)
           const requestedInfo = yield* fs.stat(requested).pipe(Effect.catch(() => Effect.succeed(undefined)))
           yield* assertExternalDirectoryEffect(ctx, requested, {

@@ -3,6 +3,24 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.00002 2026-05-31 AIALRA General Engineering Harness v3 planning and first closure
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| V3 regression-6 gate | V3 首批实现还没有证明能修掉 V2 的真实失败点 | 在 search scope 修复后单独重跑 `scikit-learn__scikit-learn-13241`，从原先零补丁/未验证变成 verified pass，patch 1021 B，工具 46 次，耗时 352 秒 | 看 `real-benchmark-20260531174035-rerun13241-searchfix.md` | 这是单题门槛确认，不等于 full-24 结论 |
+| V3 full-24 corrected gate | 主 full-24 报告里有两行是人工清理 repo cache 造成的 worktree 准备失败，不应算模型失败 | 已定向补跑 `NodeBB-265...` 和 `pytest-dev__pytest-7490`，并生成 corrected summary。最终有效结果是 7/24 official verified，20/24 有 patch，4/24 零补丁，24/24 有 turn 终态，0 审批卡住 | 看 `real-benchmark-202605312120-full24-aialra-v3-corrected-summary.md` | corrected summary 是本轮真实能力口径，原始 full-24 报告仍保留用于追溯 |
+| benchmark repair 验证缓存 | repair 后官方验证可能复用 initial harness 报告，导致“修了也按旧结果算” | repair 验证使用 `official-harness-repair-*` 和独立 report id，repair patch 会被重新官方验证 | 看 `real-benchmark-202605311822-astropy-repair-verifyfix.md`，目录里会出现 `official-harness-repair-1` | 这修的是评测公平性，不代表所有 repair 都能通过 |
+| repo mirror cache 自愈 | 长跑时如果为了救磁盘手动删掉 repo cache，runner 内存里还可能保留旧 mirror path | `ensureMirror` 现在复用缓存前会检查磁盘路径是否还存在，不存在就丢弃缓存并重新 clone | 后续 benchmark 不应再出现“bare mirror does not exist”这种基建失败 | 仍建议 benchmark 长跑前预留磁盘，当前 `/srv/aialra` 只有约 12 GB 可用 |
+| 搜索范围门禁 | 弱模型可能在 grep/glob 里把路径扩大到 `/`，造成超长扫描和非生产性工具循环 | `glob` 和 `grep` 在 TurnContext 门禁后新增 recursive search scope 检查，workspace profile 下禁止递归搜索 selected environment cwd 之外 | Turn Inspector 会出现 `tool.sandbox.denied`，说明被拒绝的是搜索范围，不是模型失败 | full-access/disabled profile 仍可放开，这保持用户可控 |
+| V3 计划落盘 | 下一阶段目标在对话里，容易被上下文压缩冲掉 | 新增 `project-plans/v3-general-engineering-harness/`，包含总计划和 16 个分计划，每项都有原始任务、技术目标、测试方法、里程碑和完成标准 | 打开该目录，从 `00-v3-master-plan.md` 进入 | 这只是计划落盘，不代表 16 项都已实现 |
+| 零补丁恢复 | V2 full-24 里出现 6/24 zero patch，模型可能长篇分析后没有实际改代码 | EngineeringRun 增加 `zeroPatchRecoveryMax` 和 patch 状态，工程任务准备结束但没有任何写入活动时会发 `engineering.zero_patch.detected` 并进入 repair | Turn Inspector 显示“检测到零补丁”和“请求零补丁恢复”；沙盒控制中心高级参数可调恢复次数 | 当前产品内用写入工具活动判断，benchmark 仍会用 git diff 做更严格统计 |
+| 终态校准可见性 | 空 final 和普通 completed 很难区分 | completed 前如果 assistant final 为空，会发 `turn.terminal.anomaly`；每次 completed/aborted 都会发 `turn.terminal.reconciled` | Turn Inspector 显示“终态异常”或“终态已校准” | 这是终态可见性第一步，后续还要覆盖模型未启动和 runner 等不到终态 |
+| 补丁质量评分 | benchmark 总分主要看完成、patch 字节和验证通过，难以说明补丁好坏 | `run-real-benchmark.mjs` 增加 patch quality，补丁质量分，按验证、是否有 patch、是否改源码、是否含测试、补丁大小、噪声文件、终态、repair 成功解释 | 新报告总览有“补丁质量均分”，每题详情有“补丁质量”解释 | 当前相关文件判断是启发式，还没接 official gold patch 语义对比 |
+| EngineeringRun V3 结构化产物 | V2 只有 phase、feedback 和计数，用户知道阶段但看不到结构化证据链 | `aialra.engineering_run.v3` 增加 suspectedFiles、editPlan、verificationPlan、verificationResults、repairFeedback、finalSummary，并发 `engineering.artifact.updated` | Turn Inspector 工程分类可看到“工程产物已更新”；public event raw 里能审计完整 artifact | 产物先由工具行为和验证结果生成，还不是 LLM 严格 schema 输出 |
+| TurnContext 字段补齐 | `approvals_reviewer`、effort、summary、service tier、HTTP context、selected environment 这些字段有类型但不完整进入 trace | 这些字段进入 `CodexTurn.traceSummary`，`SessionSecurity.overrides/applyToTurn` 会写入审批人、选中环境和 HTTP 执行上下文 | `turn.context.created` 事件里看 `approvals_reviewer`、`selected_environment_id`、`http_context` | remote environment 仍显示 unsupported，本轮只把本地环境级 cwd 稳住 |
+| 环境级 cwd | 工具相对路径主要按单个 `turn.cwd` 解析 | `TurnSandbox.resolvePath` 现在按 selected environment cwd 解析，glob/grep/read/write/edit/apply_patch/bash 门禁统一吃 TurnContext | turn-sandbox 测试覆盖 selected environment cwd；Inspector 可看 selected environment | 远程环境还没有执行器实现，只有 local default 稳定 |
+| 审批 scope 审计 | 后端只知道 once/always/reject，看不出用户点了“本轮全部”还是“仅本次” | Permission reply 增加 scope，前端六按钮把真实选择写回，public event `approval.resolved` 带 scope | Turn Inspector 审批完成摘要显示“本对话单轮允许全部命令”等 | session 内自动允许仍由前端状态辅助，后续要把策略完全服务端化 |
+
 ## 0.00001 2026-05-31 AIALRA General Engineering Harness v2
 
 | 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |

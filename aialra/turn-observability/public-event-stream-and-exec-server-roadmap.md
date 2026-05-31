@@ -40,12 +40,21 @@
   `process/start/read` 以及 FS API。AIALRA 主服务已默认连接 systemd sidecar
   `aialra-codex-exec-server.service`，bash 与 read/write/edit/apply_patch 文件
   内容路径优先使用 Codex exec-server，并保留 fallback。
+- EngineeringRun 已升级到 V3。公共事件流新增 `engineering.artifact.updated`，
+  用来展示 suspected files、edit plan、verification plan、verification
+  results、repair feedback 和 final summary 的结构化更新。
+- TurnContext 已补充审批人、effort、summary、service tier、selected
+  environment 和 HTTP execution context。相对路径解析已经按 selected
+  environment cwd 生效，remote environment 仍明确标记为 unsupported。
+- Approval resolved 事件现在携带 scope，能区分“仅一次本命令”“本轮全部”
+  和“会话始终全部”等用户选择。
 
 仍未完成的部分：
 
 - Codex Rust exec-server 尚未替换全部 Node/Bun executor。bash 与文件内容读写
-  已优先走 sidecar，但 read 工具的目录列举还未接 `fs/readDirectory`，
-  remote environment、HTTP API、复制/元数据 API 还未接。
+  已优先走 sidecar，read 目录列举已接 `fs/readDirectory`。HTTP 和 copy
+  目前有 TypeScript adapter 入口，但是否能真实执行取决于 Codex sidecar
+  协议是否支持对应 method；remote environment、元数据 API 还未完成。
 - command 输出目前主要来自工具完成后的摘要；还没把 exec-server
   `process/read` 的 stdout/stderr seq 分片实时推给 Turn Inspector。
 - Landlock 已确认内核配置存在，Codex Linux sandbox helper 真实探测能挡住
@@ -60,11 +69,14 @@
 - TurnContext 现在携带 `engineering` 快照，记录本轮工程模式、验证轮数、
   定位预算、重复工具阈值、总工具调用上限、单条命令超时等设置。
 - Public event stream 已新增工程事件：`engineering.run.started`、
-  `engineering.phase.changed`、`engineering.verification.finished`、
-  `engineering.phase_gate.blocked_tool`、`engineering.phase_gate.premature_final`、`engineering.stop_gate.activated`、`engineering.stop_gate.blocked_tool`、
+  `engineering.phase.changed`、`engineering.artifact.updated`、`engineering.verification.finished`、
+  `engineering.phase_gate.blocked_tool`、`engineering.phase_gate.premature_final`、
+  `engineering.zero_patch.detected`、`engineering.zero_patch.recovery_requested`、
+  `engineering.zero_patch.exhausted`、`engineering.stop_gate.activated`、`engineering.stop_gate.blocked_tool`、
   `engineering.loop.warning`、`engineering.loop.checkpoint`、
   `engineering.loop.blocked`、`engineering.reasoning.recorded`、
-  `engineering.run.finished`。
+  `engineering.run.finished`。终态校准事件也进入公共事件流：
+  `turn.terminal.anomaly`、`turn.terminal.reconciled`。
 - bash 工具会识别常见验证命令，例如 `npm test`、`pytest`、`bun test`、
   `go test`、`cargo test`、`typecheck`。验证通过后开启 stop gate，
   通过即停止门禁，后续工具调用会被阻止，模型只能最终汇报。
@@ -80,6 +92,53 @@
 - stop gate，停止门禁 已经能阻止验证通过后的继续工具调用，但不会替模型写最终报告。
 - Claude Code + DeepSeek 目前只有 PoC runner，缺少可用 `ANTHROPIC_BASE_URL`
   或 claude CLI 时会诚实记录未运行。
+
+## 0.2 2026-05-31 General Engineering Harness V3 验收状态
+
+V3 的重点不是再加一个模型专属 prompt，而是把“工程过程是否真的推进”变成可观测、可评分、可纠偏的事实链。
+
+本轮已落地：
+
+- `EngineeringRun` 升级到 `aialra.engineering_run.v3`，结构化记录 suspected
+  files、edit plan、verification plan、verification result、repair feedback 和
+  final summary。
+- Public event stream 已加入 `engineering.artifact.updated`，
+  `turn.terminal.anomaly` 和 `turn.terminal.reconciled`。用户能看到“模型是否空
+  final”“这一轮是否真的收口”“工程产物有没有推进”。
+- `glob` 和 `grep` 现在有 TurnContext search scope gate。工作区档位下，递归
+  搜索 selected environment cwd 之外的路径会被拒绝并进入 `tool.sandbox.denied`。
+- Benchmark runner 的 repair 验证使用 attempt-specific official harness 目录，
+  例如 `official-harness-repair-1`，避免 repair 后仍然复用 initial 失败报告。
+- Benchmark runner 复用 repo mirror 前会重新检查磁盘路径是否存在，避免手动资源
+  清理后产生假的 worktree 准备失败。
+
+V3 AIALRA-only full-24 corrected 结果：
+
+```text
+题目数：24
+总分：452
+补丁质量均分：58
+完成：23/24
+有 patch：20/24
+零补丁：4/24
+官方验证通过：7/24
+检测型超时：1
+等待审批：0
+turn 终态：24/24
+```
+
+有效报告：
+
+```text
+aialra/turn-observability/real-benchmark-reports/real-benchmark-202605312120-full24-aialra-v3-corrected-summary.md
+```
+
+仍未完成：
+
+- public event stream 已能解释工程状态，但还没有把 official SWE-Bench 验证器变成普通用户工作流内置的验证工具。
+- Turn Inspector 已能显示事件和 raw，但虚拟列表、质量面板和超长流式内容产品化仍未完成。
+- exec-server 已有 process/FS/HTTP adapter 入口，但 glob/grep、metadata、remote environment 还未做到 Codex 侧完整等价。
+- Linux sandbox 已加强 bwrap 和 helper 路线，Landlock 仍不是 Node/Bun 工具层 syscall enforce。
 
 ## 1. 下一阶段优先级
 
@@ -431,7 +490,7 @@ exec-server/src/fs_sandbox.rs
 
 | 项 | 我们现在 | Codex |
 | --- | --- | --- |
-| read/write/edit/apply_patch | TurnContext 先检查 cwd/permission/sandbox；启用 Codex backend 时，文件内容读写/删除优先走 exec-server FS API，失败才 fallback 到 Node/Bun。目录列举仍在 Node/Bun。 | 文件操作可进入沙箱 helper，由系统沙箱包住。 |
+| read/write/edit/apply_patch | TurnContext 先检查 cwd/permission/sandbox；启用 Codex backend 时，文件内容读写、目录列举、创建目录和删除优先走 exec-server FS API，失败才 fallback 到 Node/Bun。 | 文件操作可进入沙箱 helper，由系统沙箱包住。 |
 | symlink escape | 已做真实路径检查。 | 由 runtime permission + sandbox helper 双层控制。 |
 | `.git/.agents/.codex` | 已在 Node 层和 bwrap 里保护。 | policy 层建模，bwrap 还会处理 missing/create protection。 |
 | 远程文件系统 | 未接。 | RemoteFileSystem 通过 exec-server client。 |

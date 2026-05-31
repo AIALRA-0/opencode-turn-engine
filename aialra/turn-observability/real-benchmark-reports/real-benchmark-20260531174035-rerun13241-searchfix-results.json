@@ -1,0 +1,66 @@
+[
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "scikit-learn__scikit-learn-13241",
+    "datasetKey": "swe-bench-lite",
+    "repo": "scikit-learn/scikit-learn",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260531174035-rerun13241-searchfix/aialra-deepseek-v4-pro-max/scikit-learn__scikit-learn-13241/worktree",
+    "sessionID": "ses_180b8287bffebEsften54iHXFL",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 2031,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 352499,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "toolCallCount": 46,
+    "eventCount": 604,
+    "finalText": "## Root Cause\n\nEigenvectors computed by `eigsh` (ARPACK solver) have arbitrary signs between runs because ARPACK uses a random initialization vector. `KernelPCA._fit_transform` did not normalize these signs, making `fit_transform`/`transform` output non-deterministic.\n\n## Change Made\n\n**File: `sklearn/decomposition/kernel_pca.py`**\n\n1. Added import: `from ..utils.extmath import svd_flip` (line 11)\n2. Added sign normalization after eigenvector computation and zero-eigenvalue removal (lines 224-226):\n   ```python\n   self.alphas_, _ = svd_flip(self.alphas_,\n                              np.eye(self.alphas_.shape[1]))\n   ```\n\nThis uses the same `svd_flip` utility already employed by `PCA`, `TruncatedSVD`, and `IncrementalPCA` to enforce deterministic signs by ensuring the largest absolute value element in each eigenvector column is always positive.\n\n## Validation\n\n- The fix mirrors the exact pattern used by `PCA` at `sklearn/decomposition/pca.py:437`\n- Existing tests use `np.abs()` comparisons and should continue to pass\n- The change is minimal (3 lines + import) and only affects sign normalization, not the actual decomposition\n\n## Remaining Risk\n\nThe edge case where `self.alphas_` has 0 columns (all eigenvalues removed) produces `np.eye(0)` → empty array. `svd_flip` should handle this safely, but it wasn't explicitly tested.",
+    "error": "",
+    "changedFiles": [
+      "sklearn/decomposition/kernel_pca.py"
+    ],
+    "patchBytes": 1021,
+    "diffStat": "sklearn/decomposition/kernel_pca.py | 5 +++++\n 1 file changed, 5 insertions(+)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": true,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/20260531174035-rerun13241-searchfix/aialra-deepseek-v4-pro-max/scikit-learn__scikit-learn-13241/official-harness/aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241.20260531174035-rerun13241-searchfix-aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241.20260531174035-rerun13241-searchfix-aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-05-31 20:30:36,472 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-31 20:30:36,473 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-31 20:30:36,510 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Lite/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/README.md \"HTTP/1.1 200 OK\"\n2026-05-31 20:30:36,622 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-31 20:30:36,946 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Lite/SWE-bench/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-31 20:30:37,095 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/revision/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e \"HTTP/1.1 200 OK\"\n2026-05-31 20:30:37,211 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-05-31 20:30:37,389 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-05-31 20:30:37,541 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-05-31 20:30:37,654 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-05-31 20:30:37,771 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731d"
+    },
+    "repairRounds": 0,
+    "repairs": [],
+    "patchQuality": {
+      "score": 85,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 1,
+      "testFileCount": 0,
+      "patchBytes": 1021,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证通过 +35",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "未包含测试文件 +0",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  }
+]

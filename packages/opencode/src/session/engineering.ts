@@ -17,6 +17,7 @@ export const EngineeringControls = Schema.Struct({
   patchMaxFiles: Schema.Number,
   patchMaxBytes: Schema.Number,
   testOutputMaxBytes: Schema.Number,
+  zeroPatchRecoveryMax: Schema.Number,
   totalToolCallsMax: Schema.Number,
   singleCommandTimeoutMs: Schema.Number,
   longRun: Schema.Boolean,
@@ -35,6 +36,7 @@ export const EngineeringControlsPatch = Schema.Struct({
   patchMaxFiles: Schema.optional(Schema.Number),
   patchMaxBytes: Schema.optional(Schema.Number),
   testOutputMaxBytes: Schema.optional(Schema.Number),
+  zeroPatchRecoveryMax: Schema.optional(Schema.Number),
   totalToolCallsMax: Schema.optional(Schema.Number),
   singleCommandTimeoutMs: Schema.optional(Schema.Number),
   longRun: Schema.optional(Schema.Boolean),
@@ -56,7 +58,7 @@ export type EngineeringTaskClass = "bug_fix" | "feature" | "refactor" | "test" |
 export type EngineeringRiskLevel = "low" | "medium" | "high"
 
 export type EngineeringRunSnapshot = {
-  version: "aialra.engineering_run.v2"
+  version: "aialra.engineering_run.v3"
   phase: EngineeringPhase
   controls: EngineeringControls
   intake: {
@@ -85,20 +87,63 @@ export type EngineeringRunSnapshot = {
     blocked: number
     prematureFinals: number
   }
+  patch: {
+    writeToolCalls: number
+    zeroPatchRecoveries: number
+    zeroPatchExhausted: boolean
+  }
   feedback: {
     items: EngineeringFeedbackItem[]
   }
+  artifacts: EngineeringArtifacts
 }
 
 export type EngineeringFeedbackItem = {
   id: string
-  kind: "verification_failed" | "loop_checkpoint" | "phase_gate"
+  kind: "verification_failed" | "loop_checkpoint" | "phase_gate" | "zero_patch" | "terminal_anomaly"
   summary: string
   detail?: string
   command?: string
   exit?: number | null
   tool?: string
   at: number
+}
+
+export type EngineeringArtifactFile = {
+  path: string
+  reason: string
+  source: string
+  at: number
+}
+
+export type EngineeringArtifactPlan = {
+  summary: string
+  files: string[]
+  verification: string[]
+  at: number
+}
+
+export type EngineeringVerificationResult = {
+  command: string
+  exit: number | null
+  passed: boolean
+  summary?: string
+  detail?: string
+  at: number
+}
+
+export type EngineeringFinalSummary = {
+  text: string
+  at: number
+}
+
+export type EngineeringArtifacts = {
+  suspectedFiles: EngineeringArtifactFile[]
+  editPlan?: EngineeringArtifactPlan
+  verificationPlan?: EngineeringArtifactPlan
+  verificationResults: EngineeringVerificationResult[]
+  repairFeedback: EngineeringFeedbackItem[]
+  finalSummary?: EngineeringFinalSummary
 }
 
 type RuntimeState = EngineeringRunSnapshot & {
@@ -124,6 +169,7 @@ const presets: Record<EngineeringMode, EngineeringControls> = {
     patchMaxFiles: 6,
     patchMaxBytes: 60_000,
     testOutputMaxBytes: 80_000,
+    zeroPatchRecoveryMax: 1,
     totalToolCallsMax: 80,
     singleCommandTimeoutMs: 120_000,
     longRun: false,
@@ -140,6 +186,7 @@ const presets: Record<EngineeringMode, EngineeringControls> = {
     patchMaxFiles: 12,
     patchMaxBytes: 180_000,
     testOutputMaxBytes: 160_000,
+    zeroPatchRecoveryMax: 2,
     totalToolCallsMax: 180,
     singleCommandTimeoutMs: 300_000,
     longRun: false,
@@ -156,6 +203,7 @@ const presets: Record<EngineeringMode, EngineeringControls> = {
     patchMaxFiles: 24,
     patchMaxBytes: 420_000,
     testOutputMaxBytes: 260_000,
+    zeroPatchRecoveryMax: 3,
     totalToolCallsMax: 420,
     singleCommandTimeoutMs: 900_000,
     longRun: false,
@@ -172,6 +220,7 @@ const presets: Record<EngineeringMode, EngineeringControls> = {
     patchMaxFiles: 60,
     patchMaxBytes: 1_000_000,
     testOutputMaxBytes: 420_000,
+    zeroPatchRecoveryMax: 8,
     totalToolCallsMax: 0,
     singleCommandTimeoutMs: 1_800_000,
     longRun: true,
@@ -207,6 +256,7 @@ export namespace EngineeringHarness {
       patchMaxFiles: clamp(input?.patchMaxFiles, presetValue.patchMaxFiles, 1, 1000),
       patchMaxBytes: clamp(input?.patchMaxBytes, presetValue.patchMaxBytes, 1_000, 50_000_000),
       testOutputMaxBytes: clamp(input?.testOutputMaxBytes, presetValue.testOutputMaxBytes, 1_000, 50_000_000),
+      zeroPatchRecoveryMax: clamp(input?.zeroPatchRecoveryMax, presetValue.zeroPatchRecoveryMax, 0, 50),
       totalToolCallsMax: clamp(input?.totalToolCallsMax, presetValue.totalToolCallsMax, 0, 100_000),
       singleCommandTimeoutMs: clamp(input?.singleCommandTimeoutMs, presetValue.singleCommandTimeoutMs, 1_000, 24 * 60 * 60 * 1000),
       longRun: input?.longRun ?? presetValue.longRun,
@@ -247,7 +297,7 @@ export namespace EngineeringHarness {
 
   export function snapshot(input: { controls: EngineeringControls; prompt: string }): EngineeringRunSnapshot {
     return {
-      version: "aialra.engineering_run.v2",
+      version: "aialra.engineering_run.v3",
       phase: "intake",
       controls: input.controls,
       intake: classify(input.prompt),
@@ -268,8 +318,18 @@ export namespace EngineeringHarness {
         blocked: 0,
         prematureFinals: 0,
       },
+      patch: {
+        writeToolCalls: 0,
+        zeroPatchRecoveries: 0,
+        zeroPatchExhausted: false,
+      },
       feedback: {
         items: [],
+      },
+      artifacts: {
+        suspectedFiles: [],
+        verificationResults: [],
+        repairFeedback: [],
       },
     }
   }
@@ -430,6 +490,26 @@ export namespace EngineeringHarness {
     }
 
     runtime.loop.toolCalls++
+    const referencedPath = pathFromToolInput(input)
+    if (readTool(tool) && referencedPath) {
+      addSuspectedFile(runtime, {
+        path: referencedPath,
+        reason: `${tool} 用于定位相关代码`,
+        source: tool,
+      })
+      record(turn, {
+        type: "engineering.artifact.updated",
+        severity: "info",
+        title: "定位证据更新",
+        summary: `记录相关路径 ${referencedPath}`,
+        status: "updated",
+        data: {
+          artifact: "suspectedFiles",
+          path: referencedPath,
+          state: publicState(runtime),
+        },
+      })
+    }
     const max = runtime.controls.totalToolCallsMax
     if (max > 0 && runtime.loop.toolCalls > max) {
       runtime.loop.blocked++
@@ -497,8 +577,49 @@ export namespace EngineeringHarness {
       }
     }
 
-    if (writeTool(tool)) phase(turn, "edit", "write_tool")
-    if (tool === "bash" || tool === "shell") phase(turn, "verify", "command_tool")
+    if (writeTool(tool) || (tool === "bash" && writeLikeCommand(input))) {
+      runtime.patch.writeToolCalls++
+      updateEditPlan(runtime, {
+        summary: tool === "bash" ? "bash 命令包含写入类操作" : `${tool} 准备修改文件`,
+        file: referencedPath,
+      })
+      record(turn, {
+        type: "engineering.artifact.updated",
+        severity: "info",
+        title: "修改计划更新",
+        summary: runtime.artifacts.editPlan?.summary ?? "记录修改计划",
+        status: "updated",
+        data: {
+          artifact: "editPlan",
+          state: publicState(runtime),
+        },
+      })
+      phase(turn, "edit", "write_tool")
+    }
+    if (tool === "bash" || tool === "shell") {
+      const command = commandFromToolInput(input)
+      if (command && looksLikeVerification(command)) {
+        runtime.artifacts.verificationPlan = {
+          summary: "运行项目验证命令",
+          files: [],
+          verification: [command],
+          at: Date.now(),
+        }
+        record(turn, {
+          type: "engineering.artifact.updated",
+          severity: "info",
+          title: "验证计划更新",
+          summary: command,
+          status: "updated",
+          data: {
+            artifact: "verificationPlan",
+            command,
+            state: publicState(runtime),
+          },
+        })
+      }
+      phase(turn, "verify", "command_tool")
+    }
     return { blocked: false as const }
   }
 
@@ -533,6 +654,17 @@ export namespace EngineeringHarness {
         exit: input.exit,
       })
     }
+    runtime.artifacts.verificationResults = [
+      ...runtime.artifacts.verificationResults.slice(-9),
+      {
+        command: input.command,
+        exit: input.exit,
+        passed: runtime.verification.passed,
+        summary: failure?.summary,
+        detail: failure?.detail,
+        at: Date.now(),
+      },
+    ]
     record(input.turn, {
       type: "engineering.verification.finished",
       severity: runtime.verification.passed ? "info" : "warning",
@@ -617,10 +749,118 @@ export namespace EngineeringHarness {
     ].join("\n")
   }
 
-  export function finish(turn: TurnContext | undefined, status: "completed" | "aborted") {
+  export function zeroPatchPrompt(turn: TurnContext | undefined, text: string, input?: { workspaceChanged?: boolean }) {
     if (!turn) return
     const runtime = states.get(turn.turnID)
     if (!runtime) return
+    if (runtime.stopGate.active || runtime.intake.needsClarification) return
+    if (!runtime.intake.expectedEvidence.includes("diff")) return
+    if (input?.workspaceChanged === true) return
+    if (runtime.patch.writeToolCalls > 0 && input?.workspaceChanged !== false) return
+    if (!["localize", "plan", "edit", "repair"].includes(runtime.phase)) return
+    if (!looksLikeFinalText(text)) return
+    if (runtime.patch.zeroPatchRecoveries >= runtime.controls.zeroPatchRecoveryMax) {
+      runtime.patch.zeroPatchExhausted = true
+      phase(turn, "blocked", "zero_patch_recovery_exhausted")
+      addFeedback(runtime, {
+        kind: "zero_patch",
+        summary: "本轮需要实际代码改动，但模型没有产生任何写入操作，零补丁恢复次数已用完",
+        detail: "请向用户说明没有生成补丁的原因，或者请求更明确的任务边界",
+      })
+      record(turn, {
+        type: "engineering.zero_patch.exhausted",
+        severity: "error",
+        title: "零补丁恢复耗尽",
+        summary: "工程任务没有产生代码改动，恢复次数已用完",
+        status: "blocked",
+        data: {
+          textChars: text.length,
+          workspaceChanged: input?.workspaceChanged,
+          state: publicState(runtime),
+        },
+        raw: { text },
+      })
+      return
+    }
+    runtime.patch.zeroPatchRecoveries++
+    phase(turn, "repair", "zero_patch")
+    addFeedback(runtime, {
+      kind: "zero_patch",
+      summary: "当前没有任何代码改动",
+      detail: "这个任务需要实际修改代码 请继续定位并调用 edit、write 或 apply_patch 做最小安全改动，或者明确说明 blocked 原因",
+    })
+    record(turn, {
+      type: "engineering.zero_patch.detected",
+      severity: "warning",
+      title: "检测到零补丁",
+      summary: "模型准备结束，但本轮工程任务还没有任何写入操作",
+      status: "detected",
+      data: {
+        textChars: text.length,
+        workspaceChanged: input?.workspaceChanged,
+        recovery: runtime.patch.zeroPatchRecoveries,
+        max: runtime.controls.zeroPatchRecoveryMax,
+        state: publicState(runtime),
+      },
+      raw: { text },
+    })
+    record(turn, {
+      type: "engineering.zero_patch.recovery_requested",
+      severity: "warning",
+      title: "请求零补丁恢复",
+      summary: `恢复 ${runtime.patch.zeroPatchRecoveries}/${runtime.controls.zeroPatchRecoveryMax}`,
+      status: "continued",
+      data: publicState(runtime),
+    })
+    return [
+      "<system-reminder>",
+      "系统检测到你准备结束，但当前没有任何代码改动",
+      "这是一轮工程修复任务，不能只给分析或计划",
+      "请继续执行最小安全改动，优先使用 edit、write 或 apply_patch",
+      "修改后运行最相关验证",
+      "如果确实无法修改，请明确给出 blocked 原因，而不是假装完成",
+      "</system-reminder>",
+    ].join("\n")
+  }
+
+  export function terminalAnomaly(input: {
+    turn: TurnContext | undefined
+    lastAgentMessage?: string
+    finalText?: string
+  }) {
+    if (!input.turn || input.turn.noReply) return
+    const runtime = states.get(input.turn.turnID)
+    if (!runtime) return
+    const reason = !input.lastAgentMessage
+      ? "missing_assistant"
+      : input.finalText !== undefined && input.finalText.trim().length === 0
+        ? "empty_final"
+        : runtime.patch.zeroPatchExhausted
+          ? "zero_patch_exhausted"
+          : runtime.intake.expectedEvidence.includes("diff") &&
+              runtime.loop.toolCalls === 0 &&
+              looksLikeFinalText(input.finalText ?? "")
+            ? "zero_tool_zero_patch"
+            : undefined
+    if (!reason) return
+    addFeedback(runtime, {
+      kind: "terminal_anomaly",
+      summary: terminalAnomalyLabel(reason),
+      detail: "终态校准器发现这轮回合虽然要收尾，但执行证据不完整",
+    })
+    return reason
+  }
+
+  export function finish(turn: TurnContext | undefined, status: "completed" | "aborted", finalText?: string) {
+    if (!turn) return
+    const runtime = states.get(turn.turnID)
+    if (!runtime) return
+    if (finalText !== undefined) {
+      runtime.artifacts.finalSummary = {
+        text: finalText.slice(0, 20_000),
+        at: Date.now(),
+      }
+    }
     record(turn, {
       type: "engineering.run.finished",
       severity: status === "completed" ? "info" : "warning",
@@ -656,29 +896,92 @@ function publicState(runtime: RuntimeState): EngineeringRunSnapshot {
     stopGate: runtime.stopGate,
     loop: runtime.loop,
     phaseGate: runtime.phaseGate,
+    patch: runtime.patch,
     feedback: {
       items: runtime.feedback.items,
     },
+    artifacts: runtime.artifacts,
   }
 }
 
 function addFeedback(runtime: RuntimeState, input: Omit<EngineeringFeedbackItem, "id" | "at">) {
-  runtime.feedback.items = [
-    ...runtime.feedback.items.slice(-4),
-    {
-      ...input,
-      id: `feedback_${Date.now()}_${runtime.feedback.items.length + 1}`,
-      at: Date.now(),
-    },
-  ]
+  const item = {
+    ...input,
+    id: `feedback_${Date.now()}_${runtime.feedback.items.length + 1}`,
+    at: Date.now(),
+  }
+  runtime.feedback.items = [...runtime.feedback.items.slice(-4), item]
+  if (input.kind === "verification_failed" || input.kind === "loop_checkpoint" || input.kind === "zero_patch") {
+    runtime.artifacts.repairFeedback = [...runtime.artifacts.repairFeedback.slice(-9), item]
+  }
 }
 
 function latestFeedback(runtime: RuntimeState) {
   return runtime.feedback.items.at(-1)
 }
 
+function addSuspectedFile(runtime: RuntimeState, input: { path: string; reason: string; source: string }) {
+  if (runtime.artifacts.suspectedFiles.some((item) => item.path === input.path && item.source === input.source)) return
+  runtime.artifacts.suspectedFiles = [
+    ...runtime.artifacts.suspectedFiles.slice(-29),
+    {
+      ...input,
+      at: Date.now(),
+    },
+  ]
+}
+
+function updateEditPlan(runtime: RuntimeState, input: { summary: string; file?: string }) {
+  const files = input.file
+    ? Array.from(new Set([...(runtime.artifacts.editPlan?.files ?? []), input.file])).slice(-20)
+    : (runtime.artifacts.editPlan?.files ?? [])
+  runtime.artifacts.editPlan = {
+    summary: input.summary,
+    files,
+    verification: runtime.artifacts.editPlan?.verification ?? runtime.artifacts.verificationPlan?.verification ?? [],
+    at: Date.now(),
+  }
+}
+
+function readTool(tool: string) {
+  return tool === "read" || tool === "glob" || tool === "grep" || tool === "list" || tool === "ls"
+}
+
+function commandFromToolInput(input: unknown) {
+  return input && typeof input === "object" && "command" in input && typeof input.command === "string"
+    ? input.command
+    : undefined
+}
+
+function pathFromToolInput(input: unknown) {
+  if (!input || typeof input !== "object") return
+  const record = input as Record<string, unknown>
+  for (const key of ["filePath", "path", "directory", "cwd", "pattern"]) {
+    if (typeof record[key] === "string") return record[key]
+  }
+  return
+}
+
 function writeTool(tool: string) {
   return tool === "edit" || tool === "write" || tool === "apply_patch"
+}
+
+function writeLikeCommand(input: unknown) {
+  const command = commandFromToolInput(input) ?? ""
+  return /(^|\s)(>|>>|\|\s*tee\b|\btee\b|\bmkdir\b|\bmv\b|\bcp\b|\brm\b|\btouch\b|\bpython\s+-c\b|\bnode\s+-e\b)/.test(
+    command,
+  )
+}
+
+function terminalAnomalyLabel(reason: string) {
+  return (
+    {
+      missing_assistant: "模型没有产生 assistant 消息",
+      empty_final: "最终回复为空",
+      zero_patch_exhausted: "零补丁恢复已经耗尽",
+      zero_tool_zero_patch: "工程任务没有工具调用也没有补丁",
+    } as Record<string, string>
+  )[reason] ?? reason
 }
 
 function requiresLocalization(taskClass: EngineeringTaskClass) {
@@ -691,6 +994,15 @@ function looksPrematureFinal(text: string) {
   if (/would you like me to proceed|shall i proceed|should i proceed|ready to make|ready to apply|let me know if you want/i.test(trimmed)) return true
   if (/要我继续|是否继续|要不要我|需要我.*(改|执行|继续)|我可以继续/.test(trimmed)) return true
   return /root cause|minimal fix|the fix is|replace .* with|修复方式|根因.*修|改成|替换为/i.test(trimmed)
+}
+
+function looksLikeFinalText(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (looksPrematureFinal(trimmed)) return true
+  return /done|completed|fixed|implemented|summary|final|no changes|zero patch|已完成|完成|修复了|总结|结果|验证|没有改动|零补丁/i.test(
+    trimmed,
+  )
 }
 
 function verificationFailure(input: { command: string; exit: number | null; output?: string; maxChars: number }) {

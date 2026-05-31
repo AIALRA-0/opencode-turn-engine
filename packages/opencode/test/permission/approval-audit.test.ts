@@ -44,6 +44,7 @@ describe("approval audit public events", () => {
           sessionID: "ses_approval",
           requestID: "perm_1",
           reply: "once",
+          scope: "turn-all",
         },
       },
     })
@@ -66,6 +67,9 @@ describe("approval audit public events", () => {
           turnID: "msg_turn",
           toolCallID: "call_1",
           status: "once",
+          data: expect.objectContaining({
+            scope: "turn-all",
+          }),
         }),
       ]),
     )

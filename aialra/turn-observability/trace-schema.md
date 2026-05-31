@@ -71,11 +71,15 @@ events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `security.override.resolved`. Engineering harness events are public as well:
 `engineering.controls.changed`, `engineering.mode.changed`,
 `engineering.budget.changed`, `engineering.run.started`,
-`engineering.phase.changed`, `engineering.verification.finished`,
-`engineering.phase_gate.blocked_tool`, `engineering.phase_gate.premature_final`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
+`engineering.phase.changed`, `engineering.artifact.updated`,
+`engineering.verification.finished`,
+`engineering.phase_gate.blocked_tool`, `engineering.phase_gate.premature_final`,
+`engineering.zero_patch.detected`, `engineering.zero_patch.recovery_requested`,
+`engineering.zero_patch.exhausted`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
 `engineering.loop.warning`, `engineering.loop.checkpoint`,
 `engineering.loop.blocked`, `engineering.reasoning.recorded`, and
-`engineering.run.finished`. The public
+`engineering.run.finished`. Terminal reconciliation events are public as well:
+`turn.terminal.anomaly` and `turn.terminal.reconciled`. The public
 stream keeps the same redaction rule: show structure,
 state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
 model text, full tool output, or secrets.
@@ -107,13 +111,19 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `prompt.completed`
 - `turn.completed`
 - `turn.aborted`
+- `turn.terminal.anomaly`
+- `turn.terminal.reconciled`
 - `turn.budget_limited`
 - `turn.repeated_tool.warning`
 - `engineering.run.started`
 - `engineering.phase.changed`
+- `engineering.artifact.updated`
 - `engineering.verification.finished`
 - `engineering.phase_gate.blocked_tool`
 - `engineering.phase_gate.premature_final`
+- `engineering.zero_patch.detected`
+- `engineering.zero_patch.recovery_requested`
+- `engineering.zero_patch.exhausted`
 - `engineering.stop_gate.activated`
 - `engineering.stop_gate.blocked_tool`
 - `engineering.loop.warning`
@@ -141,6 +151,8 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `exec_server.process.finished`
 - `exec_server.fs.started`
 - `exec_server.fs.finished`
+- `exec_server.http.started`
+- `exec_server.http.finished`
 - `exec_server.fallback`
 - `sandbox.profile.changed`
 - `sandbox.network.changed`

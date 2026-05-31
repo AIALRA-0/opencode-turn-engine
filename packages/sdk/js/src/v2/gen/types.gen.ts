@@ -21,6 +21,9 @@ export type Event =
   | EventPermissionReplied
   | EventSessionDiff
   | EventSessionError
+  | EventTurnStarted
+  | EventTurnCompleted
+  | EventTurnAborted
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
@@ -183,6 +186,10 @@ export type PermissionRequest = {
     [key: string]: unknown
   }
   always: Array<string>
+  turnID?: string
+  approvalPolicy?: unknown
+  permissionProfile?: unknown
+  sandboxPolicy?: unknown
   tool?: {
     messageID: string
     callID: string
@@ -822,6 +829,9 @@ export type GlobalEvent = {
     | EventPermissionReplied
     | EventSessionDiff
     | EventSessionError
+    | EventTurnStarted
+    | EventTurnCompleted
+    | EventTurnAborted
     | EventQuestionAsked
     | EventQuestionReplied
     | EventQuestionRejected
@@ -1057,7 +1067,10 @@ export type ProviderConfig = {
      */
     headerTimeout?: number | false
     chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | false | number | undefined
+    request_max_retries?: number
+    stream_max_retries?: number
+    stream_idle_timeout_ms?: number
+    [key: string]: unknown | string | boolean | number | false | number | false | number | number | undefined
   }
   models?: {
     [key: string]: {
@@ -2586,6 +2599,7 @@ export type EventPermissionReplied = {
     sessionID: string
     requestID: string
     reply: "once" | "always" | "reject"
+    scope?: "reject" | "once-command" | "turn-command" | "turn-all" | "always-command" | "always-all"
   }
 }
 
@@ -2611,6 +2625,44 @@ export type EventSessionError = {
       | StructuredOutputError
       | ContextOverflowError
       | ApiError
+  }
+}
+
+export type EventTurnStarted = {
+  id: string
+  type: "turn.started"
+  properties: {
+    turnID: string
+    sessionID: string
+    startedAt: number
+    modelContextWindow?: number
+    collaborationModeKind: string
+    cwd?: string
+  }
+}
+
+export type EventTurnCompleted = {
+  id: string
+  type: "turn.completed"
+  properties: {
+    turnID: string
+    sessionID: string
+    lastAgentMessage?: string
+    completedAt: number
+    durationMs: number
+    timeToFirstTokenMs?: number
+  }
+}
+
+export type EventTurnAborted = {
+  id: string
+  type: "turn.aborted"
+  properties: {
+    turnID: string
+    sessionID: string
+    reason: "interrupted" | "replaced" | "review_ended" | "budget_limited"
+    completedAt: number
+    durationMs: number
   }
 }
 
@@ -4107,6 +4159,66 @@ export type EventSubscribeResponses = {
 }
 
 export type EventSubscribeResponse = EventSubscribeResponses[keyof EventSubscribeResponses]
+
+export type EventSubscribePublicData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/event/public"
+}
+
+export type EventSubscribePublicResponses = {
+  /**
+   * Success
+   */
+  200: string
+}
+
+export type EventSubscribePublicResponse = EventSubscribePublicResponses[keyof EventSubscribePublicResponses]
+
+export type EventSessionPublicData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/events/public"
+}
+
+export type EventSessionPublicResponses = {
+  /**
+   * Success
+   */
+  200: string
+}
+
+export type EventSessionPublicResponse = EventSessionPublicResponses[keyof EventSessionPublicResponses]
+
+export type EventSessionPublicRawData = {
+  body?: never
+  path: {
+    sessionID: string
+    eventID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/events/{eventID}/raw"
+}
+
+export type EventSessionPublicRawResponses = {
+  /**
+   * Success
+   */
+  200: unknown
+}
 
 export type ConfigGetData = {
   body?: never
@@ -6951,6 +7063,7 @@ export type SessionUnrevertResponse = SessionUnrevertResponses[keyof SessionUnre
 export type PermissionRespondData = {
   body?: {
     response: "once" | "always" | "reject"
+    scope?: "reject" | "once-command" | "turn-command" | "turn-all" | "always-command" | "always-all"
   }
   path: {
     sessionID: string
@@ -6984,6 +7097,163 @@ export type PermissionRespondResponses = {
 }
 
 export type PermissionRespondResponse = PermissionRespondResponses[keyof PermissionRespondResponses]
+
+export type SessionSecurityData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/security"
+}
+
+export type SessionSecurityErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionSecurityError = SessionSecurityErrors[keyof SessionSecurityErrors]
+
+export type SessionSecurityResponses = {
+  /**
+   * Current turn security controls
+   */
+  200: {
+    sessionID: string
+    permissionProfileID: ":read-only" | ":workspace" | ":danger-full-access" | "external" | "disabled"
+    approvalPolicy: "never" | "on-request" | "on-failure" | "untrusted"
+    networkPolicy: "off" | "on" | "ask"
+    commandPolicy: "ask" | "workspace" | "all" | "read" | "disabled"
+    networkAccess: boolean
+    executorBackend: "codex" | "node-bun"
+    environmentID: string
+    cwd: string
+    remoteEnvironmentSupported: boolean
+    remoteEnvironmentStatus: string
+    stepBudgetEnabled: boolean
+    stepBudgetMaxSteps: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    engineering: {
+      mode: "fast" | "balanced" | "deep" | "long"
+      advancedEnabled: boolean
+      verificationRounds: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      localizeToolMax: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolWarning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolCheckpoint: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolStop: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      noProgressMinutes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      patchMaxFiles: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      patchMaxBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      testOutputMaxBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      zeroPatchRecoveryMax: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      totalToolCallsMax: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      singleCommandTimeoutMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      longRun: boolean
+    }
+  }
+}
+
+export type SessionSecurityResponse = SessionSecurityResponses[keyof SessionSecurityResponses]
+
+export type SessionSecurityUpdateData = {
+  body?: {
+    permissionProfileID?: ":read-only" | ":workspace" | ":danger-full-access" | "external" | "disabled"
+    approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted"
+    networkPolicy?: "off" | "on" | "ask"
+    commandPolicy?: "ask" | "workspace" | "all" | "read" | "disabled"
+    networkAccess?: boolean
+    executorBackend?: "codex" | "node-bun"
+    environmentID?: string
+    stepBudgetEnabled?: boolean
+    stepBudgetMaxSteps?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    engineering?: {
+      mode?: "fast" | "balanced" | "deep" | "long"
+      advancedEnabled?: boolean
+      verificationRounds?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      localizeToolMax?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolWarning?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolCheckpoint?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolStop?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      noProgressMinutes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      patchMaxFiles?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      patchMaxBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      testOutputMaxBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      zeroPatchRecoveryMax?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      totalToolCallsMax?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      singleCommandTimeoutMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      longRun?: boolean
+    }
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/security"
+}
+
+export type SessionSecurityUpdateErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionSecurityUpdateError = SessionSecurityUpdateErrors[keyof SessionSecurityUpdateErrors]
+
+export type SessionSecurityUpdateResponses = {
+  /**
+   * Updated turn security controls
+   */
+  200: {
+    sessionID: string
+    permissionProfileID: ":read-only" | ":workspace" | ":danger-full-access" | "external" | "disabled"
+    approvalPolicy: "never" | "on-request" | "on-failure" | "untrusted"
+    networkPolicy: "off" | "on" | "ask"
+    commandPolicy: "ask" | "workspace" | "all" | "read" | "disabled"
+    networkAccess: boolean
+    executorBackend: "codex" | "node-bun"
+    environmentID: string
+    cwd: string
+    remoteEnvironmentSupported: boolean
+    remoteEnvironmentStatus: string
+    stepBudgetEnabled: boolean
+    stepBudgetMaxSteps: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    engineering: {
+      mode: "fast" | "balanced" | "deep" | "long"
+      advancedEnabled: boolean
+      verificationRounds: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      localizeToolMax: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolWarning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolCheckpoint: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      repeatedToolStop: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      noProgressMinutes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      patchMaxFiles: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      patchMaxBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      testOutputMaxBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      zeroPatchRecoveryMax: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      totalToolCallsMax: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      singleCommandTimeoutMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      longRun: boolean
+    }
+  }
+}
+
+export type SessionSecurityUpdateResponse = SessionSecurityUpdateResponses[keyof SessionSecurityUpdateResponses]
 
 export type PartDeleteData = {
   body?: never

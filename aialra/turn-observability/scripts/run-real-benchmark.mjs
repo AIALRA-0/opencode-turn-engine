@@ -287,6 +287,33 @@ function messageProgressSignature(messages, publicEvents, diffSignal) {
   )
 }
 
+function assistantHasContent(messages) {
+  return messages.some((message) => {
+    if ((message.role ?? message.info?.role) !== "assistant") return false
+    return (message.parts ?? []).some((part) => {
+      if (typeof part.text === "string" && part.text.trim()) return true
+      if (typeof part.output === "string" && part.output.trim()) return true
+      return part.type && part.type !== "step-start"
+    })
+  })
+}
+
+function statusIndicatesActive(status, sessionID) {
+  const text = JSON.stringify(status ?? {})
+  if (!text.includes(sessionID)) return false
+  return text.includes("busy") || text.includes("retry") || text.includes("queued") || text.includes("init")
+}
+
+function needsPublicTerminal(target) {
+  return target.publicEvents && READ_PUBLIC_EVENTS
+}
+
+function shouldStopPolling(target, idle, finalText, assistantContent, hasTurnTerminal, waitingApproval, waitingQuestion) {
+  if (waitingApproval || waitingQuestion) return true
+  if (needsPublicTerminal(target)) return hasTurnTerminal
+  return hasTurnTerminal || (idle && (finalText || assistantContent))
+}
+
 async function diffProgressSignal(worktree) {
   const result = await runCommand("git", ["diff", "--shortstat"], { cwd: worktree, timeoutMs: 60_000 })
   return result.stdout.trim()
@@ -569,7 +596,11 @@ const mirrorPromises = new Map()
 async function ensureMirror(repo) {
   const key = repo.replaceAll("/", "__")
   const mirror = join(REPO_CACHE, `${key}.git`)
-  if (mirrorPromises.has(mirror)) return mirrorPromises.get(mirror)
+  if (mirrorPromises.has(mirror)) {
+    const cached = await mirrorPromises.get(mirror)
+    if (await exists(cached)) return cached
+    mirrorPromises.delete(mirror)
+  }
   const promise = (async () => {
     await mkdir(REPO_CACHE, { recursive: true })
     if (await exists(mirror)) {
@@ -715,8 +746,9 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       }
       waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
       waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
-      const idle = !status || !JSON.stringify(status).includes(sessionID) || !JSON.stringify(status).includes("busy")
+      const idle = !statusIndicatesActive(status, sessionID)
       const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+      const assistantContent = assistantHasContent(messages)
       if (target.publicEvents && READ_PUBLIC_EVENTS && pollCount % 5 === 0) {
         publicEvents = await readPublicEvents(target, sessionID, auth)
       }
@@ -741,7 +773,7 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
         timeoutReason = "assistant/model never started"
         break
       }
-      if ((idle && (finalText || hasAssistant)) || hasTurnTerminal || waitingApproval || waitingQuestion) break
+      if (shouldStopPolling(target, idle, finalText, assistantContent, hasTurnTerminal, waitingApproval, waitingQuestion)) break
       if (PROGRESS_AWARE_TIMEOUT && Date.now() - lastProgressAt >= PROGRESS_STALL_MS) {
         progressTimedOut = true
         timeoutReason = `no observable progress for ${PROGRESS_STALL_MS}ms after ${lastProgressDescription}`
@@ -787,11 +819,15 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
     if (publicEvents.length) await writeFile(join(targetRoot, "opencode-public-events.json"), JSON.stringify(publicEvents, null, 2) + "\n")
     const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
     const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
+    const missingPublicTerminal = needsPublicTerminal(target) && !hasTurnTerminal
+    const terminalAnomalies = publicEvents
+      .filter((event) => event.type === "turn.terminal.anomaly")
+      .map((event) => event.data?.reason ?? event.status ?? "anomaly")
     const stopped = timedOut || startTimedOut || progressTimedOut || emergencyStopped
     const completedWithoutText = !stopped && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
     return {
       sessionID,
-      ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText,
+      ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText && !missingPublicTerminal,
       timedOut: timedOut || startTimedOut || progressTimedOut || emergencyStopped,
       timeoutReason,
       progressAwareTimeout: stopped && (startTimedOut || progressTimedOut),
@@ -801,7 +837,8 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       waitingQuestion,
       durationMs: Date.now() - started,
       hasTurnTerminal:
-        hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && (!target.publicEvents || !READ_PUBLIC_EVENTS) && hasAssistant),
+        hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && !needsPublicTerminal(target) && hasAssistant),
+      terminalAnomalies,
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
@@ -809,6 +846,8 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
         ? `OpenCode did not start assistant/model activity within ${OPENCODE_START_TIMEOUT_MS}ms`
         : progressTimedOut || emergencyStopped || timedOut
           ? timeoutReason
+        : missingPublicTerminal
+          ? "public event stream did not emit turn.completed or turn.aborted"
         : completedWithoutText
           ? "session became idle without an assistant message"
           : "",
@@ -897,8 +936,9 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       }
       waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
       waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
-      const idle = !status || !JSON.stringify(status).includes(sessionID) || !JSON.stringify(status).includes("busy")
+      const idle = !statusIndicatesActive(status, sessionID)
       const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+      const assistantContent = assistantHasContent(messages)
       if (target.publicEvents && READ_PUBLIC_EVENTS && pollCount % 5 === 0) {
         publicEvents = await readPublicEvents(target, sessionID, auth)
       }
@@ -918,7 +958,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
           `diff=${lastDiffSignal || "none"}`,
         ].join(" ")
       }
-      if ((idle && (finalText || hasAssistant)) || hasTurnTerminal || waitingApproval || waitingQuestion) break
+      if (shouldStopPolling(target, idle, finalText, assistantContent, hasTurnTerminal, waitingApproval, waitingQuestion)) break
       if (PROGRESS_AWARE_TIMEOUT && Date.now() - lastProgressAt >= PROGRESS_STALL_MS) {
         progressTimedOut = true
         timeoutReason = `no observable progress for ${PROGRESS_STALL_MS}ms after ${lastProgressDescription}`
@@ -964,11 +1004,15 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
     if (publicEvents.length) await writeFile(join(targetRoot, `opencode-${label}-public-events.json`), JSON.stringify(publicEvents, null, 2) + "\n")
     const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
     const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
+    const missingPublicTerminal = needsPublicTerminal(target) && !hasTurnTerminal
+    const terminalAnomalies = publicEvents
+      .filter((event) => event.type === "turn.terminal.anomaly")
+      .map((event) => event.data?.reason ?? event.status ?? "anomaly")
     const stopped = timedOut || progressTimedOut || emergencyStopped
     const completedWithoutText = !stopped && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
     return {
       sessionID,
-      ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText,
+      ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText && !missingPublicTerminal,
       timedOut: stopped,
       timeoutReason,
       progressAwareTimeout: stopped && (progressTimedOut || emergencyStopped),
@@ -976,11 +1020,19 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       waitingApproval,
       waitingQuestion,
       durationMs: Date.now() - started,
-      hasTurnTerminal: hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && (!target.publicEvents || !READ_PUBLIC_EVENTS) && hasAssistant),
+      hasTurnTerminal: hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && !needsPublicTerminal(target) && hasAssistant),
+      terminalAnomalies,
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
-      error: progressTimedOut || emergencyStopped || timedOut ? timeoutReason : completedWithoutText ? "session became idle without an assistant message" : "",
+      error:
+        progressTimedOut || emergencyStopped || timedOut
+          ? timeoutReason
+          : missingPublicTerminal
+            ? "public event stream did not emit turn.completed or turn.aborted"
+            : completedWithoutText
+              ? "session became idle without an assistant message"
+              : "",
     }
   } catch (error) {
     return {
@@ -1022,7 +1074,7 @@ async function readPatch(worktree) {
   return diff.stdout
 }
 
-async function verifyOfficial(targetRoot, item, row, modelPatch, target) {
+async function verifyOfficial(targetRoot, item, row, modelPatch, target, attemptLabel) {
   if (!item.dataset?.startsWith("SWE-bench/")) {
     return {
       mode: "official",
@@ -1031,7 +1083,7 @@ async function verifyOfficial(targetRoot, item, row, modelPatch, target) {
       reason: "official harness only supports SWE-bench datasets in this runner",
     }
   }
-  const officialDir = join(targetRoot, "official-harness")
+  const officialDir = join(targetRoot, attemptLabel === "initial" ? "official-harness" : `official-harness-${attemptLabel}`)
   await mkdir(officialDir, { recursive: true })
   const predictionsPath = join(officialDir, "predictions.jsonl")
   await writeFile(
@@ -1063,7 +1115,7 @@ async function verifyOfficial(targetRoot, item, row, modelPatch, target) {
       "-t",
       String(OFFICIAL_TIMEOUT_SECONDS),
       "-id",
-      `${runID}-${target.id}-${item.instanceID}`.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 160),
+      `${runID}-${target.id}-${item.instanceID}-${attemptLabel}`.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 160),
       "--report_dir",
       officialDir,
     ],
@@ -1125,17 +1177,17 @@ async function verifyLocal(targetRoot, worktree, row) {
   }
 }
 
-async function inspectAndVerify(targetRoot, worktree, item, row, target) {
+async function inspectAndVerify(targetRoot, worktree, item, row, target, attemptLabel = "initial") {
   const modelPatch = await readPatch(worktree)
-  await writeFile(join(targetRoot, "model.patch"), modelPatch)
+  await writeFile(join(targetRoot, attemptLabel === "initial" ? "model.patch" : `model-${attemptLabel}.patch`), modelPatch)
   const diffStat = await runCommand("git", ["diff", "--stat"], { cwd: worktree, timeoutMs: 60_000 })
   const diffNames = await runCommand("git", ["diff", "--name-only"], { cwd: worktree, timeoutMs: 60_000 })
   let verification
   if (VERIFY_MODE === "official") {
-    verification = await verifyOfficial(targetRoot, item, row, modelPatch, target)
+    verification = await verifyOfficial(targetRoot, item, row, modelPatch, target, attemptLabel)
   } else if (VERIFY_MODE === "hybrid") {
     verification = item.dataset?.startsWith("SWE-bench/")
-      ? await verifyOfficial(targetRoot, item, row, modelPatch, target)
+      ? await verifyOfficial(targetRoot, item, row, modelPatch, target, attemptLabel)
       : await verifyLocal(targetRoot, worktree, row)
   } else if (VERIFY_MODE === "none") {
     verification = { mode: "none", attempted: false, passed: undefined }
@@ -1179,7 +1231,7 @@ async function runJob(target, item, row) {
   try {
     const prepared = await prepareWorktree(target, item, row)
     let agent = await runAgent(target, item, row, prepared.worktree, prepared.targetRoot)
-    let inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target)
+    let inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target, "initial")
     const repairs = []
     for (let round = 1; round <= REPAIR_ROUNDS && shouldRepair(target, agent, inspection); round++) {
       const repair = await continueOpenCode(
@@ -1201,7 +1253,7 @@ async function runJob(target, item, row) {
         repairToolCallCount: repair.toolCallCount,
       })
       agent = mergeAgentAfterRepair(agent, repair)
-      inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target)
+      inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target, `repair-${round}`)
     }
     const result = {
       target: target.id,
@@ -1216,6 +1268,7 @@ async function runJob(target, item, row) {
       repairRounds: repairs.length,
       repairs,
     }
+    result.patchQuality = patchQuality(result)
     await writeFile(join(prepared.targetRoot, "result.json"), JSON.stringify(result, null, 2) + "\n")
     return result
   } finally {
@@ -1230,7 +1283,12 @@ async function runJob(target, item, row) {
 async function cleanupJobWorkspace(targetRoot) {
   if (KEEP_WORKTREES) return
   await removePathWithRetry(join(targetRoot, "worktree"))
-  await removePathWithRetry(join(targetRoot, "official-harness"))
+  const entries = await readdir(targetRoot, { withFileTypes: true }).catch(() => [])
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("official-harness"))
+      .map((entry) => removePathWithRetry(join(targetRoot, entry.name))),
+  )
   if (DOCKER_PRUNE) {
     await runCommand("docker", ["system", "prune", "-af"], { timeoutMs: 300_000 })
   }
@@ -1264,6 +1322,52 @@ function scoreResult(result) {
   return score
 }
 
+function patchQuality(result) {
+  const changedFiles = result.changedFiles ?? []
+  const patchBytes = result.patchBytes ?? 0
+  const hasPatch = patchBytes > 0
+  const testFiles = changedFiles.filter((file) => /(^|\/)(test|tests|spec|specs)(\/|$)|(\.test|\.spec)\./i.test(file))
+  const hugePatch = patchBytes > 500_000 || changedFiles.length > 50
+  const tinyPatch = hasPatch && patchBytes < 20
+  const generatedChurn = changedFiles.filter((file) => /(^|\/)(dist|build|coverage|node_modules|vendor|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)(\/|$)/i.test(file))
+  const terminalAnomalies = result.terminalAnomalies ?? []
+  const terminalClean = result.hasTurnTerminal && terminalAnomalies.length === 0 && !result.timedOut && !result.waitingApproval && !result.waitingQuestion
+  const score =
+    (result.verification?.passed ? 35 : 0) +
+    (hasPatch ? 15 : 0) +
+    (hasPatch && changedFiles.length > 0 && generatedChurn.length < changedFiles.length ? 15 : 0) +
+    (testFiles.length > 0 ? 10 : 0) +
+    (hasPatch && !hugePatch && !tinyPatch ? 10 : 0) +
+    (generatedChurn.length === 0 ? 5 : 0) +
+    (terminalClean ? 5 : 0) +
+    ((result.repairRounds ?? 0) > 0 && result.verification?.passed ? 5 : 0)
+  const reasons = [
+    result.verification?.passed ? "验证通过 +35" : "验证未通过 +0",
+    hasPatch ? "存在非空补丁 +15" : "零补丁 +0",
+    hasPatch && changedFiles.length > 0 && generatedChurn.length < changedFiles.length
+      ? "改动文件看起来和源码相关 +15"
+      : "没有可确认的源码相关改动 +0",
+    testFiles.length > 0 ? `包含测试文件 ${testFiles.length} 个 +10` : "未包含测试文件 +0",
+    hasPatch && !hugePatch && !tinyPatch ? "补丁大小合理 +10" : hugePatch ? "补丁过大 +0" : "补丁过小或为空 +0",
+    generatedChurn.length === 0 ? "未发现明显生成物或锁文件噪声 +5" : `发现可能无关改动 ${generatedChurn.length} 个 +0`,
+    terminalClean ? "终态干净 +5" : `终态存在超时、审批、缺失或异常 ${terminalAnomalies.join(", ") || "unknown"} +0`,
+    (result.repairRounds ?? 0) > 0 && result.verification?.passed ? "repair 后验证通过 +5" : "无 repair 成功加分 +0",
+  ]
+  return {
+    score,
+    hasPatch,
+    zeroPatch: !hasPatch,
+    changedFileCount: changedFiles.length,
+    testFileCount: testFiles.length,
+    patchBytes,
+    hugePatch,
+    tinyPatch,
+    generatedChurn,
+    terminalAnomalies,
+    reasons,
+  }
+}
+
 function mark(value) {
   if (value === undefined) return "-"
   return value ? "是" : "否"
@@ -1293,12 +1397,15 @@ function renderReport(manifest, selected, results) {
   lines.push("")
   lines.push("## 总览")
   lines.push("")
-  lines.push("| 对象 | 模型 / 档位 | 总分 | 完成 | 有 patch | 验证通过 | 超时 | 等待审批 | turn 终态 |")
-  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+  lines.push("| 对象 | 模型 / 档位 | 总分 | 补丁质量均分 | 完成 | 有 patch | 零补丁 | 验证通过 | 超时 | 等待审批 | turn 终态 |")
+  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
   for (const target of targets) {
     const own = results.filter((item) => item.target === target.id)
+    const qualityAverage = own.length
+      ? Math.round(own.reduce((sum, item) => sum + (item.patchQuality?.score ?? patchQuality(item).score), 0) / own.length)
+      : 0
     lines.push(
-      `| ${target.name} | \`${targetModelLabel(target)}\` | ${own.reduce((sum, item) => sum + scoreResult(item), 0)} | ${own.filter((item) => item.ok).length}/${selected.length} | ${own.filter((item) => item.patchBytes > 0).length}/${selected.length} | ${own.filter((item) => item.verification?.passed).length}/${selected.length} | ${own.filter((item) => item.timedOut).length} | ${own.filter((item) => item.waitingApproval || item.waitingQuestion).length} | ${own.filter((item) => item.hasTurnTerminal).length}/${selected.length} |`,
+      `| ${target.name} | \`${targetModelLabel(target)}\` | ${own.reduce((sum, item) => sum + scoreResult(item), 0)} | ${qualityAverage} | ${own.filter((item) => item.ok).length}/${selected.length} | ${own.filter((item) => item.patchBytes > 0).length}/${selected.length} | ${own.filter((item) => (item.patchQuality?.zeroPatch ?? item.patchBytes === 0)).length}/${selected.length} | ${own.filter((item) => item.verification?.passed).length}/${selected.length} | ${own.filter((item) => item.timedOut).length} | ${own.filter((item) => item.waitingApproval || item.waitingQuestion).length} | ${own.filter((item) => item.hasTurnTerminal).length}/${selected.length} |`,
     )
   }
   lines.push("")
@@ -1312,11 +1419,12 @@ function renderReport(manifest, selected, results) {
     lines.push(`- 估算 token：\`${item.estimatedPromptTokens}\``)
     lines.push(`- F2P/P2P：\`${item.failToPassCount}/${item.passToPassCount}\``)
     lines.push("")
-    lines.push("| 对象 | 模型 / 档位 | 分数 | 完成 | patch | 验证模式 | 验证通过 | repair | 测试补丁 | 超时 | 停止原因 | 等待审批 | 工具调用 | 耗时 |")
-    lines.push("| --- | --- | ---: | --- | ---: | --- | --- | ---: | --- | --- | --- | --- | ---: | ---: |")
+    lines.push("| 对象 | 模型 / 档位 | 分数 | 补丁质量 | 完成 | patch | 验证模式 | 验证通过 | repair | 测试补丁 | 超时 | 停止原因 | 等待审批 | 工具调用 | 耗时 |")
+    lines.push("| --- | --- | ---: | ---: | --- | ---: | --- | --- | ---: | --- | --- | --- | --- | ---: | ---: |")
     for (const result of caseResults) {
+      const quality = result.patchQuality ?? patchQuality(result)
       lines.push(
-        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${result.repairRounds ?? 0} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${(result.timeoutReason ?? "").replaceAll("|", "\\|") || "-"} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
+        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${quality.score} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${result.repairRounds ?? 0} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${(result.timeoutReason ?? "").replaceAll("|", "\\|") || "-"} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
       )
     }
     lines.push("")
@@ -1334,6 +1442,11 @@ function renderReport(manifest, selected, results) {
         lines.push(result.diffStat)
         lines.push("```")
       }
+      lines.push("")
+      lines.push("补丁质量：")
+      lines.push("```text")
+      lines.push((result.patchQuality ?? patchQuality(result)).reasons.join("\n"))
+      lines.push("```")
       if (result.repairs?.length) {
         lines.push("")
         lines.push("自动 repair 记录：")
@@ -1471,4 +1584,5 @@ const report = stripTrailingWhitespace(renderReport(manifest, selected, results)
 const reportPath = join(REPORT_DIR, `real-benchmark-${runID}.md`)
 await writeFile(reportPath, report)
 await writeFile(join(runRoot, "results.json"), JSON.stringify(results, null, 2) + "\n")
+await writeFile(join(REPORT_DIR, `real-benchmark-${runID}-results.json`), JSON.stringify(results, null, 2) + "\n")
 console.log(reportPath)

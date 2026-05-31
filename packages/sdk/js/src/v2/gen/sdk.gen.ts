@@ -24,6 +24,9 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
+  EventSessionPublicRawResponses,
+  EventSessionPublicResponses,
+  EventSubscribePublicResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute2,
   EventTuiPromptAppend2,
@@ -190,6 +193,10 @@ import type {
   SessionPromptResponses,
   SessionRevertErrors,
   SessionRevertResponses,
+  SessionSecurityErrors,
+  SessionSecurityResponses,
+  SessionSecurityUpdateErrors,
+  SessionSecurityUpdateResponses,
   SessionShareErrors,
   SessionShareResponses,
   SessionShellErrors,
@@ -624,6 +631,102 @@ export class Event extends HeyApiClient {
     )
     return (options?.client ?? this.client).sse.get<EventSubscribeResponses, unknown, ThrowOnError>({
       url: "/event",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Subscribe to public turn events
+   *
+   * Get user-readable public turn events.
+   */
+  public subscribePublic<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).sse.get<EventSubscribePublicResponses, unknown, ThrowOnError>({
+      url: "/event/public",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Subscribe to public session events
+   *
+   * Get user-readable public turn events for one session.
+   */
+  public sessionPublic<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).sse.get<EventSessionPublicResponses, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/events/public",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Read encrypted raw event payload
+   *
+   * Read the raw payload for one public event after auth checks.
+   */
+  public sessionPublicRaw<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      eventID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "eventID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<EventSessionPublicRawResponses, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/events/{eventID}/raw",
       ...options,
       ...params,
     })
@@ -2849,6 +2952,7 @@ export class Permission extends HeyApiClient {
       directory?: string
       workspace?: string
       response?: "once" | "always" | "reject"
+      scope?: "reject" | "once-command" | "turn-command" | "turn-all" | "always-command" | "always-all"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2862,6 +2966,7 @@ export class Permission extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "response" },
+            { in: "body", key: "scope" },
           ],
         },
       ],
@@ -3037,6 +3142,85 @@ export class Provider extends HeyApiClient {
   private _oauth?: Oauth
   get oauth(): Oauth {
     return (this._oauth ??= new Oauth({ client: this.client }))
+  }
+}
+
+export class Security extends HeyApiClient {
+  /**
+   * Update turn security controls
+   *
+   * Update Sandbox Control Center settings. The values are used by TurnContext, tool gates, sandbox checks, and public audit events.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      permissionProfileID?: ":read-only" | ":workspace" | ":danger-full-access" | "external" | "disabled"
+      approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted"
+      networkPolicy?: "off" | "on" | "ask"
+      commandPolicy?: "ask" | "workspace" | "all" | "read" | "disabled"
+      networkAccess?: boolean
+      executorBackend?: "codex" | "node-bun"
+      environmentID?: string
+      stepBudgetEnabled?: boolean
+      stepBudgetMaxSteps?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      engineering?: {
+        mode?: "fast" | "balanced" | "deep" | "long"
+        advancedEnabled?: boolean
+        verificationRounds?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        localizeToolMax?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        repeatedToolWarning?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        repeatedToolCheckpoint?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        repeatedToolStop?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        noProgressMinutes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        patchMaxFiles?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        patchMaxBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        testOutputMaxBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        zeroPatchRecoveryMax?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        totalToolCallsMax?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        singleCommandTimeoutMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        longRun?: boolean
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "permissionProfileID" },
+            { in: "body", key: "approvalPolicy" },
+            { in: "body", key: "networkPolicy" },
+            { in: "body", key: "commandPolicy" },
+            { in: "body", key: "networkAccess" },
+            { in: "body", key: "executorBackend" },
+            { in: "body", key: "environmentID" },
+            { in: "body", key: "stepBudgetEnabled" },
+            { in: "body", key: "stepBudgetMaxSteps" },
+            { in: "body", key: "engineering" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      SessionSecurityUpdateResponses,
+      SessionSecurityUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/security",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
   }
 }
 
@@ -3997,6 +4181,43 @@ export class Session2 extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  /**
+   * Get turn security controls
+   *
+   * Read the current Sandbox Control Center settings for this session, including permission profile, approval policy, network access, executor backend, and environment.
+   */
+  public security<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionSecurityResponses, SessionSecurityErrors, ThrowOnError>({
+      url: "/session/{sessionID}/security",
+      ...options,
+      ...params,
+    })
+  }
+
+  private _security?: Security
+  get security2(): Security {
+    return (this._security ??= new Security({ client: this.client }))
   }
 }
 

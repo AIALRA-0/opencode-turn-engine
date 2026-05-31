@@ -1,7 +1,7 @@
 import { AialraTurnTrace } from "@/session/turn-trace"
 import type * as Tool from "./tool"
 import type { ShellSandboxCommand } from "./turn-sandbox"
-import type { PermissionProfileFileSystemEntry, TurnContext } from "@/session/turn-context"
+import { CodexTurn, type PermissionProfileFileSystemEntry, type TurnContext } from "@/session/turn-context"
 import { SessionSecurity } from "@/session/security"
 import { Effect } from "effect"
 
@@ -287,7 +287,7 @@ function sandboxContext(turn?: TurnContext) {
   turn = SessionSecurity.applyToTurn(turn)
   return {
     permissions: codexPermissionProfile(turn),
-    cwd: turn.cwd,
+    cwd: CodexTurn.environmentCwd(turn),
     windowsSandboxLevel: "disabled",
     windowsSandboxPrivateDesktop: false,
     useLegacyLandlock: false,
@@ -526,6 +526,72 @@ async function remove(input: { path: string; recursive?: boolean; force?: boolea
   }
 }
 
+async function copy(input: { from: string; to: string; recursive?: boolean; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/copy", from: input.from, to: input.to },
+    }))
+    await withClient((client) =>
+      client.request("fs/copy", {
+        from: input.from,
+        to: input.to,
+        recursive: input.recursive ?? false,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    )
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/copy", from: input.from, to: input.to, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
+async function httpRequest(input: {
+  url: string
+  method?: string
+  headers?: Record<string, string>
+  body?: string | Uint8Array
+  ctx?: Tool.Context
+}) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.http.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: input.method ?? "GET", url: input.url },
+    }))
+    const body = typeof input.body === "string" ? encoder.encode(input.body) : input.body
+    return await withClient((client) =>
+      client.request("http/request", {
+        url: input.url,
+        method: input.method ?? "GET",
+        headers: input.headers ?? {},
+        bodyBase64: body ? Buffer.from(body).toString("base64") : null,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    )
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.http.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: input.method ?? "GET", url: input.url, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
 export const CodexExecServer = {
   enabled: CodexExecServerClient.enabled,
   enabledForContext(ctx?: Tool.Context) {
@@ -538,6 +604,8 @@ export const CodexExecServer = {
   writeFile,
   createDirectory,
   remove,
+  copy,
+  httpRequest,
   jsonEnv,
   isRpcError(error: unknown): error is CodexExecServerRpcError {
     return error instanceof CodexExecServerRpcError

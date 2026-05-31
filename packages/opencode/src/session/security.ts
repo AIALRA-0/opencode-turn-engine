@@ -146,7 +146,14 @@ function activePermissionProfile(profile: SecurityPermissionProfileID): ActivePe
 }
 
 function environments(input: { cwd: string; environmentID: string }): TurnEnvironment[] {
-  return [{ environmentID: input.environmentID || "default", cwd: input.cwd }]
+  return [
+    {
+      environmentID: input.environmentID || "default",
+      cwd: input.cwd,
+      kind: "local",
+      status: "local default environment，本机默认环境，已启用",
+    },
+  ]
 }
 
 function publicConfig(sessionID: string, cwd: string): SecurityConfig {
@@ -429,6 +436,7 @@ export namespace SessionSecurity {
     const config = publicConfig(input.sessionID, input.cwd)
     return {
       approvalPolicy: approvalPolicy(config.approvalPolicy),
+      approvalsReviewer: "current_user",
       sandboxPolicy: sandboxPolicy({
         profile: config.permissionProfileID,
         cwd: config.cwd,
@@ -441,6 +449,12 @@ export namespace SessionSecurity {
       }),
       activePermissionProfile: activePermissionProfile(config.permissionProfileID),
       environments: environments({ cwd: config.cwd, environmentID: config.environmentID }),
+      selectedEnvironmentID: config.environmentID,
+      httpContext: {
+        enabled: config.networkAccess,
+        network_policy: config.networkPolicy,
+        execution: "local" as const,
+      },
       networkPolicy: config.networkPolicy,
       commandPolicy: config.commandPolicy,
       stepBudget: {
@@ -460,6 +474,7 @@ export namespace SessionSecurity {
     return {
       ...turn,
       approval_policy: approvalPolicy(config.approvalPolicy),
+      approvals_reviewer: "current_user",
       sandbox_policy: sandboxPolicy({
         profile: config.permissionProfileID,
         cwd: config.cwd,
@@ -472,6 +487,12 @@ export namespace SessionSecurity {
       }),
       active_permission_profile: activePermissionProfile(config.permissionProfileID),
       environments: environments({ cwd: config.cwd, environmentID: config.environmentID }),
+      selected_environment_id: config.environmentID,
+      http_context: {
+        enabled: config.networkAccess,
+        network_policy: config.networkPolicy,
+        execution: "local" as const,
+      },
       network_policy: config.networkPolicy,
       command_policy: config.commandPolicy,
       step_budget: {

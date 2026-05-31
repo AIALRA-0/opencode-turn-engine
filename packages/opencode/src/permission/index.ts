@@ -55,10 +55,20 @@ export type Request = Schema.Schema.Type<typeof Request>
 
 export const Reply = Schema.Literals(["once", "always", "reject"])
 export type Reply = Schema.Schema.Type<typeof Reply>
+export const ReplyScope = Schema.Literals([
+  "reject",
+  "once-command",
+  "turn-command",
+  "turn-all",
+  "always-command",
+  "always-all",
+])
+export type ReplyScope = Schema.Schema.Type<typeof ReplyScope>
 
 const reply = {
   reply: Reply,
   message: Schema.optional(Schema.String),
+  scope: Schema.optional(ReplyScope),
 }
 
 export const ReplyBody = Schema.Struct(reply).annotate({ identifier: "PermissionReplyBody" })
@@ -78,6 +88,7 @@ export const Event = {
       sessionID: SessionID,
       requestID: PermissionID,
       reply: Reply,
+      scope: Schema.optional(ReplyScope),
     }),
   ),
 }
@@ -228,6 +239,7 @@ export const layer = Layer.effect(
         sessionID: existing.info.sessionID,
         requestID: existing.info.id,
         reply: input.reply,
+        scope: input.scope,
       })
 
       if (input.reply === "reject") {
@@ -243,6 +255,7 @@ export const layer = Layer.effect(
             sessionID: item.info.sessionID,
             requestID: item.info.id,
             reply: "reject",
+            scope: input.scope,
           })
           yield* Deferred.fail(item.deferred, new RejectedError())
         }
@@ -271,6 +284,7 @@ export const layer = Layer.effect(
           sessionID: item.info.sessionID,
           requestID: item.info.id,
           reply: "always",
+          scope: input.scope,
         })
         yield* Deferred.succeed(item.deferred, undefined)
       }

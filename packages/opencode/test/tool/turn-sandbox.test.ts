@@ -65,6 +65,7 @@ function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
     model: { providerID: "test", modelID: "test" },
     collaboration_mode: { kind: "default" },
     environments: [{ environmentID: "default", cwd }],
+    selected_environment_id: "default",
     route: "prompt",
     agent: "build",
     noReply: false,
@@ -141,6 +142,54 @@ describe("Codex turn sandbox tool gates", () => {
 
       expect(yield* Effect.promise(() => fs.readFile(path.join(cwd, "inside.txt"), "utf8"))).toBe("ok")
       expect(fssync.existsSync(path.join(test.directory, "inside.txt"))).toBe(false)
+    }),
+  )
+
+  it.instance("resolves relative paths from selected environment cwd", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const root = path.join(test.directory, "workspace")
+      const selected = path.join(test.directory, "selected-env")
+      const active = turn(root, {
+        environments: [
+          { environmentID: "default", cwd: root },
+          { environmentID: "selected", cwd: selected, kind: "local" },
+        ],
+        selected_environment_id: "selected",
+      })
+
+      expect(TurnSandbox.resolvePath(ctx(active), "inside.txt", test.directory)).toBe(path.join(selected, "inside.txt"))
+    }),
+  )
+
+  it.instance("denies recursive search outside the workspace scope", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+
+      yield* expectFailure(
+        TurnSandbox.assertSearchScope(ctx(turn(cwd)), path.parse(cwd).root),
+        "Codex turn sandbox denied recursive search outside the selected workspace",
+      )
+    }),
+  )
+
+  it.instance("allows recursive search in the selected environment cwd", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const root = path.join(test.directory, "workspace")
+      const selected = path.join(test.directory, "selected-env")
+      yield* Effect.promise(() => fs.mkdir(selected, { recursive: true }))
+      const active = turn(root, {
+        environments: [
+          { environmentID: "default", cwd: root },
+          { environmentID: "selected", cwd: selected, kind: "local" },
+        ],
+        selected_environment_id: "selected",
+      })
+
+      yield* TurnSandbox.assertSearchScope(ctx(active), selected)
     }),
   )
 

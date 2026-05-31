@@ -66,6 +66,14 @@ export type ActivePermissionProfile = {
 export type TurnEnvironment = {
   environmentID: string
   cwd: string
+  kind?: "local" | "remote" | "disabled"
+  status?: string
+}
+
+export type TurnHttpContext = {
+  enabled: boolean
+  network_policy: "off" | "on" | "ask"
+  execution: "local" | "remote" | "unsupported"
 }
 
 export type CodexRetryConfig = {
@@ -97,6 +105,8 @@ export type UserTurn = {
   }
   personality?: string
   environments: TurnEnvironment[]
+  selected_environment_id: string
+  http_context?: TurnHttpContext
   network_policy?: "off" | "on" | "ask"
   command_policy?: "ask" | "workspace" | "all" | "read" | "disabled"
   step_budget?: {
@@ -226,6 +236,13 @@ export namespace CodexTurn {
     collaborationMode?: UserTurn["collaboration_mode"]
     personality?: string
     environments?: TurnEnvironment[]
+    selectedEnvironmentID?: string
+    approvalsReviewer?: string
+    effort?: string
+    summary?: string
+    serviceTier?: string
+    finalOutputJsonSchema?: unknown
+    httpContext?: TurnHttpContext
     networkPolicy?: UserTurn["network_policy"]
     commandPolicy?: UserTurn["command_policy"]
     stepBudget?: UserTurn["step_budget"]
@@ -243,10 +260,19 @@ export namespace CodexTurn {
       permission_profile: permissionProfile,
       active_permission_profile: input.activePermissionProfile ?? { id: ":workspace" },
       model: input.frame.model,
-      final_output_json_schema: undefined,
+      approvals_reviewer: input.approvalsReviewer ?? "current_user",
+      effort: input.effort,
+      summary: input.summary,
+      service_tier: input.serviceTier,
+      final_output_json_schema: input.finalOutputJsonSchema,
       collaboration_mode: input.collaborationMode ?? { kind: "default" },
       personality: input.personality,
       environments: input.environments?.length ? input.environments : [{ environmentID: "default", cwd: input.cwd }],
+      selected_environment_id:
+        input.selectedEnvironmentID ??
+        (input.environments?.length ? input.environments[0]?.environmentID : undefined) ??
+        "default",
+      http_context: input.httpContext,
       network_policy: input.networkPolicy,
       command_policy: input.commandPolicy,
       step_budget: input.stepBudget,
@@ -301,12 +327,20 @@ export namespace CodexTurn {
       messageID: turn.messageID,
       cwd: turn.cwd,
       approval_policy: turn.approval_policy,
+      approvals_reviewer: turn.approvals_reviewer,
       sandbox_policy: turn.sandbox_policy,
       permission_profile: turn.permission_profile,
       active_permission_profile: turn.active_permission_profile,
       model: turn.model,
+      effort: turn.effort,
+      summary: turn.summary,
+      service_tier: turn.service_tier,
+      final_output_json_schema: turn.final_output_json_schema,
       collaboration_mode: turn.collaboration_mode,
       environments: turn.environments,
+      selected_environment_id: turn.selected_environment_id,
+      selected_environment_cwd: environmentCwd(turn),
+      http_context: turn.http_context,
       network_policy: turn.network_policy,
       command_policy: turn.command_policy,
       step_budget: turn.step_budget,
@@ -325,5 +359,9 @@ export namespace CodexTurn {
   export function modelContextWindow(model: Provider.Model) {
     const value = model.limit.context
     return Number.isFinite(value) && value > 0 ? value : undefined
+  }
+
+  export function environmentCwd(turn: Pick<TurnContext, "cwd" | "environments" | "selected_environment_id">) {
+    return turn.environments.find((environment) => environment.environmentID === turn.selected_environment_id)?.cwd ?? turn.cwd
   }
 }

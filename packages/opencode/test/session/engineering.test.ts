@@ -19,6 +19,7 @@ function turn(overrides: Partial<TurnContext> = {}): TurnContext {
     model: { providerID: "test", modelID: "test" },
     collaboration_mode: { kind: "default" },
     environments: [{ environmentID: "default", cwd }],
+    selected_environment_id: "default",
     route: "prompt",
     sessionID: SessionID.make("ses_engineering"),
     messageID: MessageID.make("msg_engineering_turn"),
@@ -53,6 +54,40 @@ describe("EngineeringHarness", () => {
         expect.objectContaining({ type: "engineering.run.started", status: "started" }),
         expect.objectContaining({ type: "engineering.phase.changed", status: "changed" }),
       ]),
+    )
+  })
+
+  test("TurnContext keeps Codex UserTurn parity fields in trace summaries", () => {
+    const ctx = turn({
+      approvals_reviewer: "current_user",
+      effort: "xhigh",
+      summary: "auto",
+      service_tier: "flex",
+      final_output_json_schema: { type: "object", properties: { ok: { type: "boolean" } } },
+      environments: [
+        { environmentID: "default", cwd: "/tmp/aialra-engineering", kind: "local" },
+        { environmentID: "alt", cwd: "/tmp/aialra-engineering-alt", kind: "disabled", status: "remote unsupported" },
+      ],
+      selected_environment_id: "alt",
+      http_context: {
+        enabled: false,
+        network_policy: "off",
+        execution: "local",
+      },
+    })
+
+    expect(CodexTurn.environmentCwd(ctx)).toBe("/tmp/aialra-engineering-alt")
+    expect(CodexTurn.traceSummary(ctx)).toEqual(
+      expect.objectContaining({
+        approvals_reviewer: "current_user",
+        effort: "xhigh",
+        summary: "auto",
+        service_tier: "flex",
+        selected_environment_id: "alt",
+        selected_environment_cwd: "/tmp/aialra-engineering-alt",
+        http_context: expect.objectContaining({ network_policy: "off" }),
+        final_output_json_schema: expect.objectContaining({ type: "object" }),
+      }),
     )
   })
 
@@ -174,6 +209,43 @@ describe("EngineeringHarness", () => {
     expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("edit")
   })
 
+  test("stores EngineeringRun V3 artifacts for localization, edit, verification, and final summary", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下并跑 npm test",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下并跑 npm test" })
+
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "bash", { command: "npm test" }).blocked).toBe(false)
+    EngineeringHarness.recordVerification({ turn: ctx, command: "npm test", exit: 0, output: "pass" })
+    EngineeringHarness.finish(ctx, "completed", "已修复并通过验证")
+
+    const events = PublicEventLog.list({ sessionID: "ses_engineering" })
+
+    expect(ctx.engineering.version).toBe("aialra.engineering_run.v3")
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.artifact.updated", status: "updated" }),
+        expect.objectContaining({ type: "engineering.run.finished", status: "completed" }),
+      ]),
+    )
+    const finished = events.find((event) => event.type === "engineering.run.finished")
+    expect(finished?.data).toEqual(
+      expect.objectContaining({
+        artifacts: expect.objectContaining({
+          suspectedFiles: expect.arrayContaining([expect.objectContaining({ path: "src/tool.js" })]),
+          editPlan: expect.objectContaining({ files: ["src/tool.js"] }),
+          verificationPlan: expect.objectContaining({ verification: ["npm test"] }),
+          verificationResults: expect.arrayContaining([expect.objectContaining({ command: "npm test", passed: true })]),
+          finalSummary: expect.objectContaining({ text: "已修复并通过验证" }),
+        }),
+      }),
+    )
+  })
+
   test("continues when the model finds a fix but asks whether to proceed", () => {
     const ctx = turn()
     ctx.engineering = EngineeringHarness.snapshot({
@@ -196,5 +268,95 @@ describe("EngineeringHarness", () => {
         expect.objectContaining({ type: "engineering.phase_gate.premature_final", status: "continued" }),
       ]),
     )
+  })
+
+  test("requests zero patch recovery before finalizing an engineering task without writes", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+
+    const prompt = EngineeringHarness.zeroPatchPrompt(ctx, "已完成分析，根因在 src/tool.js，最终报告如下")
+
+    expect(prompt).toContain("当前没有任何代码改动")
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("repair")
+    expect(EngineeringHarness.state(ctx.turnID)?.patch.zeroPatchRecoveries).toBe(1)
+    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("zero_patch")
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.zero_patch.detected", status: "detected" }),
+        expect.objectContaining({ type: "engineering.zero_patch.recovery_requested", status: "continued" }),
+      ]),
+    )
+  })
+
+  test("does not request zero patch recovery after a write tool ran", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" }).blocked).toBe(false)
+
+    expect(EngineeringHarness.zeroPatchPrompt(ctx, "已完成修复")).toBeUndefined()
+  })
+
+  test("requests zero patch recovery after writes when git status still has no changes", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" }).blocked).toBe(false)
+
+    expect(EngineeringHarness.zeroPatchPrompt(ctx, "已完成修复", { workspaceChanged: false })).toContain(
+      "当前没有任何代码改动",
+    )
+  })
+
+  test("exhausts zero patch recovery using the user-configured budget", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: {
+        ...EngineeringHarness.preset("fast"),
+        zeroPatchRecoveryMax: 1,
+      },
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+
+    expect(EngineeringHarness.zeroPatchPrompt(ctx, "已完成分析")).toContain("当前没有任何代码改动")
+    expect(EngineeringHarness.zeroPatchPrompt(ctx, "还是没有改动")).toBeUndefined()
+
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("blocked")
+    expect(EngineeringHarness.state(ctx.turnID)?.patch.zeroPatchExhausted).toBe(true)
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.zero_patch.exhausted", status: "blocked" }),
+      ]),
+    )
+  })
+
+  test("terminal reconciler classifies missing assistant and empty final anomalies", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+
+    expect(EngineeringHarness.terminalAnomaly({ turn: ctx })).toBe("missing_assistant")
+    expect(EngineeringHarness.terminalAnomaly({ turn: ctx, lastAgentMessage: "msg_assistant", finalText: "" })).toBe(
+      "empty_final",
+    )
+    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("terminal_anomaly")
   })
 })

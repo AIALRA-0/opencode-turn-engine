@@ -1,5 +1,117 @@
 # Assistant Output Log
 
+## 2026-05-31 输出记录：V3 full-24 验收收口和 corrected 结果
+
+本轮继续端到端推进 V3，不再把部分适配说成完全完成
+
+关键事实：
+
+- regression-6 先验收了 `scikit-learn__scikit-learn-13241`，search scope 修复后从零补丁/未验证变成 verified pass
+- 之后按门槛跑了 AIALRA-only full-24，目标是 DeepSeek V4 Pro max，不跑五组合大测
+- 主 full-24 run 是 `202605312120-full24-aialra-v3`
+- 主 run 中有两条不是模型失败，而是我为了救磁盘手动清理 repo cache 后造成的 worktree 准备失败
+- 已定向补跑这两条，run 是 `202605312120-full24-aialra-v3-rerun-infra`
+- 最终口径必须看 corrected summary，不看原始主报告的基建错误行
+
+最终 corrected 指标：
+
+```text
+题目数：24
+总分：452
+补丁质量均分：58
+完成：23/24
+有 patch：20/24
+零补丁：4/24
+官方验证通过：7/24
+官方验证尝试：13/24
+检测型超时：1
+等待审批：0
+turn 终态：24/24
+```
+
+报告文件：
+
+```text
+aialra/turn-observability/real-benchmark-reports/real-benchmark-202605312120-full24-aialra-v3-corrected-summary.md
+aialra/turn-observability/real-benchmark-reports/real-benchmark-202605312120-full24-aialra-v3-corrected-results.json
+aialra/turn-observability/real-benchmark-reports/real-benchmark-202605312120-full24-aialra-v3.md
+aialra/turn-observability/real-benchmark-reports/real-benchmark-202605312120-full24-aialra-v3-rerun-infra.md
+```
+
+本轮顺手修掉的评测公平性问题：
+
+- repair 后官方验证不再复用 initial report，而是使用 `official-harness-repair-*`
+- repo mirror cache 被手动清理后，runner 会重新检查路径并重新 clone
+- grep/glob 不能在 workspace profile 下递归扫 selected environment cwd 之外的路径
+
+用户应该如何理解这次结果：
+
+- AIALRA 的工程稳定性继续变强，0 审批卡住，24/24 turn 终态
+- DeepSeek 在 AIALRA harness 下达到 7/24 official verified，追平上一轮 Codex CLI 的 7/24 基线通过数，但不是同一轮同模型横向公平对比
+- 质量均分 58 说明“能跑完和能解释”已经提升，但补丁质量还不够强
+- 4 个零补丁说明 zero patch recovery 有效果但还不完整
+- 1 个检测型超时说明弱模型长链路仍需要更强的策略切换和验证反馈
+
+明确未完成：
+
+- 16 项 V3 目标没有全部 100% 完成
+- remote environment 仍 unsupported
+- Landlock 仍不是 Node/Bun 工具层 syscall enforce
+- glob/grep 现在有 TurnContext 门禁，但不是 Codex exec-server FS API 全接管
+- official SWE-Bench 验证结果还主要在 benchmark runner 里闭环，没有完全产品化进普通用户 agent 工作流
+- Turn Inspector 虚拟列表和完整质量面板仍需继续产品化
+
+## 2026-05-31 输出记录：General Engineering Harness V3 首批实现
+
+用户要求把 16 项 V3 目标先拆成持久计划文件，再端到端推进实现，避免依赖单次对话上下文
+
+本轮已完成第一批工程缺陷闭环：
+
+- 新增 `aialra/turn-observability/project-plans/v3-general-engineering-harness/`，包含总计划和 16 个分计划
+- `EngineeringRun` 升级为 `aialra.engineering_run.v3`
+- 每个工程回合现在记录 suspectedFiles、editPlan、verificationPlan、verificationResults、repairFeedback、finalSummary
+- 新增 `engineering.artifact.updated`，Turn Inspector 可展示工程状态机的结构化产物更新
+- 零补丁恢复不再只看“有没有调用写工具”，还会在 prompt loop 里通过 `git status --porcelain` 检查 selected environment cwd 是否真的有 diff 或未跟踪文件
+- 终态校准器新增 missing assistant、empty final、zero patch exhausted、zero tool zero patch 等异常分类入口
+- TurnContext 继续补齐 Codex UserTurn 字段：approvals_reviewer、effort、summary、service_tier、final_output_json_schema、selected_environment_id、http_context
+- TurnSandbox 相对路径解析改为使用 selected environment cwd
+- glob/grep 增加 TurnSandbox read gate，不再只按 legacy instance directory 做路径解析
+- Codex exec-server adapter 增加 `fs/copy` 和 `http/request` 入口，并把 HTTP start/finish 映射进 public event stream
+- 审批回复新增 scope 审计，能区分“本轮本命令”“本轮全部”“始终本命令”“始终全部”等按钮
+- benchmark patch quality 会把 terminal anomaly 纳入质量评分，终态异常不再被算作干净终态
+
+已跑验证：
+
+```text
+bun --cwd packages/opencode test test/session/engineering.test.ts --timeout 30000
+12 pass
+
+bun --cwd packages/opencode test test/tool/turn-sandbox.test.ts --timeout 30000
+18 pass
+
+bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000
+90 pass
+
+bun --cwd packages/opencode test test/session/engineering.test.ts test/permission/approval-audit.test.ts --timeout 30000
+15 pass
+
+bun --cwd packages/opencode typecheck
+pass
+
+bun --cwd packages/app typecheck
+pass
+
+node --check aialra/turn-observability/scripts/run-real-benchmark.mjs
+pass
+```
+
+真实边界：
+
+- 16 项 V3 不是全部完成，当前是第一批骨架和关键工程缺陷闭环
+- remote environment 仍是 unsupported，不伪装完成
+- exec-server HTTP/copy 只是 adapter 入口，sidecar method 支持需要继续用 live 测试确认
+- Landlock enforce、完整 FS metadata、Turn Inspector 虚拟列表最终产品化、full benchmark gate 仍在后续批次
+
 ## 2026-05-31 输出记录：General Engineering Harness v2 首批实现
 
 用户要求构建 V2 完整计划书，并且端到端实现、先做 regression-6 验收，有提升才跑 AIALRA full-24，否则分析原因并规划 V3
@@ -1023,3 +1135,19 @@ V2 方向是有效的，因为 full-24 verified pass 从 5/24 提升到 6/24，�
 - full-24：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260531093837.md`
 
 最终交付验证：`bun --cwd packages/opencode test test/session/engineering.test.ts --timeout 30000` 7 pass；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`node --test aialra/turn-observability/tests/*.test.js` 1 pass；`AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 28 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过；`bun --cwd packages/app build` 通过；`bun --cwd packages/opencode build --single` 通过；`git diff --check` 通过。最终部署版本为 `0.0.0-dev-202605311418`，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass
+
+## 2026-05-31 追加记录：V3 计划落盘和零补丁恢复第一批实现
+
+用户要求先把 16 个 V3 目标全部拆成文件计划，避免后续上下文压缩导致任务失真。本轮新增 `aialra/turn-observability/project-plans/v3-general-engineering-harness/`，其中 `00-v3-master-plan.md` 是总计划，`01` 到 `16` 分别对应终态校准器、TurnContext parity、exec-server FS 收敛、environment cwd、越界写入审计、Linux 沙箱、exec-server 默认后端、public event 协议、Turn Inspector 产品化、审批 reviewer、EngineeringRun V3、验证反馈、stop gate、zero patch recovery、patch quality scoring 和 benchmark gate
+
+已经开始执行第一批工程缺陷闭环。Engineering Controls，工程控制 新增 `zeroPatchRecoveryMax`，零补丁恢复次数。沙盒控制中心高级参数里现在可以调这个值，避免把恢复次数写死
+
+EngineeringRun 现在会记录写入工具调用次数和零补丁恢复状态。对于 bug_fix、refactor、test 等期望有 diff 的任务，如果模型准备结束但本轮没有任何 edit/write/apply_patch 或写入型 bash 活动，系统会触发 `engineering.zero_patch.detected`，进入 repair 阶段，并注入提醒让模型继续做最小修改或明确 blocked 原因。恢复次数用完后会发 `engineering.zero_patch.exhausted`
+
+终态可见性也补了第一刀。正常 completed 或 aborted 之前会发 `turn.terminal.reconciled`；如果 assistant final 是空文本，会先发 `turn.terminal.anomaly`，这样用户和 benchmark 能区分“正常完成”和“空结果也完成了”
+
+Turn Inspector 增加了这些事件的中文标题和摘要：终态异常、终态已校准、检测到零补丁、请求零补丁恢复、零补丁恢复耗尽
+
+benchmark 报告新增 patch quality，补丁质量分。现在每题不只显示完成和 patch 字节，还会解释验证是否通过、是否零补丁、是否改了源码、是否包含测试、补丁大小是否合理、是否有生成物噪声、终态是否干净、repair 是否成功
+
+已验证：`bun --cwd packages/opencode test test/session/engineering.test.ts --timeout 30000` 10 pass；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`node --test aialra/turn-observability/tests/*.test.js` 1 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过；`node --check aialra/turn-observability/scripts/run-real-benchmark.mjs` 通过

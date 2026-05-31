@@ -88,6 +88,7 @@ function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
     model: { providerID: "test", modelID: "test" },
     collaboration_mode: { kind: "default" },
     environments: [{ environmentID: "default", cwd }],
+    selected_environment_id: "default",
     network_policy: "off",
     command_policy: "workspace",
     route: "prompt",
