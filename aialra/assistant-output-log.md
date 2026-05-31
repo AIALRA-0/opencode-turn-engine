@@ -920,3 +920,11 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 部署验收：执行 `./aialra/opencode-deployment/scripts/build-opencode.sh` 成功，构建版本为 `0.0.0-dev-202605310521`，随后重启 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service`，三个服务均为 active。`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过，源站认证 API smoke 确认 `/config`、`/question`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均返回 200。Playwright CLI wrapper 本轮仍然在 open/snapshot 阶段不退出，因此没有把它算作浏览器验收通过
 
 用户反馈修复：左上角 `DEV` 是构建通道标记，来自 `VITE_OPENCODE_CHANNEL=dev`，表示当前是 dev 预览构建，不是功能错误。本轮给这个标记加了中文 hover 说明。左上角 V2 titlebar 的主菜单、项目首页、新建会话按钮补了中文 hover。项目首页和新建会话从普通 anchor 导航改为 router 导航，减少点击后整页重载导致的短时卡死。沙盒控制中心的高级工程参数无法关闭，根因是前端把完整 engineering 配置带着 mode 一起 PATCH，后端把它当成“应用模式预设”并保留旧 advancedEnabled，本轮已改为只发送变更字段，后端也专门处理 `advancedEnabled=false`
+
+## 2026-05-31 追加修复记录：标题栏按钮实际无响应
+
+用户反馈左上角切换侧边栏和右上角按钮没有实际反应。复测确认按钮本身能收到点击，但在 V2 新建会话页里，右侧文件树、回合检查器和沙盒控制中心对应的面板被页面级条件整块隐藏，所以用户看到的是“按钮变了但界面没动”
+
+本轮改成：新建会话页也允许文件树、回合检查器、沙盒控制中心打开；主会话区域会按面板宽度缩放；右侧按钮和左侧标题栏按钮都加了原生 hover 标题，并阻止标题栏拖拽层吞掉 pointerdown 事件
+
+验证结果：`bun --cwd packages/app typecheck` 通过；`bun --cwd packages/app build` 通过；`./aialra/opencode-deployment/scripts/build-opencode.sh` 通过，线上版本为 `0.0.0-dev-202605310602`；`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 通过；浏览器自动点击 smoke 确认切换侧边栏、切换终端、切换文件树、切换回合检查器、切换沙盒控制中心均会改变状态并显示对应区域，控制台无新增 error

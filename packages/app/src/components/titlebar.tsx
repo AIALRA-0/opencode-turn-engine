@@ -477,24 +477,26 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                     size="large"
                     class="!w-9 shrink-0"
                     onClick={layout.sidebar.toggle}
+                    onPointerDown={(event: PointerEvent) => event.stopPropagation()}
                     aria-label={language.t("command.sidebar.toggle")}
                     aria-expanded={layout.sidebar.opened()}
+                    title={language.t("command.sidebar.toggle")}
                     state={layout.sidebar.opened() ? "pressed" : undefined}
                     icon={<Icon name={layout.sidebar.opened() ? "sidebar-active" : "sidebar"} size="small" />}
                   />
                 </TooltipKeybind>
-                <Tooltip placement="bottom" value="项目首页">
-                  <IconButtonV2
-                    type="button"
-                    variant="ghost-muted"
-                    size="large"
-                    class="!w-9"
-                    icon={<IconV2 name="grid-plus" />}
-                    state={!!homeMatch() ? "pressed" : undefined}
-                    onClick={() => navigate("/")}
-                    aria-label="项目首页"
-                  />
-                </Tooltip>
+                <IconButtonV2
+                  type="button"
+                  variant="ghost-muted"
+                  size="large"
+                  class="!w-9"
+                  icon={<IconV2 name="grid-plus" />}
+                  state={!!homeMatch() ? "pressed" : undefined}
+                  onClick={() => navigate("/")}
+                  onPointerDown={(event: PointerEvent) => event.stopPropagation()}
+                  aria-label="项目首页"
+                  title="项目首页"
+                />
 
                 <div class="flex min-w-0 flex-1 flex-row items-center gap-1.5 overflow-hidden">
                   <div class="flex min-w-0 flex-row items-center gap-1.5 overflow-hidden">
@@ -518,17 +520,17 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                   <Show
                     when={creating() && params.dir}
                     fallback={
-                      <Tooltip placement="bottom" value={language.t("command.session.new")}>
-                        <IconButtonV2
-                          type="button"
-                          variant="ghost-muted"
-                          size="large"
-                          class="shrink-0"
-                          icon={<IconV2 name="plus" />}
-                          onClick={() => navigate(newSessionHref())}
-                          aria-label={language.t("command.session.new")}
-                        />
-                      </Tooltip>
+                      <IconButtonV2
+                        type="button"
+                        variant="ghost-muted"
+                        size="large"
+                        class="shrink-0"
+                        icon={<IconV2 name="plus" />}
+                        onClick={() => navigate(newSessionHref())}
+                        onPointerDown={(event: PointerEvent) => event.stopPropagation()}
+                        aria-label={language.t("command.session.new")}
+                        title={language.t("command.session.new")}
+                      />
                     }
                   >
                     <NewSessionTabItem
@@ -845,11 +847,12 @@ function ChannelIndicator() {
   return (
     <>
       {["beta", "dev"].includes(import.meta.env.VITE_OPENCODE_CHANNEL) && (
-        <Tooltip placement="bottom" value="开发通道标记，表示当前运行的是 dev 预览构建">
-          <div class="bg-icon-interactive-base text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono">
-            {import.meta.env.VITE_OPENCODE_CHANNEL.toUpperCase()}
-          </div>
-        </Tooltip>
+        <div
+          class="bg-icon-interactive-base text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono"
+          title="开发通道标记，表示当前运行的是 dev 预览构建"
+        >
+          {import.meta.env.VITE_OPENCODE_CHANNEL.toUpperCase()}
+        </div>
       )}
     </>
   )
