@@ -14,6 +14,8 @@ import {
   errorMessage,
   hasProjectPermissions,
   latestRootSession,
+  sidebarSessionDirectory,
+  sortedRootSessions,
 } from "./helpers"
 import { pathKey } from "@/utils/path-key"
 
@@ -143,6 +145,35 @@ describe("layout workspace helpers", () => {
     )
 
     expect(result?.id).toBe("workspace")
+  })
+
+  test("shows sessions with route directory before path bootstrap finishes", () => {
+    const result = sortedRootSessions(
+      {
+        path: { directory: "" },
+        session: [
+          session({
+            id: "active",
+            directory: "/workspace",
+            time: { created: 10, updated: 10, archived: undefined },
+          }),
+        ],
+      },
+      120_000,
+      "/workspace",
+    )
+
+    expect(result.map((item) => item.id)).toEqual(["active"])
+  })
+
+  test("uses active route directory for sidebar sessions when workspaces are disabled", () => {
+    expect(sidebarSessionDirectory("/", "/srv/aialra/turn-harness-target", false)).toBe(
+      "/srv/aialra/turn-harness-target",
+    )
+  })
+
+  test("keeps project root for sidebar sessions when workspaces are enabled", () => {
+    expect(sidebarSessionDirectory("/", "/srv/aialra/turn-harness-target", true)).toBe("/")
   })
 
   test("detects project permissions with a filter", () => {

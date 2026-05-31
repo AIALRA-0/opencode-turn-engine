@@ -234,7 +234,7 @@ export function createServerSyncContext() {
     },
   })
 
-  async function loadSessions(directory: string) {
+  async function loadSessions(directory: string, options?: { force?: boolean }) {
     const key = directoryKey(directory)
     const pending = sessionLoads.get(key)
     if (pending) return pending
@@ -242,7 +242,7 @@ export function createServerSyncContext() {
     children.pin(key)
     const [store, setStore] = children.child(directory, { bootstrap: false })
     const meta = sessionMeta.get(key)
-    if (meta && meta.limit >= store.limit) {
+    if (!options?.force && meta && meta.limit >= store.limit) {
       const next = trimSessions(store.session, {
         limit: store.limit,
         permission: store.permission,
@@ -256,52 +256,54 @@ export function createServerSyncContext() {
     }
 
     const limit = Math.max(store.limit + SESSION_RECENT_LIMIT, SESSION_RECENT_LIMIT)
-    const promise = queryClient
-      .fetchQuery({
-        ...queryOptionsApi.sessions(key),
-        queryFn: () =>
-          loadRootSessionsWithFallback({
-            directory,
-            limit,
-            list: (query) => serverSDK.client.session.list(query),
-          })
-            .then((x) => {
-              const nonArchived = (x.data ?? [])
-                .filter((s) => !!s?.id)
-                .filter((s) => !s.time?.archived)
-                .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-              const limit = store.limit
-              const childSessions = store.session.filter((s) => !!s.parentID)
-              const sessions = trimSessions([...nonArchived, ...childSessions], {
-                limit,
-                permission: store.permission,
-              })
-              batch(() => {
-                setStore(
-                  "sessionTotal",
-                  estimateRootSessionTotal({
-                    count: nonArchived.length,
-                    limit: x.limit,
-                    limited: x.limited,
-                  }),
-                )
-                setStore("session", reconcile(sessions, { key: "id" }))
-                cleanupDroppedSessionCaches(store, setStore, sessions, setSessionTodo)
-              })
-              sessionMeta.set(key, { limit })
-            })
-            .catch((err) => {
-              console.error("Failed to load sessions", err)
-              const project = getFilename(directory)
-              showToast({
-                variant: "error",
-                title: language.t("toast.session.listFailed.title", { project }),
-                description: formatServerError(err, language.t),
-              })
-            })
-            .then(() => null),
+    const refresh = () =>
+      loadRootSessionsWithFallback({
+        directory,
+        limit,
+        list: (query) => serverSDK.client.session.list(query),
       })
-      .then(() => {})
+        .then((x) => {
+          const nonArchived = (x.data ?? [])
+            .filter((s) => !!s?.id)
+            .filter((s) => !s.time?.archived)
+            .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+          const limit = store.limit
+          const childSessions = store.session.filter((s) => !!s.parentID)
+          const sessions = trimSessions([...nonArchived, ...childSessions], {
+            limit,
+            permission: store.permission,
+          })
+          batch(() => {
+            setStore(
+              "sessionTotal",
+              estimateRootSessionTotal({
+                count: nonArchived.length,
+                limit: x.limit,
+                limited: x.limited,
+              }),
+            )
+            setStore("session", reconcile(sessions, { key: "id" }))
+            cleanupDroppedSessionCaches(store, setStore, sessions, setSessionTodo)
+          })
+          sessionMeta.set(key, { limit })
+        })
+        .catch((err) => {
+          console.error("Failed to load sessions", err)
+          const project = getFilename(directory)
+          showToast({
+            variant: "error",
+            title: language.t("toast.session.listFailed.title", { project }),
+            description: formatServerError(err, language.t),
+          })
+        })
+        .then(() => null)
+    const promise = (options?.force
+      ? refresh()
+      : queryClient.fetchQuery({
+          ...queryOptionsApi.sessions(key),
+          queryFn: refresh,
+        })
+    ).then(() => {})
 
     sessionLoads.set(key, promise)
     void promise.finally(() => {

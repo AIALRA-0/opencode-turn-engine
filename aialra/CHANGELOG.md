@@ -2,6 +2,8 @@
 
 ## 2026-05-31
 
+- Fixed new sessions missing from the native left sidebar. The session list now falls back to the current route directory while workspace path metadata is still loading, and the active session route forces a bounded refresh when the sidebar cache does not yet contain that session.
+- Tightened the sidebar session fix for servers that report a very broad project root such as `/`. When workspace mode is off, the native left sidebar now displays and creates sessions for the active URL directory instead of filtering against the broad project root. Browser verification created session `ses_183203663ffe0ytgU8isGg0KnH` under `/srv/aialra/turn-harness-target` and confirmed it appeared in the left sidebar.
 - Fixed Sandbox Control Center advanced engineering controls so the advanced section can be closed again. The frontend now sends only the changed engineering patch, and the backend no longer treats `advancedEnabled=false` as a mode reset.
 - Restored the native OpenCode sidebar layout after the V2 titlebar/right-panel hotfix proved too broad. The app now defaults `newLayoutDesigns` to false, runs a one-time client setting migration back to the native layout, no longer forces file tree, Turn Inspector, or Sandbox Control Center panels into the V2 new-session page, and auto-opens the URL workspace in the sidebar so the expanded native sidebar is not blank.
 - Added AIALRA General Engineering Harness v1, a shared engineering-control layer for all models. The new layer adds four user-facing modes: fast, balanced, deep, and long. Advanced budgets cover verification rounds, localization tool budget, repeated-tool thresholds, total tool calls, patch limits, output limits, no-progress minutes, and single-command timeout.
@@ -14,6 +16,7 @@
 - Added benchmark cleanup and Claude Code + DeepSeek PoC entry scripts. Cleanup is dry-run by default and only deletes with `AIALRA_BENCH_CLEANUP_APPLY=1`. The Claude Code PoC records missing environment prerequisites instead of pretending the comparison is complete.
 - Added focused tests for EngineeringHarness lifecycle, verification stop gate, repeated-tool intervention, and public security event updates.
 - Deployed version `0.0.0-dev-202605310521` to `opencode.aialra.online`. `aialra-opencode-web.service`, `aialra-opencode-login.service`, and `aialra-codex-exec-server.service` were restarted and active. E2E smoke passed, and `/config`, `/question`, `/project/current`, `/command`, `/session/status`, `/provider`, and `/lsp` returned 200 from the authenticated origin smoke.
+- Deployed sidebar follow-up version `0.0.0-dev-202605310658` to `opencode.aialra.online`. `aialra-opencode-web.service`, `aialra-opencode-login.service`, and `aialra-codex-exec-server.service` were active, and the deployment smoke passed after the web service finished binding its port.
 
 ## 2026-05-30
 

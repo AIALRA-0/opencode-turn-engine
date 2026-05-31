@@ -71,6 +71,7 @@ import {
   effectiveWorkspaceOrder,
   errorMessage,
   latestRootSession,
+  sidebarSessionDirectory,
   sortedRootSessions,
 } from "./layout/helpers"
 import {
@@ -688,7 +689,7 @@ export default function Layout(props: ParentProps) {
   const visibleSessionDirs = createMemo(() => {
     const project = currentProject()
     if (!project) return [] as string[]
-    if (!workspaceSetting()) return [project.worktree]
+    if (!workspaceSetting()) return [sidebarSessionDirectory(project.worktree, currentDir(), false)]
 
     const activeDir = currentDir()
     return workspaceIds(project).filter((directory) => {
@@ -722,7 +723,7 @@ export default function Layout(props: ParentProps) {
     const result: Session[] = []
     for (const dir of dirs) {
       const [dirStore] = serverSync.child(dir, { bootstrap: true })
-      const dirSessions = sortedRootSessions(dirStore, now)
+      const dirSessions = sortedRootSessions(dirStore, now, dirStore.path.directory || dir)
       result.push(...dirSessions)
     }
     return result
@@ -1927,6 +1928,7 @@ export default function Layout(props: ParentProps) {
   const panel = createMemo(() => Math.max(side() - 64, 0))
 
   const loadedSessionDirs = new Set<string>()
+  const missingActiveSessionRefresh = new Map<string, { at: number; count: number }>()
 
   createEffect(
     on(
@@ -1946,6 +1948,36 @@ export default function Layout(props: ParentProps) {
         loadedSessionDirs.clear()
         for (const directory of next) {
           loadedSessionDirs.add(directory)
+        }
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => {
+        const sessionID = params.id ?? ""
+        const directory = currentDir()
+        return [pageReady(), layoutReady(), directory, sessionID, currentSessions().some((s) => s.id === sessionID)] as const
+      },
+      ([ready, layoutIsReady, directory, sessionID, listed]) => {
+        if (!ready || !layoutIsReady || !directory || !sessionID) return
+
+        const key = `${pathKey(directory)}:${sessionID}`
+        if (listed) {
+          missingActiveSessionRefresh.delete(key)
+          return
+        }
+
+        const now = Date.now()
+        const previous = missingActiveSessionRefresh.get(key)
+        if (previous && (previous.count >= 3 || now - previous.at < 1500)) return
+
+        missingActiveSessionRefresh.set(key, { at: now, count: (previous?.count ?? 0) + 1 })
+        const dirs = [...new Set([directory, ...visibleSessionDirs()])].filter((dir) => !!dir)
+        for (const dir of dirs) {
+          void serverSync.project.loadSessions(dir, { force: true })
         }
       },
       { defer: true },
@@ -2141,13 +2173,26 @@ export default function Layout(props: ParentProps) {
     const merged = createMemo(() => panelProps.mobile || (panelProps.merged ?? layout.sidebar.opened()))
     const hover = createMemo(() => !panelProps.mobile && panelProps.merged === false && !layout.sidebar.opened())
     const empty = createMemo(() => !params.dir && layout.projects.list().length === 0)
+    const projectId = createMemo(() => project()?.id ?? "")
+    const rootWorktree = createMemo(() => project()?.worktree ?? "")
+    const workspacesEnabled = createMemo(() => {
+      const item = project()
+      if (!item) return false
+      if (item.vcs !== "git") return false
+      return layout.sidebar.workspaces(item.worktree)()
+    })
+    const worktree = createMemo(() => {
+      const item = project()
+      if (!item) return ""
+      return sidebarSessionDirectory(item.worktree, currentDir(), workspacesEnabled())
+    })
     const projectName = createMemo(() => {
       const item = project()
       if (!item) return ""
+      const directory = worktree()
+      if (pathKey(directory) !== pathKey(item.worktree)) return workspaceLabel(directory, undefined, item.id)
       return item.name || getFilename(item.worktree)
     })
-    const projectId = createMemo(() => project()?.id ?? "")
-    const worktree = createMemo(() => project()?.worktree ?? "")
     const slug = createMemo(() => {
       const dir = worktree()
       if (!dir) return ""
@@ -2165,12 +2210,6 @@ export default function Layout(props: ParentProps) {
       workspaces()
         .filter((directory) => notification.project.unseenCount(directory) > 0)
         .forEach((directory) => notification.project.markViewed(directory))
-    const workspacesEnabled = createMemo(() => {
-      const item = project()
-      if (!item) return false
-      if (item.vcs !== "git") return false
-      return layout.sidebar.workspaces(item.worktree)()
-    })
     const canToggle = createMemo(() => {
       const item = project()
       if (!item) return false
@@ -2299,7 +2338,7 @@ export default function Layout(props: ParentProps) {
                           data-action="project-close-menu"
                           data-project={slug()}
                           onSelect={() => {
-                            const dir = worktree()
+                            const dir = rootWorktree()
                             if (!dir) return
                             closeProject(dir)
                           }}
@@ -2334,7 +2373,7 @@ export default function Layout(props: ParentProps) {
                       <div class="flex-1 min-h-0">
                         <LocalWorkspace
                           ctx={workspaceSidebarCtx}
-                          project={project}
+                          project={{ ...project, worktree: worktree(), name: projectName() }}
                           sortNow={sortNow}
                           mobile={panelProps.mobile}
                         />

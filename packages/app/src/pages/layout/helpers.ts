@@ -27,7 +27,15 @@ const isRootVisibleSession = (session: Session, directory: string) =>
 export const roots = (store: SessionStore) =>
   (store.session ?? []).filter((session) => isRootVisibleSession(session, store.path.directory))
 
-export const sortedRootSessions = (store: SessionStore, now: number) => roots(store).sort(sortSessions(now))
+export const sortedRootSessions = (store: SessionStore, now: number, directory = store.path.directory) =>
+  (store.session ?? []).filter((session) => isRootVisibleSession(session, directory)).sort(sortSessions(now))
+
+export const sidebarSessionDirectory = (projectWorktree: string, currentDirectory: string, workspacesEnabled: boolean) => {
+  if (workspacesEnabled) return projectWorktree
+  if (!currentDirectory) return projectWorktree
+  if (pathKey(currentDirectory) === pathKey(projectWorktree)) return projectWorktree
+  return currentDirectory
+}
 
 export const latestRootSession = (stores: SessionStore[], now: number) =>
   stores.flatMap(roots).sort(sortSessions(now))[0]

@@ -940,3 +940,28 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 浏览器截图继续暴露第二个问题：原生侧栏壳恢复后，URL 当前目录没有自动注册到左侧项目列表，导致展开后侧栏内容是空白。本次追加路由同步，只要当前 URL 带目录，就自动把该工作区打开到左侧项目列表里
 
 后续规则：UI 入口类问题必须先用浏览器截图确认布局，再修改；不能为了让按钮“看起来有反应”强行突破原生页面布局边界
+
+## 2026-05-31 追加修复记录：新对话不进左侧侧栏
+
+用户反馈新建对话后左侧没有记录，导致无法从侧栏切回新对话
+
+根因是左侧会话列表主要依赖两件事：第一是当前目录的 path metadata，路径元数据；第二是 session.created 事件或 session list 缓存。新对话创建后，如果路径元数据还没完成加载，或者事件流/缓存没有及时把新会话送进当前列表，页面已经进入 `/session/:id`，但左侧列表仍然用旧缓存渲染，于是用户看起来像“新对话没保存”
+
+本轮修复了两个点
+
+1. 左侧列表在目录元数据还没加载完时，会使用当前路由目录作为兜底目录过滤会话，这样刚 seed，预写入 的新会话也能立即显示
+2. 如果当前页面已经进入某个 session id，但左侧当前列表还没有这个 session，前端会最多 3 次强制刷新当前目录和可见目录的会话列表，避免事件流或 query cache，查询缓存 漏同步
+
+验证已完成：`packages/app/src/pages/layout/helpers.test.ts` 新增路径元数据未就绪时仍显示当前路由会话的测试；`bun test --preload ./happydom.ts ./src` 339 pass；`bun typecheck` 通过；`bun run build` 通过
+
+## 2026-05-31 追加修复记录：宽项目根导致左侧仍按 `/` 过滤
+
+上一次修复后，浏览器复验仍发现新会话不显示。进一步检查确认：会话 API 已经返回了新会话，前端也加载了最新 JS，但左侧普通模式把当前项目显示成 `/`，于是会话列表按 `/` 过滤，而用户实际在 `/srv/aialra/turn-harness-target`
+
+本轮把“项目根目录”和“当前会话目录”拆开处理。项目菜单仍然操作真正项目；但当 workspace mode，工作区模式 关闭时，新建会话按钮、左侧会话列表和当前面板标题都使用 URL 里的当前目录。这样即使后端把项目根识别成 `/`，左侧也会显示 `/srv/aialra/turn-harness-target` 里的会话
+
+同时补了 `sidebarSessionDirectory` 单测：工作区模式关闭时使用当前路由目录；工作区模式开启时保持原多工作区行为
+
+验证结果：`bun test --preload ./happydom.ts ./src/pages/layout/helpers.test.ts` 23 pass；`bun typecheck` 通过；`./aialra/opencode-deployment/scripts/build-opencode.sh` 成功，版本 `0.0.0-dev-202605310658`；服务重启后 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均 active；`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass。第一次 smoke 在服务刚重启尚未完成端口绑定时失败，等待后重跑通过
+
+浏览器验收：通过 Playwright CLI 登录线上页面，创建新会话 `ses_183203663ffe0ytgU8isGg0KnH`，进入 `/srv/aialra/turn-harness-target` 对应 URL 后，左侧 `[data-session-id]` 列表已经出现该会话。截图保存在 `/tmp/opencode-sidebar-session-visible.png`
