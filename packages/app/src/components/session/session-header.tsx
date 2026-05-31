@@ -617,11 +617,9 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
             class="!w-9 shrink-0"
             state={props.state.terminalOpened ? "pressed" : undefined}
             onClick={props.state.onTerminalToggle}
-            onPointerDown={(event: PointerEvent) => event.stopPropagation()}
             aria-label={props.state.terminalLabel}
             aria-expanded={props.state.terminalOpened}
             aria-controls="terminal-panel"
-            title={props.state.terminalLabel}
             icon={<Icon name={props.state.terminalOpened ? "terminal-active" : "terminal"} size="small" />}
           />
         </TooltipKeybind>
@@ -634,11 +632,9 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
           class="!w-9 shrink-0"
           state={props.state.reviewOpened ? "pressed" : undefined}
           onClick={props.state.onReviewToggle}
-          onPointerDown={(event: PointerEvent) => event.stopPropagation()}
           aria-label={props.state.reviewLabel}
           aria-expanded={props.state.reviewOpened}
           aria-controls="review-panel"
-          title={props.state.reviewLabel}
           icon={<IconV2 name="sidebar-right" />}
         />
       </TooltipKeybind>
@@ -651,11 +647,9 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
             class="!w-9 shrink-0"
             state={props.state.fileTreeOpened ? "pressed" : undefined}
             onClick={props.state.onFileTreeToggle}
-            onPointerDown={(event: PointerEvent) => event.stopPropagation()}
             aria-label={props.state.fileTreeLabel}
             aria-expanded={props.state.fileTreeOpened}
             aria-controls="file-tree-panel"
-            title={props.state.fileTreeLabel}
             icon={<Icon name={props.state.fileTreeOpened ? "file-tree-active" : "file-tree"} size="small" />}
           />
         </TooltipKeybind>
@@ -668,11 +662,9 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
           class="!w-9 shrink-0"
           state={props.state.turnInspectorOpened ? "pressed" : undefined}
           onClick={props.state.onTurnInspectorToggle}
-          onPointerDown={(event: PointerEvent) => event.stopPropagation()}
           aria-label="切换回合检查器"
           aria-expanded={props.state.turnInspectorOpened}
           aria-controls="turn-inspector-panel"
-          title="切换回合检查器"
           icon={<Icon name={props.state.turnInspectorOpened ? "status-active" : "status"} size="small" />}
         />
       </Tooltip>
@@ -684,11 +676,9 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
           class="!w-9 shrink-0"
           state={props.state.sandboxControlOpened ? "pressed" : undefined}
           onClick={props.state.onSandboxControlToggle}
-          onPointerDown={(event: PointerEvent) => event.stopPropagation()}
           aria-label="切换沙盒控制中心"
           aria-expanded={props.state.sandboxControlOpened}
           aria-controls="sandbox-control-panel"
-          title="切换沙盒控制中心"
           icon={<Icon name="shield" size="small" />}
         />
       </Tooltip>

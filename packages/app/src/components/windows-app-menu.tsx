@@ -52,18 +52,14 @@ export function WindowsAppMenu(props: {
         <div
           data-component="desktop-icon-button"
           class="flex h-7 w-9 shrink-0 items-center justify-center rounded-[6px] px-1"
-          title="主菜单"
         >
           <DropdownMenu.Trigger
             as={IconButtonV2}
             variant="ghost-muted"
             size="large"
             icon={<IconV2 name="menu" />}
-            aria-label="主菜单"
-            onPointerDown={(event: PointerEvent) => {
-              event.stopPropagation()
-              rememberFocus()
-            }}
+            aria-label="OpenCode menu"
+            onPointerDown={rememberFocus}
             onKeyDown={rememberFocus}
           />
         </div>

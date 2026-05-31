@@ -210,12 +210,7 @@ export function SessionSidePanel(props: {
   })
 
   return (
-    <Show
-      when={
-        isDesktop() &&
-        (!(settings.general.newLayoutDesigns() && !params.id) || fileOpen() || inspectorOpen() || sandboxOpen())
-      }
-    >
+    <Show when={isDesktop() && !(settings.general.newLayoutDesigns() && !params.id)}>
       <aside
         id="review-panel"
         aria-label={language.t("session.panel.reviewAndFiles")}

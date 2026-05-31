@@ -1339,6 +1339,23 @@ export default function Layout(props: ParentProps) {
     return currentProject()?.worktree ?? projectRoot(directory)
   }
 
+  createEffect(() => {
+    if (!pageReady()) return
+    if (!layoutReady()) return
+    const directory = currentDir()
+    if (!directory) return
+    const root = projectRoot(directory)
+    const key = pathKey(root)
+    if (
+      layout.projects
+        .list()
+        .some((project) => pathKey(project.worktree) === key || project.sandboxes?.some((item) => pathKey(item) === key))
+    ) {
+      return
+    }
+    layout.projects.open(root)
+  })
+
   function rememberSessionRoute(directory: string, id: string, root = activeProjectRoot(directory)) {
     setStore("lastProjectSession", root, { directory, id, at: Date.now() })
     return root

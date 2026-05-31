@@ -34,6 +34,7 @@ export interface Settings {
     showSessionProgressBar: boolean
     showCustomAgents: boolean
     newLayoutDesigns?: boolean
+    nativeLayoutRestored?: boolean
   }
   updates: {
     startup: boolean
@@ -55,7 +56,7 @@ export interface Settings {
 export const monoDefault = "System Mono"
 export const sansDefault = "System Sans"
 export const terminalDefault = "JetBrainsMono Nerd Font Mono"
-export const newLayoutDesignsDefault = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
+export const newLayoutDesignsDefault = false
 
 const monoFallback =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
@@ -169,6 +170,13 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
     createEffect(() => {
       if (store.general?.followup !== "queue") return
       setStore("general", "followup", "steer")
+    })
+
+    createEffect(() => {
+      if (!ready()) return
+      if (store.general?.nativeLayoutRestored) return
+      setStore("general", "newLayoutDesigns", false)
+      setStore("general", "nativeLayoutRestored", true)
     })
 
     return {
