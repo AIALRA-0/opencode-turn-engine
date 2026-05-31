@@ -3,6 +3,21 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.00001 2026-05-31 AIALRA General Engineering Harness v2
+
+| 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
+| --- | --- | --- | --- | --- |
+| V2 regression-6 验收 | V2 还只是计划和局部实现，没有证明比上一轮强 | run `20260531080150` 完成 AIALRA DeepSeek regression-6，verified pass 从上一轮同 6 题 3/6 提升到 4/6，0 审批卡住，0 超时 | 打开 `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260531080150.md` | 这只是 6 题代表集，不等于 full-24 全面提升 |
+| V2 full-24 验收 | 只有上一轮 full-24 基线：AIALRA DeepSeek 5/24 verified pass | run `20260531093837` 完成 AIALRA-only full-24：6/24 verified pass，18/24 有 patch，0 审批卡住，0 超时，0 基础设施错误，总分 417 | 打开 `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260531093837.md` | verified pass 只提升 1 个；零 patch 从上一轮 0 变成 6，说明 V3 必须补 no-patch recovery |
+| benchmark runner 误杀修复 | full-24 中发现 OpenCode 180 秒启动阈值会误杀大仓或服务冷启动 | OpenCode startup wait 默认改成 30 分钟，`RERUN_TIMED_OUT` 可重跑 progress-aware timeout，避免把“启动慢”当模型失败 | 报告最终 `timeouts=0`，并且 run 记录保留无效启动超时被重跑的过程 | 这只是 runner 公平性修复，不代表模型速度变快 |
+| benchmark cleanup 修复 | `rm -rf worktree` 偶发 `ENOTEMPTY` 会覆盖真实结果，变成 duration=0 的基础设施错误 | cleanup 增加重试并且失败只写 `cleanup-error.log`，不会覆盖 agent 结果；`RERUN_ERRORS=1` 可重跑基础设施错误行 | full-24 最终 `errors=0`，Ansible Pro 行从 ENOTEMPTY 变成真实 patch 结果 | 如果磁盘太小，官方 Docker harness 仍可能拖慢或失败，需要资源治理继续加强 |
+| 提前收尾继续执行 | 模型找到修复点后问“要不要我继续”，会让任务无 patch 结束 | `engineering.phase_gate.premature_final` 检测这种回答，注入继续执行提醒，最多 2 次 | `pytest-dev__pytest-7168` 在 full-24 里 verified pass；Inspector 显示“阶段门禁继续执行” | 只覆盖明显“是否继续”类提前收尾，不替代完整 no-patch recovery |
+| V2 计划 | V1 已有工程模式、阶段、重复工具提醒和通过即停止，但下一步是否跑 full-24 没有硬门槛 | 新增 `general-engineering-harness-v2-plan.md`，明确 V2 只先跑 regression-6，有提升才跑 AIALRA full-24，没有提升就进入 V3 原因分析 | 打开 V2 计划书，看“是否跑 full-24 的判定” | 不再默认烧五组合 full-24；full-24 只作为验证升级后的阶段发布检查 |
+| 验证失败反馈 | 测试失败输出主要在 raw/log 里，模型下一步未必拿到失败重点 | `engineering.verification.finished` 失败时会抽取失败摘要和关键输出，写入 `feedback.items`，repair 提醒会直接带这段内容 | Turn Inspector 看到“验证命令失败”，事件 data 有 `failureSummary/failureDetail`，后续模型修复提示会包含失败摘要 | 这是运行时 feedback，不等于 official SWE-Bench harness 已经完全内嵌进 agent 工具流 |
+| 阶段门禁 | localize 阶段只是提醒“不要修改”，没有真正阻止 | bug/refactor/security 任务如果还没读过/搜过任何代码就直接 edit/write/apply_patch，会被拦住，系统切到 plan，并发出 `engineering.phase_gate.blocked_tool` | 让模型修 bug，如果它完全没定位就改代码，Inspector 会显示“阶段门禁阻止工具” | 已经读过或搜过相关代码后不拦，避免把强模型正常快速修复卡死 |
+| 循环检查点反馈 | 重复工具 checkpoint 只是事件，模型不一定知道怎么换方向 | checkpoint 会写入 feedback，repair 提醒会要求模型总结旧路线并换方向 | `engineering.loop.checkpoint` 后的 repair 提醒包含重复工具说明 | 仍不是复杂 DAG 规划器，只是工程刹车和纠偏 |
+| benchmark repair | 真实 benchmark 验证失败后，结果进报告，不会自动再给 AIALRA 一次带失败信息的修复机会 | `run-real-benchmark.mjs` 支持 `AIALRA_REAL_BENCH_REPAIR_ROUNDS`，默认 0；开启后只对指定 AIALRA 目标 feed back 当前 diff 和验证输出 | 报告表格新增 `repair` 列，详情有自动 repair 记录 | 默认不开，避免误烧钱；repair 只在有 patch 且验证失败时触发 |
+
 ## 0.00000 2026-05-31 AIALRA General Engineering Harness v1
 
 | 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |

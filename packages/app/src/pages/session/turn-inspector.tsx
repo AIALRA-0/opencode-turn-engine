@@ -83,6 +83,8 @@ const typeLabels: Record<string, string> = {
   "engineering.run.started": "工程运行开始",
   "engineering.phase.changed": "工程阶段切换",
   "engineering.verification.finished": "工程验证结束",
+  "engineering.phase_gate.blocked_tool": "阶段门禁阻止工具",
+  "engineering.phase_gate.premature_final": "阶段门禁继续执行",
   "engineering.stop_gate.activated": "通过即停止已开启",
   "engineering.stop_gate.blocked_tool": "停止门禁阻止工具",
   "engineering.loop.warning": "循环风险预警",
@@ -255,6 +257,10 @@ function localizedSummary(event: PublicEvent) {
       return `工程阶段切换${from || to ? `：${from ?? "未知"} -> ${to ?? "未知"}` : ""}`
     case "engineering.verification.finished":
       return event.status === "passed" ? "验证命令通过，系统将进入最终汇报" : "验证命令失败，系统会把失败信息反馈给模型继续修"
+    case "engineering.phase_gate.blocked_tool":
+      return `模型在当前工程阶段过早调用工具，系统已阻止${tool ? `：${tool}` : ""}`
+    case "engineering.phase_gate.premature_final":
+      return "模型找到修复点后提前停住，系统已要求继续做最小修改和验证"
     case "engineering.stop_gate.activated":
       return "验证已通过，通过即停止门禁已开启，后续工具调用会被拦住"
     case "engineering.stop_gate.blocked_tool":

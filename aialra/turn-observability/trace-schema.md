@@ -72,7 +72,7 @@ events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `engineering.controls.changed`, `engineering.mode.changed`,
 `engineering.budget.changed`, `engineering.run.started`,
 `engineering.phase.changed`, `engineering.verification.finished`,
-`engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
+`engineering.phase_gate.blocked_tool`, `engineering.phase_gate.premature_final`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
 `engineering.loop.warning`, `engineering.loop.checkpoint`,
 `engineering.loop.blocked`, `engineering.reasoning.recorded`, and
 `engineering.run.finished`. The public
@@ -112,6 +112,8 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `engineering.run.started`
 - `engineering.phase.changed`
 - `engineering.verification.finished`
+- `engineering.phase_gate.blocked_tool`
+- `engineering.phase_gate.premature_final`
 - `engineering.stop_gate.activated`
 - `engineering.stop_gate.blocked_tool`
 - `engineering.loop.warning`

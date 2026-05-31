@@ -24,7 +24,8 @@ const KIMICODE_EFFORT_LABEL = process.env.AIALRA_REAL_BENCH_KIMICODE_EFFORT_LABE
 const DEEPSEEK_V4_PRO_MODEL = process.env.AIALRA_REAL_BENCH_DEEPSEEK_V4_PRO_MODEL ?? "deepseek/deepseek-v4-pro"
 const DEEPSEEK_V4_PRO_VARIANT = process.env.AIALRA_REAL_BENCH_DEEPSEEK_V4_PRO_VARIANT ?? "max"
 const TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_TIMEOUT_MS ?? "900000")
-const OPENCODE_START_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_OPENCODE_START_TIMEOUT_MS ?? "180000")
+const OPENCODE_START_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_OPENCODE_START_TIMEOUT_MS ?? "1800000")
+const OPENCODE_REQUEST_START_TIMEOUT_MS = Number(process.env.AIALRA_REAL_BENCH_OPENCODE_REQUEST_START_TIMEOUT_MS ?? "1800000")
 const PROGRESS_STALL_MS = Number(process.env.AIALRA_REAL_BENCH_PROGRESS_STALL_MS ?? "1800000")
 const EMERGENCY_MAX_MS = Number(process.env.AIALRA_REAL_BENCH_EMERGENCY_MAX_MS ?? "21600000")
 const REPEATED_TOOL_MIN_CALLS = Number(process.env.AIALRA_REAL_BENCH_REPEATED_TOOL_MIN_CALLS ?? "20")
@@ -43,7 +44,10 @@ const KEEP_WORKTREES = process.env.AIALRA_REAL_BENCH_KEEP_WORKTREES === "1"
 const DOCKER_PRUNE = process.env.AIALRA_REAL_BENCH_DOCKER_PRUNE === "1"
 const PROGRESS_AWARE_TIMEOUT = process.env.AIALRA_REAL_BENCH_PROGRESS_AWARE_TIMEOUT !== "0"
 const RERUN_TIMED_OUT = process.env.AIALRA_REAL_BENCH_RERUN_TIMED_OUT === "1"
+const RERUN_PROGRESS_TIMEOUT = process.env.AIALRA_REAL_BENCH_RERUN_PROGRESS_TIMEOUT !== "0"
+const RERUN_ERRORS = process.env.AIALRA_REAL_BENCH_RERUN_ERRORS === "1"
 const READ_PUBLIC_EVENTS = process.env.AIALRA_REAL_BENCH_READ_PUBLIC_EVENTS !== "0"
+const REPAIR_ROUNDS = Math.max(0, Number(process.env.AIALRA_REAL_BENCH_REPAIR_ROUNDS ?? "0"))
 const CASE_FILTER = new Set(
   (process.env.AIALRA_REAL_BENCH_CASES ?? "")
     .split(",")
@@ -52,6 +56,12 @@ const CASE_FILTER = new Set(
 )
 const TARGET_FILTER = new Set(
   (process.env.AIALRA_REAL_BENCH_TARGETS ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+)
+const REPAIR_TARGET_FILTER = new Set(
+  (process.env.AIALRA_REAL_BENCH_REPAIR_TARGETS ?? "aialra-deepseek-v4-pro-max,aialra-kimicode-max")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean),
@@ -307,6 +317,12 @@ async function requestJSON(url, options) {
   }
 }
 
+function isAbortError(error) {
+  if (!error) return false
+  if (error.name === "AbortError") return true
+  return String(error.message ?? error).toLowerCase().includes("aborted")
+}
+
 async function loadProviderCatalog(target) {
   const env = await envFromFile(target.envFile)
   return requestJSON(`${target.baseURL}/provider?directory=${encodeURIComponent("/srv/aialra/turn-harness-target")}`, {
@@ -522,6 +538,32 @@ function buildAgentPrompt(row, item) {
   ].join("\n")
 }
 
+function buildRepairPrompt(row, item, inspection, round) {
+  const verification = inspection.verification ?? {}
+  return [
+    "上一轮修复没有通过验证。不要重头大改，继续在当前工作区修。",
+    "你能看到当前代码里已经存在的改动，也能继续读取、修改和运行测试。",
+    "目标是根据验证失败信息做最小修复，而不是重新实现整块功能。",
+    "如果验证通过，立刻停止工具调用并给最终报告。",
+    "",
+    `Repair round: ${round}`,
+    `Benchmark instance: ${item.instanceID}`,
+    `Repository: ${item.repo}`,
+    "",
+    "Original issue text:",
+    rowProblem(row),
+    "",
+    "Current patch summary:",
+    inspection.diffStat || "(no diff stat)",
+    "",
+    "Verification result:",
+    `mode: ${verification.mode ?? "unknown"}`,
+    `passed: ${verification.passed === undefined ? "unknown" : verification.passed ? "true" : "false"}`,
+    `command: ${verification.command ?? ""}`,
+    `output:\n${String(verification.output ?? "").slice(0, 6000)}`,
+  ].join("\n")
+}
+
 const mirrorPromises = new Map()
 
 async function ensureMirror(repo) {
@@ -610,17 +652,25 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
     const session = await requestJSON(`${target.baseURL}/session?${query}`, {
       method: "POST",
       headers: { authorization: auth, "content-type": "application/json" },
+      timeoutMs: OPENCODE_REQUEST_START_TIMEOUT_MS,
       body: "{}",
     })
     sessionID = session.id
     const promptResponse = await requestJSON(`${target.baseURL}/session/${sessionID}/prompt_async?${query}`, {
       method: "POST",
       headers: { authorization: auth, "content-type": "application/json" },
+      timeoutMs: OPENCODE_REQUEST_START_TIMEOUT_MS,
       body: JSON.stringify({
         parts: [{ type: "text", text: prompt }],
         model: providerModel(target.model),
         ...(target.variant ? { variant: target.variant } : {}),
       }),
+    }).catch((error) => {
+      if (!isAbortError(error)) throw error
+      return {
+        warning: "prompt_async request timed out; polling the session for the real turn result",
+        timeoutMs: OPENCODE_REQUEST_START_TIMEOUT_MS,
+      }
     })
     await writeFile(join(targetRoot, "opencode-prompt-async.json"), JSON.stringify(promptResponse, null, 2) + "\n")
     let messages = []
@@ -762,6 +812,175 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
         : completedWithoutText
           ? "session became idle without an assistant message"
           : "",
+    }
+  } catch (error) {
+    return {
+      sessionID,
+      ok: false,
+      timedOut: Date.now() - started >= TIMEOUT_MS,
+      timeoutReason: "",
+      progressAwareTimeout: false,
+      emergencyStopped: false,
+      waitingApproval: false,
+      waitingQuestion: false,
+      durationMs: Date.now() - started,
+      hasTurnTerminal: false,
+      toolCallCount: 0,
+      eventCount: 0,
+      finalText: "",
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot, label) {
+  const env = await envFromFile(target.envFile)
+  const auth = authHeader(env)
+  const query = `directory=${encodeURIComponent(worktree)}`
+  const started = Date.now()
+  try {
+    const promptResponse = await requestJSON(`${target.baseURL}/session/${sessionID}/prompt_async?${query}`, {
+      method: "POST",
+      headers: { authorization: auth, "content-type": "application/json" },
+      timeoutMs: OPENCODE_REQUEST_START_TIMEOUT_MS,
+      body: JSON.stringify({
+        parts: [{ type: "text", text: prompt }],
+        model: providerModel(target.model),
+        ...(target.variant ? { variant: target.variant } : {}),
+      }),
+    }).catch((error) => {
+      if (!isAbortError(error)) throw error
+      return {
+        warning: "prompt_async request timed out; polling the session for the real turn result",
+        timeoutMs: OPENCODE_REQUEST_START_TIMEOUT_MS,
+      }
+    })
+    await writeFile(join(targetRoot, `opencode-${label}-prompt-async.json`), JSON.stringify(promptResponse, null, 2) + "\n")
+    let messages = []
+    let status
+    let waitingApproval = false
+    let waitingQuestion = false
+    let timedOut = false
+    let finalText = ""
+    let publicEvents = []
+    let pollCount = 0
+    let progressTimedOut = false
+    let emergencyStopped = false
+    let timeoutReason = ""
+    let lastProgressAt = Date.now()
+    let lastProgressSignature = ""
+    let lastDiffSignal = ""
+    let lastDiffChangedAt = Date.now()
+    let lastProgressDescription = "repair prompt sent"
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      pollCount++
+      messages = await requestJSON(`${target.baseURL}/session/${sessionID}/message?${query}`, {
+        headers: { authorization: auth },
+      }).catch(() => [])
+      finalText = textFromMessages(messages)
+      status = await requestJSON(`${target.baseURL}/session/status?${query}`, {
+        headers: { authorization: auth },
+      }).catch(() => undefined)
+      const permissions = await requestJSON(`${target.baseURL}/permission?${query}`, {
+        headers: { authorization: auth },
+      }).catch(() => [])
+      const questions = await requestJSON(`${target.baseURL}/question?${query}`, {
+        headers: { authorization: auth },
+      }).catch(() => [])
+      if (pollCount % 10 === 0 || !lastProgressSignature) {
+        const nextDiffSignal = await diffProgressSignal(worktree).catch(() => lastDiffSignal)
+        if (nextDiffSignal !== lastDiffSignal) {
+          lastDiffSignal = nextDiffSignal
+          lastDiffChangedAt = Date.now()
+        }
+      }
+      waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
+      waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
+      const idle = !status || !JSON.stringify(status).includes(sessionID) || !JSON.stringify(status).includes("busy")
+      const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+      if (target.publicEvents && READ_PUBLIC_EVENTS && pollCount % 5 === 0) {
+        publicEvents = await readPublicEvents(target, sessionID, auth)
+      }
+      const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
+      const hasModelActivity =
+        hasAssistant ||
+        countToolCalls(messages) > 0 ||
+        publicEvents.some((event) => /^model\.|^tool\.|^command\.|^file\.|^final\./.test(event.type))
+      const progressSignature = messageProgressSignature(messages, publicEvents, lastDiffSignal)
+      if (progressSignature !== lastProgressSignature) {
+        lastProgressSignature = progressSignature
+        lastProgressAt = Date.now()
+        lastProgressDescription = [
+          `messages=${messages.length}`,
+          `tools=${countToolCalls(messages)}`,
+          `events=${publicEvents.length}`,
+          `diff=${lastDiffSignal || "none"}`,
+        ].join(" ")
+      }
+      if ((idle && (finalText || hasAssistant)) || hasTurnTerminal || waitingApproval || waitingQuestion) break
+      if (PROGRESS_AWARE_TIMEOUT && Date.now() - lastProgressAt >= PROGRESS_STALL_MS) {
+        progressTimedOut = true
+        timeoutReason = `no observable progress for ${PROGRESS_STALL_MS}ms after ${lastProgressDescription}`
+        break
+      }
+      const repeatedReason = PROGRESS_AWARE_TIMEOUT
+        ? repeatedToolDeadlockReason(messages, lastDiffSignal, lastDiffChangedAt)
+        : ""
+      if (repeatedReason) {
+        progressTimedOut = true
+        timeoutReason = repeatedReason
+        break
+      }
+      const churnReason = PROGRESS_AWARE_TIMEOUT
+        ? toolChurnDeadlockReason(messages, lastDiffSignal, lastDiffChangedAt)
+        : ""
+      if (churnReason) {
+        progressTimedOut = true
+        timeoutReason = churnReason
+        break
+      }
+      if (PROGRESS_AWARE_TIMEOUT && Date.now() - started >= EMERGENCY_MAX_MS) {
+        emergencyStopped = true
+        timeoutReason = `emergency cap reached after ${EMERGENCY_MAX_MS}ms`
+        break
+      }
+      if (!PROGRESS_AWARE_TIMEOUT && Date.now() - started >= TIMEOUT_MS) {
+        timedOut = true
+        timeoutReason = `fixed timeout reached after ${TIMEOUT_MS}ms`
+        break
+      }
+    }
+    if (timedOut || progressTimedOut || emergencyStopped || waitingApproval || waitingQuestion) {
+      await requestJSON(`${target.baseURL}/session/${sessionID}/abort?${query}`, {
+        method: "POST",
+        headers: { authorization: auth, "content-type": "application/json" },
+        body: "{}",
+      }).catch(() => undefined)
+    }
+    publicEvents = await readPublicEvents(target, sessionID, auth)
+    await writeFile(join(targetRoot, `opencode-${label}-messages.json`), JSON.stringify(messages, null, 2) + "\n")
+    await writeFile(join(targetRoot, `opencode-${label}-status.json`), JSON.stringify(status ?? {}, null, 2) + "\n")
+    if (publicEvents.length) await writeFile(join(targetRoot, `opencode-${label}-public-events.json`), JSON.stringify(publicEvents, null, 2) + "\n")
+    const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+    const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
+    const stopped = timedOut || progressTimedOut || emergencyStopped
+    const completedWithoutText = !stopped && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
+    return {
+      sessionID,
+      ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText,
+      timedOut: stopped,
+      timeoutReason,
+      progressAwareTimeout: stopped && (progressTimedOut || emergencyStopped),
+      emergencyStopped,
+      waitingApproval,
+      waitingQuestion,
+      durationMs: Date.now() - started,
+      hasTurnTerminal: hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && (!target.publicEvents || !READ_PUBLIC_EVENTS) && hasAssistant),
+      toolCallCount: countToolCalls(messages),
+      eventCount: publicEvents.length,
+      finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
+      error: progressTimedOut || emergencyStopped || timedOut ? timeoutReason : completedWithoutText ? "session became idle without an assistant message" : "",
     }
   } catch (error) {
     return {
@@ -934,12 +1153,56 @@ async function inspectAndVerify(targetRoot, worktree, item, row, target) {
   }
 }
 
+function shouldRepair(target, agent, inspection) {
+  if (REPAIR_ROUNDS <= 0) return false
+  if (target.kind !== "opencode") return false
+  if (!REPAIR_TARGET_FILTER.has(target.id)) return false
+  if (!agent.sessionID) return false
+  if (agent.timedOut || agent.waitingApproval || agent.waitingQuestion) return false
+  if (!inspection.verification?.attempted) return false
+  if (inspection.verification?.passed !== false) return false
+  return inspection.patchBytes > 0
+}
+
+function mergeAgentAfterRepair(agent, repair) {
+  return {
+    ...agent,
+    ...repair,
+    durationMs: (agent.durationMs ?? 0) + (repair.durationMs ?? 0),
+    toolCallCount: Math.max(agent.toolCallCount ?? 0, repair.toolCallCount ?? 0),
+    eventCount: Math.max(agent.eventCount ?? 0, repair.eventCount ?? 0),
+  }
+}
+
 async function runJob(target, item, row) {
   const targetRoot = join(runRoot, target.id, item.instanceID)
   try {
     const prepared = await prepareWorktree(target, item, row)
-    const agent = await runAgent(target, item, row, prepared.worktree, prepared.targetRoot)
-    const inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target)
+    let agent = await runAgent(target, item, row, prepared.worktree, prepared.targetRoot)
+    let inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target)
+    const repairs = []
+    for (let round = 1; round <= REPAIR_ROUNDS && shouldRepair(target, agent, inspection); round++) {
+      const repair = await continueOpenCode(
+        target,
+        agent.sessionID,
+        buildRepairPrompt(row, item, inspection, round),
+        prepared.worktree,
+        prepared.targetRoot,
+        `repair-${round}`,
+      )
+      repairs.push({
+        round,
+        beforePassed: inspection.verification?.passed,
+        repairOk: repair.ok,
+        repairTimedOut: repair.timedOut,
+        repairWaitingApproval: repair.waitingApproval,
+        repairWaitingQuestion: repair.waitingQuestion,
+        repairDurationMs: repair.durationMs,
+        repairToolCallCount: repair.toolCallCount,
+      })
+      agent = mergeAgentAfterRepair(agent, repair)
+      inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target)
+    }
     const result = {
       target: target.id,
       targetName: target.name,
@@ -950,20 +1213,38 @@ async function runJob(target, item, row) {
       cwd: prepared.worktree,
       ...agent,
       ...inspection,
+      repairRounds: repairs.length,
+      repairs,
     }
     await writeFile(join(prepared.targetRoot, "result.json"), JSON.stringify(result, null, 2) + "\n")
     return result
   } finally {
-    await cleanupJobWorkspace(targetRoot)
+    await cleanupJobWorkspace(targetRoot).catch(async (error) => {
+      await mkdir(targetRoot, { recursive: true }).catch(() => undefined)
+      await writeFile(join(targetRoot, "cleanup-error.log"), String(error instanceof Error ? error.stack || error.message : error))
+        .catch(() => undefined)
+    })
   }
 }
 
 async function cleanupJobWorkspace(targetRoot) {
   if (KEEP_WORKTREES) return
-  await rm(join(targetRoot, "worktree"), { recursive: true, force: true })
-  await rm(join(targetRoot, "official-harness"), { recursive: true, force: true })
+  await removePathWithRetry(join(targetRoot, "worktree"))
+  await removePathWithRetry(join(targetRoot, "official-harness"))
   if (DOCKER_PRUNE) {
     await runCommand("docker", ["system", "prune", "-af"], { timeoutMs: 300_000 })
+  }
+}
+
+async function removePathWithRetry(target) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+      return
+    } catch (error) {
+      if (attempt === 3) throw error
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+    }
   }
 }
 
@@ -990,7 +1271,7 @@ function mark(value) {
 
 function renderReport(manifest, selected, results) {
   const lines = []
-  lines.push("# AIALRA 真实高难 Benchmark 五组合报告")
+  lines.push(`# AIALRA 真实高难 Benchmark ${targets.length === 5 ? "五组合" : `${targets.length} 组合`}报告`)
   lines.push("")
   lines.push(`- 运行 ID：\`${runID}\``)
   lines.push(`- manifest：\`${MANIFEST_PATH}\``)
@@ -999,6 +1280,8 @@ function renderReport(manifest, selected, results) {
   lines.push(`- 测评层级：\`${TIER}\``)
   lines.push(`- 并发度：\`${PARALLEL}\``)
   lines.push(`- 验证模式：\`${VERIFY_MODE}\``)
+  lines.push(`- 自动 repair 轮数：\`${REPAIR_ROUNDS}\``)
+  lines.push(`- 自动 repair 目标：\`${Array.from(REPAIR_TARGET_FILTER).join(", ") || "-"}\``)
   lines.push(`- 超时判定：\`${PROGRESS_AWARE_TIMEOUT ? "progress-aware/logical-stall-detection" : "fixed-time-budget"}\``)
   lines.push(`- 说明：agent 只收到 problem statement，未收到 gold patch 或 test_patch`)
   lines.push("")
@@ -1029,11 +1312,11 @@ function renderReport(manifest, selected, results) {
     lines.push(`- 估算 token：\`${item.estimatedPromptTokens}\``)
     lines.push(`- F2P/P2P：\`${item.failToPassCount}/${item.passToPassCount}\``)
     lines.push("")
-    lines.push("| 对象 | 模型 / 档位 | 分数 | 完成 | patch | 验证模式 | 验证通过 | 测试补丁 | 超时 | 停止原因 | 等待审批 | 工具调用 | 耗时 |")
-    lines.push("| --- | --- | ---: | --- | ---: | --- | --- | --- | --- | --- | --- | ---: | ---: |")
+    lines.push("| 对象 | 模型 / 档位 | 分数 | 完成 | patch | 验证模式 | 验证通过 | repair | 测试补丁 | 超时 | 停止原因 | 等待审批 | 工具调用 | 耗时 |")
+    lines.push("| --- | --- | ---: | --- | ---: | --- | --- | ---: | --- | --- | --- | --- | ---: | ---: |")
     for (const result of caseResults) {
       lines.push(
-        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${(result.timeoutReason ?? "").replaceAll("|", "\\|") || "-"} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
+        `| ${result.targetName} | \`${result.targetModel ?? "-"}\` | ${scoreResult(result)} | ${mark(result.ok)} | ${result.patchBytes} B | ${result.verification?.mode ?? "-"} | ${mark(result.verification?.passed)} | ${result.repairRounds ?? 0} | ${mark(result.verification?.testPatchApplied)} | ${mark(result.timedOut)} | ${(result.timeoutReason ?? "").replaceAll("|", "\\|") || "-"} | ${mark(result.waitingApproval || result.waitingQuestion)} | ${result.toolCallCount ?? 0} | ${result.durationMs} ms |`,
       )
     }
     lines.push("")
@@ -1049,6 +1332,13 @@ function renderReport(manifest, selected, results) {
         lines.push("改动摘要：")
         lines.push("```text")
         lines.push(result.diffStat)
+        lines.push("```")
+      }
+      if (result.repairs?.length) {
+        lines.push("")
+        lines.push("自动 repair 记录：")
+        lines.push("```json")
+        lines.push(JSON.stringify(result.repairs, null, 2))
         lines.push("```")
       }
       if (result.verification?.output) {
@@ -1156,7 +1446,13 @@ const partialReportPath = join(runRoot, "report.partial.md")
 const existingResults = await loadExistingResults(partialResultsPath)
 const selectedJobKeys = new Set(jobs.map(jobKey))
 const keepExistingResults = RERUN_TIMED_OUT
-  ? existingResults.filter((result) => !(result.timedOut && !result.progressAwareTimeout && selectedJobKeys.has(resultKey(result))))
+  ? existingResults.filter(
+      (result) =>
+        !(
+          selectedJobKeys.has(resultKey(result)) &&
+          ((result.timedOut && (RERUN_PROGRESS_TIMEOUT || !result.progressAwareTimeout)) || (RERUN_ERRORS && result.error))
+        ),
+    )
   : existingResults
 const completed = new Set(keepExistingResults.map(resultKey))
 const pendingJobs = jobs.filter((job) => !completed.has(jobKey(job)))

@@ -1,5 +1,34 @@
 # Assistant Output Log
 
+## 2026-05-31 输出记录：General Engineering Harness v2 首批实现
+
+用户要求构建 V2 完整计划书，并且端到端实现、先做 regression-6 验收，有提升才跑 AIALRA full-24，否则分析原因并规划 V3
+
+本轮先检查 V1 代码，结论是：控制面板、工程模式、阶段、重复工具提醒和通过即停止已经存在，但有三处关键缺口。第一，验证失败只在日志里，模型下一步没有直接拿到失败重点。第二，localize，定位阶段主要靠提示词提醒，模型如果直接 edit/write，系统会放行。第三，真实 benchmark 的 official/local 验证失败只进入报告，没有自动喂回同一个 AIALRA agent session 继续修
+
+本轮完成 V2 首批实现：
+
+- `EngineeringRun` 升级为 v2，新增 `phaseGate` 和 `feedback.items`
+- 验证失败时抽取失败摘要和关键输出行，写进 `engineering.verification.finished` 的 data，同时完整输出仍走 raw 审计
+- repair 提醒会包含最近一次 `verification_failed`、`loop_checkpoint` 或 `phase_gate` 反馈，不再只说“根据上一轮失败继续修”
+- bug/refactor/security 任务如果完全没读过/搜过代码就直接 edit/write/apply_patch，会被阶段门禁阻止，并切到 plan 阶段，Turn Inspector 显示 `engineering.phase_gate.blocked_tool`
+- 重复工具 checkpoint 会写 feedback，提醒模型总结旧路线并换方向
+- `run-real-benchmark.mjs` 新增 `AIALRA_REAL_BENCH_REPAIR_ROUNDS`，默认 0，开启后可只对 AIALRA 目标在验证失败后追加 repair prompt
+- Benchmark 报告新增 `repair` 列和自动 repair 记录
+- 新增 V2 计划书 `aialra/turn-observability/general-engineering-harness-v2-plan.md`
+
+已跑的最小验证：
+
+```text
+bun --cwd packages/opencode test test/session/engineering.test.ts --timeout 30000
+5 pass
+
+node --check aialra/turn-observability/scripts/run-real-benchmark.mjs
+pass
+```
+
+本轮还没有跑 regression-6，也没有跑 full-24。按 V2 计划，下一步必须先跑 AIALRA DeepSeek regression-6，确认相对上一轮同 6 题是否提升；只有提升才跑 AIALRA full-24
+
 ## 2026-05-30 输出记录：24 题真实高难五组合 Benchmark 全量执行
 
 用户要求澄清并执行全量真实高难测评：24 个 benchmark 任务，每个任务跑 5 个组合，不允许使用 flash、fast、turbo 或非旗舰模型。最终组合为 Codex CLI `gpt-5.5 / xhigh`、debug1 原版 OpenCode + `kimi/kimi-for-coding`、AIALRA OpenCode + `kimi/kimi-for-coding`、debug1 原版 OpenCode + `deepseek/deepseek-v4-pro / max`、AIALRA OpenCode + `deepseek/deepseek-v4-pro / max`
@@ -965,3 +994,32 @@ A/B harness，A/B 对比脚本 新增 `AIALRA_AB_CASES`，可以按 case id 精�
 验证结果：`bun test --preload ./happydom.ts ./src/pages/layout/helpers.test.ts` 23 pass；`bun typecheck` 通过；`./aialra/opencode-deployment/scripts/build-opencode.sh` 成功，版本 `0.0.0-dev-202605310658`；服务重启后 `aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均 active；`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass。第一次 smoke 在服务刚重启尚未完成端口绑定时失败，等待后重跑通过
 
 浏览器验收：通过 Playwright CLI 登录线上页面，创建新会话 `ses_183203663ffe0ytgU8isGg0KnH`，进入 `/srv/aialra/turn-harness-target` 对应 URL 后，左侧 `[data-session-id]` 列表已经出现该会话。截图保存在 `/tmp/opencode-sidebar-session-visible.png`
+
+## 2026-05-31 追加记录：General Engineering Harness v2 验收和 full-24
+
+本轮完成 V2 的核心工程改动和真实验收
+
+已经实现的关键行为
+
+1. 验证失败反馈不再只躺在日志里。系统会把失败摘要写进 EngineeringRun feedback，下一轮 repair 会带着失败原因继续修
+2. 阶段门禁开始真正生效。bug/refactor/security 任务如果还没读过或搜过代码就直接改文件，会被挡住并要求先计划
+3. 模型提前收尾会被纠偏。比如模型说“我已经找到问题，要我继续改吗”，系统会发 `engineering.phase_gate.premature_final` 并要求继续做最小修改和验证
+4. benchmark runner 支持失败后自动 repair，一次 repair 会把当前 diff 和验证失败输出发回同一 session
+5. benchmark runner 的公平性修复完成。OpenCode 启动等待默认从 180 秒改到 30 分钟，超时重跑会重跑 progress-aware timeout，cleanup 的 ENOTEMPTY 不再覆盖真实 agent 结果
+
+验收结果
+
+regression-6：run `20260531080150`，AIALRA DeepSeek V4 Pro max 从上一轮同 6 题 3/6 提升到 4/6，0 审批卡住，0 超时
+
+full-24：run `20260531093837`，AIALRA DeepSeek V4 Pro max 最终 24/24 完成，6/24 verified pass，18/24 有 patch，6/24 零 patch，0 审批卡住，0 超时，0 基础设施错误，总分 417
+
+人话结论
+
+V2 方向是有效的，因为 full-24 verified pass 从 5/24 提升到 6/24，而且没有引入审批卡住或逻辑超时。但提升幅度不够大，并且零 patch 从上一轮 0 变成 6，说明下一阶段 V3 要重点做 no-patch recovery，零补丁恢复，和 verification availability，验证可用性。也就是说，不是继续加 UI，而是让模型长篇分析后必须落到代码改动或明确 blocked 原因，让 Pro 任务在官方 test_patch 套不上时也能得到等价验证反馈
+
+报告路径
+
+- regression-6：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260531080150.md`
+- full-24：`aialra/turn-observability/real-benchmark-reports/real-benchmark-20260531093837.md`
+
+最终交付验证：`bun --cwd packages/opencode test test/session/engineering.test.ts --timeout 30000` 7 pass；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`node --test aialra/turn-observability/tests/*.test.js` 1 pass；`AIALRA_EXEC_BACKEND=codex AIALRA_RUN_CODEX_EXEC_SERVER_TEST=1 AIALRA_CODEX_EXEC_SERVER_URL=ws://127.0.0.1:12650 bun --cwd packages/opencode test test/tool/codex-exec-server.test.ts test/tool/turn-sandbox.test.ts test/tool/external-directory.test.ts --timeout 30000` 28 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过；`bun --cwd packages/app build` 通过；`bun --cwd packages/opencode build --single` 通过；`git diff --check` 通过。最终部署版本为 `0.0.0-dev-202605311418`，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active，`./aialra/opencode-deployment/scripts/e2e-smoke.sh` 11 pass

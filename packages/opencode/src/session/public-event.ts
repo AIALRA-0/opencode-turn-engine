@@ -19,6 +19,8 @@ export type PublicEventType =
   | "engineering.run.started"
   | "engineering.phase.changed"
   | "engineering.verification.finished"
+  | "engineering.phase_gate.blocked_tool"
+  | "engineering.phase_gate.premature_final"
   | "engineering.stop_gate.activated"
   | "engineering.stop_gate.blocked_tool"
   | "engineering.loop.warning"

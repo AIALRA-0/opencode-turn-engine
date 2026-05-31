@@ -98,6 +98,13 @@ function promptText(parts: MessageV2.Part[]) {
     .join("\n")
 }
 
+function assistantText(messageID: MessageID) {
+  return MessageV2.parts(messageID)
+    .filter((part) => part.type === "text")
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n")
+}
+
 function normalizeTurnStepBudget(value: unknown, fallback = DEFAULT_AIALRA_TURN_MAX_STEPS) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback
   return Math.max(1, Math.min(10_000, Math.trunc(value)))
@@ -2243,7 +2250,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
-          const activeTurnForStep = turn?.turnID === lastUser.id ? SessionSecurity.applyToTurn(turn) : undefined
+          const activeTurnForStep = turn ? SessionSecurity.applyToTurn(turn) : undefined
           if (activeTurnForStep) activeTurns.set(activeTurnForStep.sessionID, activeTurnForStep)
           const maxSteps = turnMaxSteps(agent.steps, activeTurnForStep)
           if (step > maxSteps) {
@@ -2482,6 +2489,44 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 tokens: handle.message.tokens,
               },
             })
+
+            const prematureFinalPrompt = EngineeringHarness.prematureFinalPrompt(
+              activeTurn,
+              assistantText(handle.message.id),
+            )
+            if (prematureFinalPrompt) {
+              const continuation: MessageV2.User = {
+                id: MessageID.ascending(),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+                tools: lastUser.tools,
+                system: lastUser.system,
+                format: lastUser.format,
+              }
+              yield* sessions.updateMessage(continuation)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continuation.id,
+                sessionID,
+                type: "text",
+                text: prematureFinalPrompt,
+                synthetic: true,
+              } satisfies MessageV2.TextPart)
+              yield* AialraTurnTrace.emit({
+                phase: "engineering.phase_gate.premature_final",
+                turnID: activeTurn?.turnID,
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                data: {
+                  continuationID: continuation.id,
+                },
+              })
+              return "continue" as const
+            }
 
             if (structured !== undefined) {
               handle.message.structured = structured

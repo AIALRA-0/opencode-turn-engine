@@ -108,4 +108,93 @@ describe("EngineeringHarness", () => {
       ]),
     )
   })
+
+  test("feeds verification failure details back into the repair reminder", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "修复后跑 npm test，如果失败就继续修",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "修复后跑 npm test，如果失败就继续修" })
+
+    EngineeringHarness.recordVerification({
+      turn: ctx,
+      command: "npm test",
+      exit: 1,
+      output: "AssertionError: expected fast but got safe\nFAILED test/tool.test.js::mode_override",
+    })
+
+    expect(EngineeringHarness.reminder(ctx)).toContain("AssertionError")
+    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("verification_failed")
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "engineering.verification.finished",
+          status: "failed",
+          data: expect.objectContaining({
+            failureSummary: expect.stringContaining("npm test"),
+            failureDetail: expect.stringContaining("AssertionError"),
+          }),
+        }),
+      ]),
+    )
+  })
+
+  test("blocks the first write attempt during localization and asks for a plan", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+
+    const gate = EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" })
+
+    expect(gate.blocked).toBe(true)
+    expect(gate.output).toContain("定位阶段")
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("plan")
+    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("phase_gate")
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.phase_gate.blocked_tool", status: "blocked" }),
+      ]),
+    )
+  })
+
+  test("allows edits after the model has gathered localization evidence", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("edit")
+  })
+
+  test("continues when the model finds a fix but asks whether to proceed", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    const prompt = EngineeringHarness.prematureFinalPrompt(
+      ctx,
+      "The root cause is clear. The fix is to replace old with new. Would you like me to proceed?",
+    )
+
+    expect(prompt).toContain("不要再问用户是否继续")
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("edit")
+    expect(EngineeringHarness.state(ctx.turnID)?.phaseGate.prematureFinals).toBe(1)
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.phase_gate.premature_final", status: "continued" }),
+      ]),
+    )
+  })
 })

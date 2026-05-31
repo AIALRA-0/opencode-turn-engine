@@ -61,7 +61,7 @@
   定位预算、重复工具阈值、总工具调用上限、单条命令超时等设置。
 - Public event stream 已新增工程事件：`engineering.run.started`、
   `engineering.phase.changed`、`engineering.verification.finished`、
-  `engineering.stop_gate.activated`、`engineering.stop_gate.blocked_tool`、
+  `engineering.phase_gate.blocked_tool`、`engineering.phase_gate.premature_final`、`engineering.stop_gate.activated`、`engineering.stop_gate.blocked_tool`、
   `engineering.loop.warning`、`engineering.loop.checkpoint`、
   `engineering.loop.blocked`、`engineering.reasoning.recorded`、
   `engineering.run.finished`。

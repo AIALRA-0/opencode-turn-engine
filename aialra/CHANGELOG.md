@@ -2,6 +2,29 @@
 
 ## 2026-05-31
 
+- Completed AIALRA General Engineering Harness v2 validation. Regression-6 run
+  `20260531080150` improved the AIALRA DeepSeek V4 Pro max target from the prior
+  3/6 baseline to 4/6 verified passes, so the release gate allowed an
+  AIALRA-only full-24 run.
+- Completed AIALRA-only full-24 run `20260531093837` with DeepSeek V4 Pro max.
+  Final result: 24/24 completed, 6/24 verified passes, 18/24 non-empty patches,
+  0 approval stalls, 0 timeouts, 0 benchmark runner infrastructure errors, and
+  total scored result 417. The full report is
+  `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260531093837.md`.
+- Fixed benchmark runner false failures discovered during full-24. OpenCode
+  startup wait now defaults to 30 minutes, `RERUN_TIMED_OUT` can rerun
+  progress-aware timeout rows, and cleanup retry failures no longer overwrite a
+  real agent result with an `ENOTEMPTY` infrastructure error.
+- Added `engineering.phase_gate.premature_final`. When a model finds the likely
+  fix but stops to ask whether it should proceed, the harness now records the
+  event, injects a bounded continuation reminder, and keeps the turn moving
+  toward a minimal edit and validation instead of accepting the premature final
+  answer.
+- Added AIALRA General Engineering Harness v2 planning and first implementation pass. EngineeringRun now stores feedback items for verification failures, loop checkpoints, and phase gates, so repair reminders can include the concrete failure summary instead of generic guidance.
+- Added a real phase gate for engineering runs. When a bug/refactor/security task tries to call edit/write/apply_patch before any localization tool has run, the attempt is blocked, the run moves to plan, and Turn Inspector shows `engineering.phase_gate.blocked_tool`.
+- Enhanced verification feedback. Failed validation commands now extract a concise failure summary and key output lines into public event data and encrypted raw audit still keeps the full command output.
+- Added optional benchmark repair rounds to `run-real-benchmark.mjs`. `AIALRA_REAL_BENCH_REPAIR_ROUNDS=1` can feed verification failures back into the same AIALRA OpenCode session during regression-6 or full-24 runs, while default behavior remains unchanged.
+- Added the V2 project plan and full-24 gate policy in `aialra/turn-observability/general-engineering-harness-v2-plan.md`. Full-24 should only run when regression-6 shows a real lift; otherwise the next step is V3 diagnosis rather than another expensive full run.
 - Fixed new sessions missing from the native left sidebar. The session list now falls back to the current route directory while workspace path metadata is still loading, and the active session route forces a bounded refresh when the sidebar cache does not yet contain that session.
 - Tightened the sidebar session fix for servers that report a very broad project root such as `/`. When workspace mode is off, the native left sidebar now displays and creates sessions for the active URL directory instead of filtering against the broad project root. Browser verification created session `ses_183203663ffe0ytgU8isGg0KnH` under `/srv/aialra/turn-harness-target` and confirmed it appeared in the left sidebar.
 - Fixed Sandbox Control Center advanced engineering controls so the advanced section can be closed again. The frontend now sends only the changed engineering patch, and the backend no longer treats `advancedEnabled=false` as a mode reset.
@@ -17,6 +40,11 @@
 - Added focused tests for EngineeringHarness lifecycle, verification stop gate, repeated-tool intervention, and public security event updates.
 - Deployed version `0.0.0-dev-202605310521` to `opencode.aialra.online`. `aialra-opencode-web.service`, `aialra-opencode-login.service`, and `aialra-codex-exec-server.service` were restarted and active. E2E smoke passed, and `/config`, `/question`, `/project/current`, `/command`, `/session/status`, `/provider`, and `/lsp` returned 200 from the authenticated origin smoke.
 - Deployed sidebar follow-up version `0.0.0-dev-202605310658` to `opencode.aialra.online`. `aialra-opencode-web.service`, `aialra-opencode-login.service`, and `aialra-codex-exec-server.service` were active, and the deployment smoke passed after the web service finished binding its port.
+- Deployed final V2 validation version `0.0.0-dev-202605311418` to
+  `opencode.aialra.online`. Engineering, prompt, observability, exec-server,
+  sandbox, typecheck, app build, single-binary build, deployment build, and e2e
+  smoke all passed. Web, login, and Codex exec-server services were restarted
+  and active.
 
 ## 2026-05-30
 
