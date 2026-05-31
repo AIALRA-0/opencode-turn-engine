@@ -260,7 +260,7 @@ export namespace SessionSecurity {
       ...patch,
       engineering: input.patch.engineering
         ? EngineeringHarness.normalize(
-            input.patch.engineering.mode && input.patch.engineering.advancedEnabled !== true
+            input.patch.engineering.mode && !("advancedEnabled" in input.patch.engineering)
               ? EngineeringHarness.applyMode(previous.engineering, input.patch.engineering.mode)
               : { ...previous.engineering, ...input.patch.engineering },
             previous.engineering,

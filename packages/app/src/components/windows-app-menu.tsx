@@ -4,6 +4,7 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/components/icon-button-v2.jsx"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/components/icon.jsx"
+import { Tooltip } from "@opencode-ai/ui/tooltip"
 
 import { useCommand } from "@/context/command"
 import { DESKTOP_MENU, desktopMenuVisible, type DesktopMenuAction, type DesktopMenuEntry } from "@/desktop-menu"
@@ -49,20 +50,22 @@ export function WindowsAppMenu(props: {
   return (
     <DropdownMenu gutter={4} modal={false} placement="bottom-start">
       {props.variant === "v2" ? (
-        <div
-          data-component="desktop-icon-button"
-          class="flex h-7 w-9 shrink-0 items-center justify-center rounded-[6px] px-1"
-        >
-          <DropdownMenu.Trigger
-            as={IconButtonV2}
-            variant="ghost-muted"
-            size="large"
-            icon={<IconV2 name="menu" />}
-            aria-label="OpenCode menu"
-            onPointerDown={rememberFocus}
-            onKeyDown={rememberFocus}
-          />
-        </div>
+        <Tooltip placement="bottom" value="主菜单">
+          <div
+            data-component="desktop-icon-button"
+            class="flex h-7 w-9 shrink-0 items-center justify-center rounded-[6px] px-1"
+          >
+            <DropdownMenu.Trigger
+              as={IconButtonV2}
+              variant="ghost-muted"
+              size="large"
+              icon={<IconV2 name="menu" />}
+              aria-label="主菜单"
+              onPointerDown={rememberFocus}
+              onKeyDown={rememberFocus}
+            />
+          </div>
+        </Tooltip>
       ) : (
         <DropdownMenu.Trigger
           as={IconButton}

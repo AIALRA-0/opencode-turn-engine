@@ -181,6 +181,17 @@ describe("public event HttpApi", () => {
     expect(next.stepBudgetMaxSteps).toBe(120)
     expect(next.engineering.mode).toBe("deep")
     expect(next.engineering.verificationRounds).toBe(4)
+    const collapsed = SessionSecurity.update({
+      sessionID: "ses_security",
+      cwd: "/tmp/aialra-security",
+      patch: {
+        engineering: {
+          advancedEnabled: false,
+        },
+      },
+    })
+    expect(collapsed.engineering.mode).toBe("deep")
+    expect(collapsed.engineering.advancedEnabled).toBe(false)
     expect(PublicEventLog.list({ sessionID: "ses_security" })).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "sandbox.profile.changed", status: "changed" }),

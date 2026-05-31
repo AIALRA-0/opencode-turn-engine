@@ -284,10 +284,7 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
 
   const updateEngineering = (patch: Partial<EngineeringControls>) =>
     updateSecurity("engineering", {
-      engineering: {
-        ...config()?.engineering,
-        ...patch,
-      },
+      engineering: patch,
     })
 
   createEffect(() => {

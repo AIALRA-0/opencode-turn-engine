@@ -2,6 +2,8 @@
 
 ## 2026-05-31
 
+- Fixed Sandbox Control Center advanced engineering controls so the advanced section can be closed again. The frontend now sends only the changed engineering patch, and the backend no longer treats `advancedEnabled=false` as a mode reset.
+- Added hover tooltips to the V2 titlebar channel badge, main menu, project home, and new-session buttons. The project home and new-session buttons now navigate through the router instead of relying on plain anchor navigation, reducing full-page reload stalls.
 - Added AIALRA General Engineering Harness v1, a shared engineering-control layer for all models. The new layer adds four user-facing modes: fast, balanced, deep, and long. Advanced budgets cover verification rounds, localization tool budget, repeated-tool thresholds, total tool calls, patch limits, output limits, no-progress minutes, and single-command timeout.
 - Extended Sandbox Control Center with Engineering Controls. The main UI stays simple with one engineering mode selector; advanced numeric controls are hidden until explicitly enabled.
 - Added internal `EngineeringRun` state with phases: intake, clarify, localize, plan, edit, verify, repair, finalize, and blocked. New public events include `engineering.run.started`, `engineering.phase.changed`, `engineering.verification.finished`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`, `engineering.loop.warning`, `engineering.loop.checkpoint`, `engineering.loop.blocked`, `engineering.reasoning.recorded`, and `engineering.run.finished`.
