@@ -222,7 +222,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     return language.t("common.requestFailed")
   }
 
-  const abort = async () => {
+  const abort = async (source: "stop_button" | "prompt_escape" | "prompt_ctrl_g" | "empty_submit" | "route_halt" = "stop_button") => {
     const sessionID = params.id
     if (!sessionID) return Promise.resolve()
 
@@ -242,6 +242,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     return sdk.client.session
       .abort({
         sessionID,
+        source,
+        route: "prompt-input",
       })
       .catch(() => {})
   }
@@ -295,7 +297,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const mode = input.mode()
 
     if (text.trim().length === 0 && images.length === 0 && input.commentCount() === 0) {
-      if (input.working()) void abort()
+      if (input.working()) void abort("empty_submit")
       return
     }
 

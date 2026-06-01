@@ -415,6 +415,19 @@ export const layer = Layer.effect(
               field: "text",
               delta: value.text,
             })
+            yield* AialraTurnTrace.emit({
+              phase: "model.raw.chunk",
+              turnID: ctx.assistantMessage.parentID,
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                kind: "reasoning_delta",
+                reasoningID: value.id,
+                chars: value.text.length,
+                preview: value.text.slice(0, 240),
+                providerMetadata: value.providerMetadata,
+              },
+            })
             return
 
           case "reasoning-end":
@@ -443,8 +456,18 @@ export const layer = Layer.effect(
             return
 
           case "tool-input-delta":
-            // AI SDK emits a final `tool-call` with the parsed `input`; accumulating
-            // delta fragments into `state.raw` is redundant work for no current consumer.
+            yield* AialraTurnTrace.emit({
+              phase: "model.raw.chunk",
+              turnID: ctx.assistantMessage.parentID,
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                kind: "tool_input_delta",
+                callID: value.id,
+                chars: value.text.length,
+                preview: value.text.slice(0, 240),
+              },
+            })
             return
 
           case "tool-input-end": {
@@ -779,6 +802,19 @@ export const layer = Layer.effect(
               partID: ctx.currentText.id,
               field: "text",
               delta: value.text,
+            })
+            yield* AialraTurnTrace.emit({
+              phase: "model.raw.chunk",
+              turnID: ctx.assistantMessage.parentID,
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              data: {
+                kind: "assistant_text_delta",
+                partID: ctx.currentText.id,
+                chars: value.text.length,
+                preview: value.text.slice(0, 240),
+                providerMetadata: value.providerMetadata,
+              },
             })
             return
 

@@ -287,7 +287,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     if (!sessionID) return
 
     if (sync.data.session_working(params.id ?? "")) {
-      await sdk.client.session.abort({ sessionID }).catch(() => {})
+      await sdk.client.session.abort({ sessionID, source: "stop_button", route: "session-command" }).catch(() => {})
     }
 
     const revert = info()?.revert?.messageID

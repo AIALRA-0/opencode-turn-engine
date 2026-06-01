@@ -82,6 +82,8 @@ const typeLabels: Record<string, string> = {
   "turn.step_budget.changed": "步骤上限已切换",
   "turn.completed": "回合完成",
   "turn.aborted": "回合中断",
+  "turn.abort.requested": "请求中断回合",
+  "turn.abort.resolved": "中断请求已处理",
   "turn.terminal.assistant_error": "终态错误消息",
   "turn.terminal.anomaly": "终态异常",
   "turn.terminal.reconciled": "终态已校准",
@@ -104,7 +106,9 @@ const typeLabels: Record<string, string> = {
   "engineering.loop.checkpoint": "循环检查点",
   "engineering.loop.blocked": "循环已阻止",
   "engineering.reasoning.recorded": "推理内容已记录",
+  "engineering.deployment_gate.updated": "部署门禁已更新",
   "engineering.run.finished": "工程运行结束",
+  "model.raw.chunk": "模型原始分片已记录",
   "model.request.started": "开始请求模型",
   "model.stream.started": "模型流开始",
   "model.retrying": "模型重试",
@@ -117,11 +121,13 @@ const typeLabels: Record<string, string> = {
   "tool.sandbox.capability": "沙箱能力检查",
   "tool.sandbox.checked": "沙箱检查通过",
   "tool.sandbox.denied": "沙箱拒绝访问",
+  "sandbox.effective": "沙箱实际策略已记录",
   "file.read": "读取文件",
   "file.write": "写入文件",
   "command.started": "命令开始",
   "command.output": "命令输出",
   "command.finished": "命令结束",
+  "http.request.classified": "HTTP 请求结果已分类",
   "approval.requested": "请求审批",
   "approval.resolved": "审批完成",
   "final.output": "最终输出",
@@ -173,6 +179,9 @@ const statusLabels: Record<string, string> = {
   checkpoint: "检查点",
   active: "已开启",
   recorded: "已记录",
+  captured: "已捕获",
+  continued: "继续执行",
+  updated: "已更新",
   changed: "已变更",
   restricted: "已限制",
   enabled: "已开启",
@@ -181,6 +190,7 @@ const statusLabels: Record<string, string> = {
 const typeGroup = (type: string): Filter | "turn" | "final" => {
   if (type.startsWith("tool.sandbox.") || type.startsWith("sandbox.")) return "sandbox"
   if (type.startsWith("engineering.")) return "engineering"
+  if (type.startsWith("http.")) return "network"
   if (type.includes("network")) return "network"
   if (type.startsWith("executor.")) return "executor"
   if (type.startsWith("tool.")) return "tool"
@@ -259,10 +269,18 @@ function localizedSummary(event: PublicEvent) {
   const model = textValue(data.model) ?? textValue(data.modelID)
   const provider = textValue(data.providerID)
   const reason = textValue(data.reason)
+  const sourceLabel = textValue(data.sourceLabel) ?? textValue(data.abortSourceLabel)
+  const result = textValue(data.result)
+  const classification = textValue(data.classification)
+  const stream = textValue(data.stream)
   const reply = localizedStatus(textValue(data.reply))
   const scope = localizedStatus(textValue(data.scope))
   const method = textValue(data.method)
   const outputChars = numberValue(data.outputChars)
+  const chars = numberValue(data.chars)
+  const commandChars = chars ?? outputChars
+  const seq = numberValue(data.seq)
+  const statusCode = numberValue(data.status)
   const durationMs = numberValue(data.durationMs)
   const message = textValue(data.message)
   const from = textValue(data.from)
@@ -282,7 +300,11 @@ function localizedSummary(event: PublicEvent) {
     case "turn.completed":
       return `本轮正常收尾${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
     case "turn.aborted":
-      return `本轮被中断${reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
+      return `本轮被中断${sourceLabel ? `，来源：${sourceLabel}` : reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
+    case "turn.abort.requested":
+      return `收到中断请求${sourceLabel ? `，来源：${sourceLabel}` : ""}${reason ? `，说明：${reason}` : ""}`
+    case "turn.abort.resolved":
+      return `中断请求已处理${sourceLabel ? `，来源：${sourceLabel}` : ""}${result ? `，结果：${result}` : ""}`
     case "turn.terminal.assistant_error":
       return `系统已写入错误消息${reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
     case "turn.terminal.anomaly":
@@ -327,8 +349,12 @@ function localizedSummary(event: PublicEvent) {
       return "模型达到用户设置的循环阻止条件，系统已拦截继续空转"
     case "engineering.reasoning.recorded":
       return `模型推理内容已记录${numberValue(data.chars) !== undefined ? `，${numberValue(data.chars)} 字符` : ""}`
+    case "engineering.deployment_gate.updated":
+      return event.summary || "部署相关的构建、运行或健康检查步骤已被记录"
     case "engineering.run.finished":
       return event.summary || "工程运行已收尾"
+    case "model.raw.chunk":
+      return `已记录模型原始流分片${textValue(data.kind) ? `：${textValue(data.kind)}` : ""}${chars !== undefined ? `，${chars} 字符` : ""}`
     case "model.request.started":
       return `模型请求已发出${provider || model ? `：${[provider, model].filter(Boolean).join("/")}` : ""}`
     case "model.stream.started":
@@ -357,6 +383,8 @@ function localizedSummary(event: PublicEvent) {
       return `沙箱允许本次访问${path ? `：${path}` : ""}`
     case "tool.sandbox.denied":
       return `沙箱拒绝本次访问${reason ? `：${reason}` : path ? `：${path}` : ""}`
+    case "sandbox.effective":
+      return `实际生效沙箱策略已记录${tool ? `：${tool}` : ""}${cwd ? `，目录：${cwd}` : ""}${textValue(data.network_policy) ? `，网络：${textValue(data.network_policy)}` : ""}`
     case "file.read":
       return `读取文件${path ? `：${path}` : ""}${outputChars !== undefined ? `，输出 ${outputChars} 字符` : ""}`
     case "file.write":
@@ -364,9 +392,11 @@ function localizedSummary(event: PublicEvent) {
     case "command.started":
       return `开始执行命令${command ? `：${command}` : ""}`
     case "command.output":
-      return `命令产生输出${outputChars !== undefined ? `，${outputChars} 字符` : ""}`
+      return `命令产生实时输出${stream ? `，流：${stream}` : ""}${seq !== undefined ? `，分片：${seq}` : ""}${commandChars !== undefined ? `，${commandChars} 字符` : ""}`
     case "command.finished":
       return `命令执行结束${command ? `：${command}` : ""}`
+    case "http.request.classified":
+      return `HTTP 请求已分类${classification ? `：${classification}` : ""}${statusCode !== undefined ? `，状态码：${statusCode}` : ""}${textValue(data.url) ? `，地址：${textValue(data.url)}` : ""}`
     case "approval.requested":
       return `等待用户审批${tool ? `：${tool}` : ""}`
     case "approval.resolved":
@@ -436,6 +466,13 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
   const [store, setStore] = createStore({
     events: [] as PublicEvent[],
     raw: {} as Record<string, { loading?: boolean; error?: string; value?: unknown } | undefined>,
+    rawLab: {
+      open: false,
+      loading: false,
+      error: undefined as string | undefined,
+      value: undefined as unknown,
+      search: "",
+    },
     collapsedTurns: {} as Record<string, boolean | undefined>,
     filter: "all" as Filter,
     connected: false,
@@ -631,6 +668,44 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
     setStore("raw", eventID, undefined)
   }
 
+  const loadRawLab = async () => {
+    if (!props.sessionID || store.rawLab.loading) return
+    setStore("rawLab", "open", true)
+    setStore("rawLab", "loading", true)
+    setStore("rawLab", "error", undefined)
+    try {
+      const url = new URL(`/session/${props.sessionID}/raw-lab`, sdk.url)
+      url.searchParams.set("directory", sdk.directory)
+      const response = await (platform.fetch ?? fetch)(url, { headers: authHeaders(server.current) })
+      if (!response.ok) throw new Error(`Raw Lab 加载失败：HTTP ${response.status}`)
+      setStore("rawLab", "value", await response.json())
+    } catch (error) {
+      setStore("rawLab", "error", error instanceof Error ? error.message : String(error))
+    } finally {
+      setStore("rawLab", "loading", false)
+    }
+  }
+
+  const rawLabText = createMemo(() => JSON.stringify(store.rawLab.value ?? {}, null, 2))
+  const filteredRawLabText = createMemo(() => {
+    const query = store.rawLab.search.trim().toLowerCase()
+    if (!query) return rawLabText()
+    return rawLabText()
+      .split("\n")
+      .filter((line) => line.toLowerCase().includes(query))
+      .join("\n")
+  })
+
+  const downloadRawLab = () => {
+    const blob = new Blob([rawLabText()], { type: "application/json;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `raw-lab-${props.sessionID ?? "session"}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div
       id="turn-inspector-panel"
@@ -646,15 +721,27 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
             </Show>
           </div>
         </div>
-        <Tooltip value="关闭回合检查器">
-          <IconButton
-            icon="close-small"
-            variant="ghost"
-            class="h-6 w-6"
-            onClick={() => layout.turnInspector.close()}
-            aria-label="关闭回合检查器"
-          />
-        </Tooltip>
+        <div class="flex items-center gap-1">
+          <Tooltip value="打开 Raw Lab，查看模型请求、流式分片、工具输入输出、trace JSONL、DB 消息和 public event rawRef">
+            <Button
+              variant={store.rawLab.open ? "primary" : "ghost"}
+              size="small"
+              class="h-6 px-2 text-11-regular"
+              onClick={() => (store.rawLab.open ? setStore("rawLab", "open", false) : void loadRawLab())}
+            >
+              Raw Lab
+            </Button>
+          </Tooltip>
+          <Tooltip value="关闭回合检查器">
+            <IconButton
+              icon="close-small"
+              variant="ghost"
+              class="h-6 w-6"
+              onClick={() => layout.turnInspector.close()}
+              aria-label="关闭回合检查器"
+            />
+          </Tooltip>
+        </div>
       </div>
 
       <div class="shrink-0 px-2 py-2 flex flex-wrap gap-1 border-b border-border-weaker-base">
@@ -671,6 +758,46 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
           )}
         </For>
       </div>
+
+      <Show when={store.rawLab.open}>
+        <div class="shrink-0 border-b border-border-weaker-base bg-background-base px-3 py-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="text-12-medium text-text-strong">Raw Lab 原始数据实验室</div>
+              <div class="text-11-regular text-text-weak truncate">
+                统一查看 public event、rawRef、trace JSONL、DB message、DB part 和模型流分片
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1">
+              <Button variant="ghost" size="small" class="h-6 px-2 text-11-regular" onClick={() => void loadRawLab()}>
+                刷新
+              </Button>
+              <Button variant="ghost" size="small" class="h-6 px-2 text-11-regular" onClick={downloadRawLab}>
+                下载
+              </Button>
+            </div>
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              class="h-7 flex-1 rounded border border-border-weaker-base bg-background-strong px-2 text-11-regular text-text-base outline-none"
+              placeholder="搜索原始 JSON 行，比如 abort、model.raw.chunk、command.output、rawRef"
+              value={store.rawLab.search}
+              onInput={(event) => setStore("rawLab", "search", event.currentTarget.value)}
+            />
+            <div class="text-10-regular text-text-muted shrink-0">
+              <Show when={!store.rawLab.loading} fallback="加载中">
+                {filteredRawLabText().split("\n").filter(Boolean).length} 行
+              </Show>
+            </div>
+          </div>
+          <Show when={store.rawLab.error}>
+            {(error) => <div class="mt-2 text-11-regular text-text-on-critical-weak">{error()}</div>}
+          </Show>
+          <pre class="mt-2 max-h-80 overflow-auto rounded bg-background-strong border border-border-weaker-base p-2 text-10-regular text-text-base whitespace-pre-wrap break-words">
+            {store.rawLab.loading ? "正在加载 Raw Lab..." : filteredRawLabText()}
+          </pre>
+        </div>
+      </Show>
 
       <div class="relative flex-1 min-h-0">
         <ScrollView

@@ -1689,7 +1689,7 @@ unix(
           expect(exit.value.info.role).toBe("assistant")
           const tool = completedTool(exit.value.parts)
           if (tool) {
-            expect(tool.state.output).toContain("User aborted the command")
+            expect(tool.state.output).toContain("Command aborted by OpenCode abort signal")
           }
         }
       }),
@@ -1733,7 +1733,7 @@ unix(
           expect(exit.value.info.role).toBe("assistant")
           const tool = completedTool(exit.value.parts)
           if (tool) {
-            expect(tool.state.output).toContain("User aborted the command")
+            expect(tool.state.output).toContain("Command aborted by OpenCode abort signal")
           }
         }
       }),
@@ -1809,7 +1809,7 @@ unix(
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isSuccess(exit)) {
         const tool = completedTool(exit.value.parts)
-        expect(tool?.state.output).toContain("User aborted the command")
+        expect(tool?.state.output).toContain("Command aborted by OpenCode abort signal")
       }
 
       yield* Fiber.await(sh)

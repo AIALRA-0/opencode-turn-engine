@@ -54,7 +54,7 @@ export type EngineeringPhase =
   | "finalize"
   | "blocked"
 
-export type EngineeringTaskClass = "bug_fix" | "feature" | "refactor" | "test" | "security" | "unknown"
+export type EngineeringTaskClass = "bug_fix" | "feature" | "refactor" | "test" | "security" | "deployment" | "unknown"
 export type EngineeringRiskLevel = "low" | "medium" | "high"
 
 export type EngineeringRunSnapshot = {
@@ -277,7 +277,9 @@ export namespace EngineeringHarness {
 
   export function classify(text: string) {
     const lower = text.toLowerCase()
-    const taskClass: EngineeringTaskClass = /漏洞|安全|security|xss|csrf|auth/.test(lower)
+    const taskClass: EngineeringTaskClass = /部署|上线|发布|容器|docker|compose|nginx|域名|systemd|healthcheck|deploy|deployment|container|kubernetes|helm/.test(lower)
+      ? "deployment"
+      : /漏洞|安全|security|xss|csrf|auth/.test(lower)
       ? "security"
       : /bug|修|错误|失败|报错|regression|fails?|broken/.test(lower)
         ? "bug_fix"
@@ -299,7 +301,7 @@ export namespace EngineeringHarness {
       taskClass,
       riskLevel,
       needsClarification: riskLevel === "high" && /随便|大量|全量删除|生产|数据库/.test(lower),
-      expectedEvidence: taskClass === "test" ? ["test"] : taskClass === "unknown" ? ["summary"] : ["diff", "test"],
+      expectedEvidence: expectedEvidence(taskClass),
     } satisfies EngineeringRunSnapshot["intake"]
   }
 
@@ -606,6 +608,20 @@ export namespace EngineeringHarness {
     }
     if (tool === "bash" || tool === "shell") {
       const command = commandFromToolInput(input)
+      if (command && looksLikeDeploymentCommand(command)) {
+        record(turn, {
+          type: "engineering.deployment_gate.updated",
+          severity: "info",
+          title: "部署门禁更新",
+          summary: deploymentGateSummary(command),
+          status: "started",
+          data: {
+            gate: deploymentGate(command),
+            command,
+            state: publicState(runtime),
+          },
+        })
+      }
       if (command && looksLikeVerification(command)) {
         runtime.artifacts.verificationPlan = {
           summary: "运行项目验证命令",
@@ -1058,7 +1074,7 @@ function terminalAnomalyLabel(reason: string) {
 }
 
 function requiresLocalization(taskClass: EngineeringTaskClass) {
-  return taskClass === "bug_fix" || taskClass === "refactor" || taskClass === "security"
+  return taskClass === "bug_fix" || taskClass === "refactor" || taskClass === "security" || taskClass === "deployment"
 }
 
 function looksPrematureFinal(text: string) {
@@ -1144,7 +1160,33 @@ function stablePreview(value: unknown) {
 }
 
 function looksLikeVerification(command: string) {
-  return /\b(test|check|verify|pytest|vitest|jest|mocha|ava|npm\s+(test|run\s+[^;&|]*test)|pnpm\s+(test|run\s+[^;&|]*test)|yarn\s+(test|run\s+[^;&|]*test)|bun\s+test|node\s+--test|cargo\s+test|go\s+test|mvn\s+test|gradle\s+test|make\s+(test|check)|just\s+(test|check)|tox|nox|hatch\s+test|ruff|eslint|tsc|typecheck)\b/i.test(
+  return /\b(test|check|verify|pytest|vitest|jest|mocha|ava|npm\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|pnpm\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|yarn\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|bun\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|node\s+--test|cargo\s+test|go\s+test|mvn\s+test|gradle\s+test|make\s+(test|check|lint|build)|just\s+(test|check|lint|build)|tox|nox|hatch\s+test|ruff|eslint|tsc|typecheck|playwright\s+test|cypress\s+run|storybook|next\s+build|vite\s+build|astro\s+check|svelte-check|lighthouse|pa11y|axe|curl\s+(-f|--fail)|wget\s+--spider|docker\s+compose\s+(config|ps)|systemctl\s+is-active)\b/i.test(
     command,
   )
+}
+
+function expectedEvidence(taskClass: EngineeringTaskClass) {
+  if (taskClass === "deployment") return ["deployment_gate", "health", "summary"]
+  if (taskClass === "unknown") return ["summary"]
+  if (taskClass === "test") return ["diff", "test"]
+  return ["diff", "test"]
+}
+
+function looksLikeDeploymentCommand(command: string) {
+  return /\b(docker\s+(compose\s+)?(up|build|run|ps|logs|inspect)|systemctl\s+(restart|start|status|is-active)|nginx\s+-t|curl\s+(-f|--fail|-I)|wget\s+--spider|npm\s+run\s+build|pnpm\s+run\s+build|yarn\s+build|bun\s+run\s+build|pm2\s+(restart|start|status)|kubectl\s+(apply|rollout|logs|get)|helm\s+(install|upgrade|status))\b/i.test(command)
+}
+
+function deploymentGate(command: string) {
+  if (/\b(build|nginx\s+-t|docker\s+(compose\s+)?build)\b/i.test(command)) return "build"
+  if (/\b(systemctl|pm2|docker\s+(compose\s+)?up|kubectl|helm)\b/i.test(command)) return "runtime"
+  if (/\b(curl\s+(-f|--fail|-I)|wget\s+--spider|is-active|docker\s+(compose\s+)?ps)\b/i.test(command)) return "health"
+  return "deployment"
+}
+
+function deploymentGateSummary(command: string) {
+  const gate = deploymentGate(command)
+  if (gate === "build") return "正在验证构建或配置是否能通过"
+  if (gate === "runtime") return "正在检查服务启动或运行状态"
+  if (gate === "health") return "正在检查服务健康状态或可访问性"
+  return `记录部署相关命令：${command.slice(0, 120)}`
 }

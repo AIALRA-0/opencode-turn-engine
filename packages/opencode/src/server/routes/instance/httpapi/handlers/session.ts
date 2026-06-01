@@ -14,6 +14,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionSecurity, SecurityUpdatePayload } from "@/session/security"
 import { AialraTurnTrace } from "@/session/turn-trace"
+import { AbortAudit } from "@/session/abort-audit"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -24,6 +25,7 @@ import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/htt
 import { InstanceHttpApi } from "../api"
 import {
   CommandPayload,
+  AbortQuery,
   DiffQuery,
   ForkPayload,
   InitPayload,
@@ -281,8 +283,21 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* fork({ params: ctx.params, payload })
     })
 
-    const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
+    const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof AbortQuery.Type
+      request: HttpServerRequest.HttpServerRequest
+    }) {
+      const requested = AbortAudit.recordRequested({
+        sessionID: ctx.params.sessionID,
+        source: ctx.query.source ?? "api",
+        reason: ctx.query.reason,
+        route: ctx.query.route,
+        actor: ctx.query.source === "benchmark_runner" ? "benchmark" : "api-client",
+        userAgent: typeof ctx.request.headers["user-agent"] === "string" ? ctx.request.headers["user-agent"] : undefined,
+      })
       yield* promptSvc.cancel(ctx.params.sessionID)
+      AbortAudit.recordResolved({ sessionID: ctx.params.sessionID, request: requested, result: "cancel_sent" })
       return true
     })
 

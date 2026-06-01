@@ -587,3 +587,13 @@
 - Deployed the fork binary to the server, enabled structural turn traces in the
   web service, and recorded verification in
   `aialra/turn-observability/verification-2026-05-15.md`.
+
+## 2026-06-01
+
+- Added turn abort source auditing with `turn.abort.requested` and `turn.abort.resolved` public events. Stop button, prompt Escape, prompt Ctrl+G, empty-submit stop, route halt, API, benchmark runner, system reconciler, and unknown sources are now represented explicitly.
+- Replaced hard-coded shell abort metadata with structured abort metadata that records source, source label, actor, request id, and reason.
+- Added real-time `command.output` public events for bash output chunks and added `sandbox.effective` events so users can see the actual cwd, policy, approval, command, and network settings that reached backend execution.
+- Added `http.request.classified` events for webfetch/http so non-2xx target responses, timeouts, and network-policy denial are distinguishable in Turn Inspector.
+- Added Raw Lab to Turn Inspector and `GET /session/:sessionID/raw-lab` for unified public event, rawRef, trace JSONL, DB message, and DB part inspection with search and JSON download.
+- Expanded EngineeringRun deployment classification and stop-gate verification command recognition to include deployment, UI/e2e, build, lint, health-check, Docker, and systemd commands.
+- Limited Codex exec-server default execution to real TurnContext-backed tool calls so legacy/internal calls without a turn do not accidentally use the sidecar.

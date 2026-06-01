@@ -705,7 +705,7 @@ async function httpRequest(input: {
 export const CodexExecServer = {
   enabled: CodexExecServerClient.enabled,
   enabledForContext(ctx?: Tool.Context) {
-    return CodexExecServerClient.enabled() && SessionSecurity.executorBackend(ctx?.sessionID) === "codex"
+    return !!ctx?.turn && CodexExecServerClient.enabled() && SessionSecurity.executorBackend(ctx.sessionID) === "codex"
   },
   connect: CodexExecServerClient.connect,
   runProcess,

@@ -27,6 +27,7 @@ import { TurnSandbox, type ShellSandboxCommand } from "./turn-sandbox"
 import { CodexExecServer } from "./codex-exec-server"
 import { AialraTurnTrace } from "@/session/turn-trace"
 import { EngineeringHarness } from "@/session/engineering"
+import { AbortAudit } from "@/session/abort-audit"
 
 export { Parameters } from "./shell/prompt"
 
@@ -511,7 +512,20 @@ export const ShellTool = Tool.define(
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env, input.sandbox))
 
           yield* Effect.forkScoped(
-            Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
+            Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+              Effect.gen(function* () {
+              yield* AialraTurnTrace.emit({
+                phase: "command.output",
+                turnID: ctx.turn?.turnID,
+                sessionID: ctx.sessionID,
+                messageID: ctx.messageID,
+                data: {
+                  stream: "combined",
+                  seq: list.length,
+                  chars: chunk.length,
+                  preview: preview(chunk),
+                },
+              })
               const size = Buffer.byteLength(chunk, "utf-8")
               list.push({ text: chunk, size })
               used += size
@@ -529,7 +543,7 @@ export const ShellTool = Tool.define(
               } else {
                 full += chunk
                 if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return trunc.write(full).pipe(
+                  return yield* trunc.write(full).pipe(
                     Effect.andThen((next) =>
                       Effect.sync(() => {
                         file = next
@@ -550,13 +564,14 @@ export const ShellTool = Tool.define(
                 }
               }
 
-              return ctx.metadata({
+              return yield* ctx.metadata({
                 metadata: {
                   output: last,
                   description: input.description,
                 },
               })
-            }),
+              }),
+            ),
           )
 
           const abort = Effect.callback<void>((resume) => {
@@ -597,6 +612,20 @@ export const ShellTool = Tool.define(
             timeoutMs: input.timeout,
             ctx,
             onOutput(chunk) {
+              void Effect.runPromise(
+                AialraTurnTrace.emit({
+                  phase: "command.output",
+                  turnID: ctx.turn?.turnID,
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.messageID,
+                  data: {
+                    stream: chunk.stream,
+                    seq: chunk.seq,
+                    chars: chunk.text.length,
+                    preview: preview(chunk.text),
+                  },
+                }),
+              )
               const size = Buffer.byteLength(chunk.text, "utf-8")
               list.push({ text: chunk.text, size })
               used += size
@@ -646,7 +675,17 @@ export const ShellTool = Tool.define(
           `shell tool terminated command after exceeding timeout ${input.timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
         )
       }
-      if (aborted) meta.push("User aborted the command")
+      const abortMetadata = aborted ? AbortAudit.shellMetadata(ctx.turn) : undefined
+      if (abortMetadata) {
+        meta.push([
+          "Command aborted by OpenCode abort signal",
+          `source=${abortMetadata.source}`,
+          `sourceLabel=${abortMetadata.sourceLabel}`,
+          `actor=${abortMetadata.actor}`,
+          abortMetadata.requestID ? `requestID=${abortMetadata.requestID}` : "requestID=missing",
+          abortMetadata.reason ? `reason=${abortMetadata.reason}` : "reason=not_provided",
+        ].join("; "))
+      }
       const raw = list.map((item) => item.text).join("")
       const end = tail(raw, limits.maxLines, limits.maxBytes)
       if (end.cut) cut = true
@@ -671,6 +710,7 @@ export const ShellTool = Tool.define(
           exit: code,
           description: input.description,
           truncated: cut,
+          abort: abortMetadata,
           ...(cut && file ? { outputPath: file } : {}),
         },
         output,
@@ -696,6 +736,24 @@ export const ShellTool = Tool.define(
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, turn?.cwd ?? ctx.turn?.cwd ?? instanceCtx.directory, shell)
                 : (turn?.cwd ?? ctx.turn?.cwd ?? instanceCtx.directory)
+              if (turn) {
+                yield* AialraTurnTrace.emit({
+                  phase: "sandbox.effective",
+                  turnID: turn.turnID,
+                  sessionID: turn.sessionID,
+                  messageID: ctx.messageID,
+                  data: {
+                    tool: "bash",
+                    cwd,
+                    commandPreview: params.command.slice(0, 240),
+                    network_policy: turn.network_policy,
+                    command_policy: turn.command_policy,
+                    approval_policy: turn.approval_policy,
+                    sandbox_policy: turn.sandbox_policy,
+                    active_permission_profile: turn.active_permission_profile,
+                  },
+                })
+              }
               yield* TurnSandbox.assertShellAccess(ctx, { cwd, command: params.command })
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)

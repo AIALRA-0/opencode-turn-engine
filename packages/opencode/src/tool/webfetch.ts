@@ -19,7 +19,10 @@ type FetchResponse = {
 }
 
 class WebFetchHttpStatusError extends Error {
-  constructor(status: number, url: string) {
+  constructor(
+    readonly status: number,
+    readonly url: string,
+  ) {
     super(`网络已连通，但目标返回 HTTP ${status}：${url}。这不是沙盒拦截，也不是审批未弹出，而是目标地址本身没有返回成功页面。`)
     this.name = "WebFetchHttpStatusError"
   }
@@ -58,7 +61,7 @@ export const WebFetchTool = Tool.define(
         return yield* response.arrayBuffer.pipe(
           Effect.map((arrayBuffer) => ({ headers: response.headers, arrayBuffer }) satisfies FetchResponse),
         )
-      }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }))
+      }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(new Error("Request timed out")) }))
     }
     const fetchResponse = (
       ctx: Tool.Context,
@@ -145,7 +148,10 @@ export const WebFetchTool = Tool.define(
             "Accept-Language": "en-US,en;q=0.9",
           }
 
-          const response = yield* fetchResponse(ctx, params.url, headers, networkAccess, timeout)
+          const response = yield* fetchResponse(ctx, params.url, headers, networkAccess, timeout).pipe(
+            Effect.tapError((error) => classifyHttpResult(ctx, params.url, networkAccess, error)),
+          )
+          yield* classifyHttpResult(ctx, params.url, networkAccess, undefined)
 
           // Check content length
           const contentLength = response.headers["content-length"]
@@ -238,6 +244,20 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
   const turn = ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
   if (!turn) return false
   const policy = turn.network_policy ?? turn.http_context?.network_policy ?? "ask"
+  yield* AialraTurnTrace.emit({
+    phase: "sandbox.effective",
+    turnID: turn.turnID,
+    sessionID: turn.sessionID,
+    messageID: ctx.messageID,
+    data: {
+      tool: "webfetch",
+      operation: "network",
+      target: url,
+      network_policy: policy,
+      active_permission_profile: turn.active_permission_profile,
+      approval_policy: turn.approval_policy,
+    },
+  })
   if (policy === "on") return true
   if (policy === "ask") {
     yield* ctx.ask({
@@ -251,6 +271,19 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
     })
     return true
   }
+  yield* AialraTurnTrace.emit({
+    phase: "http.request.classified",
+    turnID: turn.turnID,
+    sessionID: turn.sessionID,
+    messageID: ctx.messageID,
+    data: {
+      tool: "webfetch",
+      url,
+      classification: "network_denied_by_policy",
+      network_policy: policy,
+      sandboxDenied: true,
+    },
+  })
   yield* AialraTurnTrace.emit({
     phase: "tool.sandbox.denied",
     turnID: turn.turnID,
@@ -266,6 +299,42 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
   })
   return yield* Effect.die(new Error(`Network access is disabled for this turn: ${url}`))
 })
+
+function classifyHttpResult(ctx: Tool.Context, url: string, networkAccess: boolean, error: Error | undefined) {
+  const turn = ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
+  if (!turn) return Effect.void
+  const status = error instanceof WebFetchHttpStatusError ? error.status : undefined
+  return AialraTurnTrace.emit({
+    phase: "http.request.classified",
+    turnID: turn.turnID,
+    sessionID: turn.sessionID,
+    messageID: ctx.messageID,
+    data: {
+      tool: "webfetch",
+      url,
+      status,
+      classification: error ? httpFailureClass(error) : "http_2xx_success",
+      networkAccess,
+      network_policy: turn.network_policy ?? turn.http_context?.network_policy ?? "ask",
+      sandboxDenied: false,
+      message: error?.message,
+    },
+  })
+}
+
+function httpFailureClass(error: Error) {
+  if (error instanceof WebFetchHttpStatusError) return httpStatusClass(error.status)
+  if (/timed out|timeout/i.test(error.message)) return "connect_timeout"
+  if (/network access is disabled/i.test(error.message)) return "network_denied_by_policy"
+  return "request_failed"
+}
+
+function httpStatusClass(status: number) {
+  if (status === 404) return "http_404_target_missing"
+  if (status === 403) return "http_403_target_forbidden"
+  if (status >= 500) return "http_5xx_target_error"
+  return "non_2xx_but_network_ok"
+}
 
 function convertHTMLToMarkdown(html: string): string {
   const turndownService = new TurndownService({

@@ -1183,7 +1183,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       }
 
       if (working()) {
-        void abort()
+        void abort("prompt_escape")
         event.preventDefault()
         event.stopPropagation()
         return
@@ -1249,7 +1249,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         return
       }
       if (working()) {
-        void abort()
+        void abort("prompt_ctrl_g")
         event.preventDefault()
       }
       return

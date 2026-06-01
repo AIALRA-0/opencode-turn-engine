@@ -1485,7 +1485,7 @@ export default function Page() {
   }
 
   const halt = (sessionID: string) =>
-    busy(sessionID) ? sdk.client.session.abort({ sessionID }).catch(() => {}) : Promise.resolve()
+    busy(sessionID) ? sdk.client.session.abort({ sessionID, source: "route_halt", route: "session-page" }).catch(() => {}) : Promise.resolve()
 
   const revertMutation = useMutation(() => ({
     mutationFn: async (input: { sessionID: string; messageID: string }) => {

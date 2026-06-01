@@ -4220,6 +4220,25 @@ export type EventSessionPublicRawResponses = {
   200: unknown
 }
 
+export type EventSessionRawLabData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/raw-lab"
+}
+
+export type EventSessionRawLabResponses = {
+  /**
+   * Success
+   */
+  200: unknown
+}
+
 export type ConfigGetData = {
   body?: never
   path?: never
@@ -6657,6 +6676,22 @@ export type SessionAbortData = {
   query?: {
     directory?: string
     workspace?: string
+    source?:
+      | "stop_button"
+      | "prompt_escape"
+      | "prompt_ctrl_g"
+      | "empty_submit"
+      | "route_halt"
+      | "session_switch"
+      | "client_disconnect"
+      | "server_restart"
+      | "tool_timeout"
+      | "system_reconciler"
+      | "api"
+      | "benchmark_runner"
+      | "unknown"
+    reason?: string
+    route?: string
   }
   url: "/session/{sessionID}/abort"
 }
@@ -7254,6 +7289,52 @@ export type SessionSecurityUpdateResponses = {
 }
 
 export type SessionSecurityUpdateResponse = SessionSecurityUpdateResponses[keyof SessionSecurityUpdateResponses]
+
+export type SessionEnvironmentData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/environment"
+}
+
+export type SessionEnvironmentErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionEnvironmentError = SessionEnvironmentErrors[keyof SessionEnvironmentErrors]
+
+export type SessionEnvironmentResponses = {
+  /**
+   * Current turn execution environments
+   */
+  200: {
+    sessionID: string
+    selectedEnvironmentID: string
+    selectedEnvironmentCwd: string
+    environments: Array<{
+      environmentID: string
+      cwd: string
+      kind?: "local" | "remote" | "disabled"
+      status?: string
+    }>
+    remoteEnvironmentSupported: boolean
+    remoteEnvironmentStatus: string
+  }
+}
+
+export type SessionEnvironmentResponse = SessionEnvironmentResponses[keyof SessionEnvironmentResponses]
 
 export type PartDeleteData = {
   body?: never

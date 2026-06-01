@@ -43,6 +43,28 @@ export const MessagesQuery = Schema.Struct({
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
   before: Schema.optional(Schema.String),
 })
+export const AbortQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  source: Schema.optional(
+    Schema.Literals([
+      "stop_button",
+      "prompt_escape",
+      "prompt_ctrl_g",
+      "empty_submit",
+      "route_halt",
+      "session_switch",
+      "client_disconnect",
+      "server_restart",
+      "tool_timeout",
+      "system_reconciler",
+      "api",
+      "benchmark_runner",
+      "unknown",
+    ]),
+  ),
+  reason: Schema.optional(Schema.String),
+  route: Schema.optional(Schema.String),
+})
 export const StatusMap = Schema.Record(Schema.String, SessionStatus.Info)
 export const UpdatePayload = Schema.Struct({
   title: Schema.optional(Schema.String),
@@ -252,7 +274,7 @@ export const SessionApi = HttpApi.make("session")
         ),
         HttpApiEndpoint.post("abort", SessionPaths.abort, {
           params: { sessionID: SessionID },
-          query: WorkspaceRoutingQuery,
+          query: AbortQuery,
           success: described(Schema.Boolean, "Aborted session"),
           error: HttpApiError.BadRequest,
         }).annotateMerge(

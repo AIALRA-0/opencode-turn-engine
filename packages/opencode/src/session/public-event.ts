@@ -13,6 +13,8 @@ export const PUBLIC_EVENT_TYPES = [
   "turn.step_budget.changed",
   "turn.completed",
   "turn.aborted",
+  "turn.abort.requested",
+  "turn.abort.resolved",
   "turn.terminal.assistant_error",
   "engineering.controls.changed",
   "engineering.mode.changed",
@@ -33,7 +35,9 @@ export const PUBLIC_EVENT_TYPES = [
   "engineering.loop.checkpoint",
   "engineering.loop.blocked",
   "engineering.reasoning.recorded",
+  "engineering.deployment_gate.updated",
   "engineering.run.finished",
+  "model.raw.chunk",
   "model.request.started",
   "model.stream.started",
   "model.retrying",
@@ -46,11 +50,13 @@ export const PUBLIC_EVENT_TYPES = [
   "tool.sandbox.capability",
   "tool.sandbox.checked",
   "tool.sandbox.denied",
+  "sandbox.effective",
   "file.read",
   "file.write",
   "command.started",
   "command.output",
   "command.finished",
+  "http.request.classified",
   "approval.requested",
   "approval.resolved",
   "final.output",
@@ -485,8 +491,28 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         type: "turn.aborted",
         severity: "warning",
         title: "Turn aborted",
-        summary: short(String(data.reason ?? "aborted")),
+        summary: short(String(data.abortSourceLabel ?? data.reason ?? "aborted")),
         status: "aborted",
+        data,
+      }
+    case "turn.abort.requested":
+      return {
+        ...base,
+        type: "turn.abort.requested",
+        severity: data.source === "unknown" ? "warning" : "info",
+        title: "Turn abort requested",
+        summary: short(String(data.sourceLabel ?? data.source ?? "unknown")),
+        status: "requested",
+        data,
+      }
+    case "turn.abort.resolved":
+      return {
+        ...base,
+        type: "turn.abort.resolved",
+        severity: data.source === "unknown" ? "warning" : "info",
+        title: "Turn abort resolved",
+        summary: short(`${data.sourceLabel ?? data.source ?? "unknown"} -> ${data.result ?? "unknown"}`),
+        status: String(data.result ?? "resolved"),
         data,
       }
     case "turn.terminal.anomaly":
@@ -529,6 +555,16 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         status: "recorded",
         data,
       }
+    case "engineering.deployment_gate.updated":
+      return {
+        ...base,
+        type: "engineering.deployment_gate.updated",
+        severity: data.status === "failed" ? "warning" : "info",
+        title: "Deployment gate updated",
+        summary: short(`${data.gate ?? "deployment"} ${data.status ?? "updated"}`),
+        status: String(data.status ?? "updated"),
+        data,
+      }
     case "engineering.verification.repair_requested":
       return {
         ...base,
@@ -556,6 +592,16 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         severity: "info",
         title: "Model stream started",
         status: "started",
+        data,
+      }
+    case "model.raw.chunk":
+      return {
+        ...base,
+        type: "model.raw.chunk",
+        severity: "info",
+        title: "Model raw stream chunk captured",
+        summary: short(`${data.kind ?? "chunk"} ${data.chars ?? 0} chars`),
+        status: "captured",
         data,
       }
     case "model.request.retrying":
@@ -597,6 +643,26 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         title: "Codex exec-server process finished",
         summary: short(`${data.durationMs ?? ""} ms`),
         status: "finished",
+        data,
+      }
+    case "command.output":
+      return {
+        ...base,
+        type: "command.output",
+        severity: "info",
+        title: "Command output chunk",
+        summary: short(`${data.stream ?? "stdout"} #${data.seq ?? ""} ${data.chars ?? 0} chars`),
+        status: "output",
+        data,
+      }
+    case "http.request.classified":
+      return {
+        ...base,
+        type: "http.request.classified",
+        severity: String(data.classification ?? "").includes("denied") || String(data.classification ?? "").includes("failed") ? "warning" : "info",
+        title: "HTTP request classified",
+        summary: short(`${data.classification ?? "unknown"} ${data.status ?? ""} ${data.url ?? ""}`),
+        status: String(data.classification ?? "classified"),
         data,
       }
     case "exec_server.fs.started":
@@ -690,6 +756,16 @@ function makeTraceEvent(input: TraceRecordInput): PublicEventDraft | undefined {
         severity: data?.bwrap && typeof data.bwrap === "object" && (data.bwrap as JsonRecord).available === false ? "warning" : "info",
         title: "Sandbox capability checked",
         summary: short(String(data.backend ?? data.tool ?? "")),
+        status: "checked",
+        data,
+      }
+    case "sandbox.effective":
+      return {
+        ...base,
+        type: "sandbox.effective",
+        severity: "info",
+        title: "Sandbox effective policy",
+        summary: short(`${data.tool ?? "tool"} cwd=${data.cwd ?? "unknown"} network=${data.network_policy ?? "unknown"}`),
         status: "checked",
         data,
       }
@@ -996,6 +1072,8 @@ function rawEligible(type: PublicEventType) {
     type.startsWith("engineering.") ||
     type.startsWith("executor.") ||
     type.startsWith("approval.") ||
+    type.startsWith("sandbox.") ||
+    type.startsWith("http.") ||
     type === "final.output"
   )
 }
@@ -1011,6 +1089,8 @@ function publicEventTitle(type: PublicEventType) {
       "turn.step_budget.changed": "步骤上限已切换",
       "turn.completed": "回合完成",
       "turn.aborted": "回合中断",
+      "turn.abort.requested": "请求中断回合",
+      "turn.abort.resolved": "中断请求已处理",
       "turn.terminal.assistant_error": "终态错误消息",
       "engineering.controls.changed": "工程控制已变更",
       "engineering.mode.changed": "工程模式已切换",
@@ -1031,7 +1111,9 @@ function publicEventTitle(type: PublicEventType) {
       "engineering.loop.checkpoint": "循环检查点",
       "engineering.loop.blocked": "循环已阻止",
       "engineering.reasoning.recorded": "推理内容已记录",
+      "engineering.deployment_gate.updated": "部署门禁已更新",
       "engineering.run.finished": "工程运行结束",
+      "model.raw.chunk": "模型原始分片已记录",
       "model.request.started": "开始请求模型",
       "model.stream.started": "模型流开始",
       "model.retrying": "模型重试",
@@ -1044,11 +1126,13 @@ function publicEventTitle(type: PublicEventType) {
       "tool.sandbox.capability": "沙箱能力检查",
       "tool.sandbox.checked": "沙箱检查通过",
       "tool.sandbox.denied": "沙箱拒绝访问",
+      "sandbox.effective": "沙箱实际策略已记录",
       "file.read": "读取文件",
       "file.write": "写入文件",
       "command.started": "命令开始",
       "command.output": "命令输出",
       "command.finished": "命令结束",
+      "http.request.classified": "HTTP 请求结果已分类",
       "approval.requested": "请求审批",
       "approval.resolved": "审批完成",
       "final.output": "最终输出",
@@ -1077,6 +1161,7 @@ function publicEventDescription(type: PublicEventType) {
   if (type.startsWith("command.")) return "描述命令启动、输出和结束"
   if (type.startsWith("approval.")) return "描述审批请求和审批结果"
   if (type.startsWith("sandbox.")) return "描述沙盒控制中心的策略变化"
+  if (type.startsWith("http.")) return "描述 webfetch 或 HTTP 请求的网络、状态码和失败分类"
   if (type.startsWith("executor.")) return "描述执行后端、Codex exec-server 或回退"
   if (type.startsWith("security.")) return "描述安全能力临时变更请求和结果"
   if (type.startsWith("environment.")) return "描述当前执行环境选择"
@@ -1118,6 +1203,7 @@ function publicEventDataDescription(type: PublicEventType) {
   if (type.startsWith("command.")) return "命令摘要、cwd、输出片段、退出码和沙箱能力"
   if (type.startsWith("approval.")) return "审批策略、权限档位、工具调用、用户选择和作用域"
   if (type.startsWith("sandbox.")) return "沙盒控制中心变更前后值、作用范围和操作者"
+  if (type.startsWith("http.")) return "HTTP URL、状态码、网络策略、是否为沙箱拒绝、是否为目标站点非 2xx"
   if (type.startsWith("security.")) return "临时安全能力变更请求、审批结果和联动范围"
   if (type.startsWith("environment.")) return "当前 environment，环境，cwd 和 remote 支持状态"
   return "事件自描述数据"

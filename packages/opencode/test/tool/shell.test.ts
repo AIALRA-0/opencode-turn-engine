@@ -1155,7 +1155,7 @@ describe("tool.shell abort", () => {
             },
           )
           expect(res.output).toContain("before")
-          expect(res.output).toContain("User aborted the command")
+          expect(res.output).toContain("Command aborted by OpenCode abort signal")
           expect(collected.length).toBeGreaterThan(0)
         }),
       ),

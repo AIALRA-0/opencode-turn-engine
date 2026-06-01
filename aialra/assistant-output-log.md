@@ -1225,3 +1225,44 @@ Turn Inspector 增加了这些事件的中文标题和摘要：终态异常、�
 benchmark 报告新增 patch quality，补丁质量分。现在每题不只显示完成和 patch 字节，还会解释验证是否通过、是否零补丁、是否改了源码、是否包含测试、补丁大小是否合理、是否有生成物噪声、终态是否干净、repair 是否成功
 
 已验证：`bun --cwd packages/opencode test test/session/engineering.test.ts --timeout 30000` 10 pass；`bun --cwd packages/opencode test test/session/prompt.test.ts test/session/schema-decoding.test.ts --timeout 30000` 90 pass；`node --test aialra/turn-observability/tests/*.test.js` 1 pass；`bun --cwd packages/opencode typecheck` 通过；`bun --cwd packages/app typecheck` 通过；`node --check aialra/turn-observability/scripts/run-real-benchmark.mjs` 通过
+
+## 2026-06-01 追加记录：中断审计、Raw Lab 和真实流式可见性
+
+本轮针对真实 Chesskit 会话里“用户没有手动中断但系统只显示 User aborted”的问题做了第一批端到端修复
+
+已实现内容
+
+1. 新增 `AbortAudit` 中断来源审计模块，统一记录停止按钮、输入框 Escape、Ctrl+G、运行中空提交、路由 halt、API、benchmark runner、系统校准器和 unknown 未知来源
+2. `/session/:id/abort` 后端现在会记录 `turn.abort.requested` 和 `turn.abort.resolved` public event，事件里包含 source、sourceLabel、actor、requestID、reason、route 和 userAgent 摘要
+3. 前端停止入口不再都混成同一种 abort。停止按钮、Escape、Ctrl+G、空提交和 session route halt 会分别把 source 传到后端
+4. shell metadata 不再写死 `User aborted the command`，现在写成结构化 metadata：`Command aborted by OpenCode abort signal; source=...; sourceLabel=...; actor=...; requestID=...; reason=...`
+5. prompt 内部 shell 取消路径也同步改为结构化 abort metadata，避免旧路径继续输出 User aborted
+6. bash 长命令输出开始进入 `command.output` public event，包含 stream、seq、chars、preview，Turn Inspector 能实时看到分片摘要
+7. 新增 `sandbox.effective` 事件。bash 和 webfetch 执行前会记录实际生效的 cwd、network_policy、command_policy、approval_policy、sandbox_policy 和 active_permission_profile，方便验证沙盒控制中心不是假 UI
+8. webfetch/http 结果新增 `http.request.classified`。404 会被标为 `http_404_target_missing`，403 标为 `http_403_target_forbidden`，5xx 标为 `http_5xx_target_error`，网络策略拒绝标为 `network_denied_by_policy`。这能区分“GitHub URL 本身 404”和“沙盒没放网络”
+9. Turn Inspector 增加 Raw Lab 原始数据实验室。它能统一加载 public events、rawRef、trace JSONL、DB message、DB part，并支持搜索、刷新和下载 JSON
+10. Raw Lab 后端新增 `GET /session/:sessionID/raw-lab`，返回 `aialra.raw_lab.v1`，包含 replay 提示和 Last-Event-ID 信息
+11. EngineeringRun 增加 deployment task class，部署类任务不再被零补丁逻辑错误要求一定有 diff，而是要求 deployment gate、health、summary 这类证据
+12. stop gate 验证命令识别范围扩展到 Playwright、Cypress、build、lint、typecheck、curl --fail、wget --spider、docker compose config/ps、systemctl is-active 等，覆盖面比 V3 初版更宽
+13. exec-server 默认只在存在 TurnContext 的真实 turn 中启用。没有 TurnContext 的内部单测和 legacy 调用继续走 Node/Bun executor，避免无上下文路径误走 sidecar
+14. 过程中发现并清理了意外落到 `packages/opencode` 下的 `xfsd` 可执行文件和挖矿配置 `config.json`，并杀掉了对应进程。该文件没有进入 git，已删除
+
+安全追加记录：继续排查后确认还有第二层持久化入口：`/srv/aialra/state/root-home/.bashrc` 第 3 行会后台启动 `/srv/aialra/state/root-home/.sysvsd`，并且存在 `/srv/aialra/state/root-home/c3pool/config.json`。处理动作：记录 `xfsd` 与 `.sysvsd` 的 sha256，杀掉 `xfsd` 和伪装成 `[nfsd]` 的 `.sysvsd` 进程，把 `.sysvsd`、`c3pool` 和可疑 `/etc/cron.hourly/free` 移入 `/srv/aialra/security-quarantine/20260601/`，从 `.bashrc` 删除启动行。当前进程扫描没有再发现 `xfsd`、`.sysvsd`、`xmrig`、`hashvault`、`supportxmr`、`c3pool`、`monero` 相关进程。这个安全事件和本次 OpenCode 代码改动无直接证据关联，但必须继续追查初始入侵来源。
+
+CodexApp 现场热修记录：`aialra-codexapp-login.service` 曾处于 inactive/dead，重启后日志显示 `ECONNRESET` 未捕获会打死 login proxy。已在 `/srv/aialra/apps/codexapp/login-proxy.js` 补上 HTTP/WebSocket 底层 socket error 和 `clientError` 兜底，`node --check` 通过，重启后 `/health` 返回 `{"ok":true}`。该热修不属于本仓库提交内容，需要后续在 CodexApp 仓库单独留痕。
+
+验证结果
+
+- `bun --cwd packages/opencode test test/server/httpapi-public-event.test.ts test/session/engineering.test.ts test/tool/webfetch.test.ts test/tool/shell.test.ts --timeout 30000`：56 pass
+- `bun --cwd packages/opencode test test/session/message-v2.test.ts -t aborted --timeout 30000`：2 pass
+- `bun --cwd packages/opencode test test/session/prompt.test.ts -t "aborted shell|cancel persists|abort" --timeout 30000`：4 pass
+- `bun --cwd packages/opencode typecheck`：通过
+- `bun --cwd packages/app typecheck`：通过
+- `bun --cwd packages/app build`：通过，有既有 chunk size 和 virtua JSX warning，没有失败
+
+和 Codex CLI 仍有差距
+
+- Codex 的终端流是执行器原生 stdout/stderr seq item，AIALRA 现在已经有 command.output 分片，但 UI 还不是完整 terminal emulator 回放
+- Codex 的 stop/abort 来源在 CLI/TUI 内部链路更集中，AIALRA 现在补了来源审计，但 server restart、client disconnect、unknown 仍需要更多真实场景采样
+- Codex 的 stop gate 更像模型策略和验证习惯共同收敛，AIALRA 目前是工程门禁规则加验证事件，覆盖面已扩展但仍需要继续对照 Codex 源码逐项收敛
+- 对网页设计、图形设计、交互任务，AIALRA 不能只靠 test 命令。下一步要把 evidence gate 扩展为 screenshot、Playwright trace、视觉 diff、部署健康检查和用户验收 checklist

@@ -1,7 +1,12 @@
 import { Bus } from "@/bus"
 import { PublicEventLog, type PublicEvent } from "@/session/public-event"
+import { Session } from "@/session/session"
+import type { SessionID } from "@/session/schema"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect } from "effect"
+import fs from "fs"
+import os from "os"
+import path from "path"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -127,9 +132,43 @@ function publicEventResponse(input: {
   )
 }
 
+function traceFile(sessionID: string) {
+  const dir = process.env.AIALRA_TURN_TRACE_DIR || path.join(os.tmpdir(), "opencode-turn-traces")
+  return path.join(dir, `${sessionID.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 128) || "unknown"}.jsonl`)
+}
+
+function readTraceRecords(sessionID: string) {
+  const file = traceFile(sessionID)
+  if (!fs.existsSync(file)) return []
+  return fs
+    .readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-2000)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as unknown]
+      } catch {
+        return [{ parseError: true, line }]
+      }
+    })
+}
+
+function messagePartRecords(messages: ReadonlyArray<{ info: { id: string; role: string }; parts: ReadonlyArray<unknown> }>) {
+  return messages.flatMap((message) =>
+    message.parts.map((part, index) => ({
+      messageID: message.info.id,
+      role: message.info.role,
+      index,
+      part,
+    })),
+  )
+}
+
 export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) =>
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+    const session = yield* Session.Service
     return handlers.handleRaw(
       "subscribe",
       Effect.fn("EventHttpApi.subscribe")(function* () {
@@ -170,6 +209,53 @@ export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) 
               schema: "aialra.public_event_raw_response.v1",
               eventID: ctx.params.eventID,
               raw,
+            })
+          } catch (error) {
+            return HttpServerResponse.jsonUnsafe(
+              { error: error instanceof Error ? error.message : String(error) },
+              { status: 500 },
+            )
+          }
+        }),
+      )
+      .handleRaw(
+        "sessionRawLab",
+        Effect.fn("EventHttpApi.sessionRawLab")(function* (ctx: { params: { sessionID: string } }) {
+          try {
+            const messages = yield* session
+              .messages({ sessionID: ctx.params.sessionID as SessionID })
+              .pipe(Effect.orElseSucceed(() => []))
+            const publicEvents = PublicEventLog.list({ sessionID: ctx.params.sessionID }).slice(-1000)
+            return HttpServerResponse.jsonUnsafe({
+              schema: "aialra.raw_lab.v1",
+              sessionID: ctx.params.sessionID,
+              generatedAt: new Date().toISOString(),
+              sources: {
+                modelRequestRaw: "通过 model.request.started / rawRef 查看",
+                providerStreamChunks: "通过 model.raw.chunk / rawRef 查看",
+                reasoningDelta: "通过 model.raw.chunk kind=reasoning_delta 查看",
+                assistantTextDelta: "通过 model.raw.chunk kind=assistant_text_delta 查看",
+                toolInputRaw: "通过 tool.call.started 或 DB part JSON 查看",
+                toolOutputRaw: "通过 tool.call.finished、command.output 或 DB part JSON 查看",
+                internalTraceJSONL: traceFile(ctx.params.sessionID),
+                dbMessageJSON: "messages[]",
+                dbPartJSON: "parts[]",
+                publicEventRawRef: "publicEvents[].rawRef",
+              },
+              replay: {
+                publicEventSSE: `/session/${ctx.params.sessionID}/events/public`,
+                lastEventID: publicEvents.at(-1)?.id,
+                note: "把 Last-Event-ID 设为某个 public event id，可以从该事件之后继续重放",
+              },
+              publicEvents,
+              rawRefs: publicEvents.filter((event) => event.rawRef).map((event) => ({
+                eventID: event.id,
+                type: event.type,
+                rawRef: event.rawRef,
+              })),
+              traceRecords: readTraceRecords(ctx.params.sessionID),
+              messages,
+              parts: messagePartRecords(messages),
             })
           } catch (error) {
             return HttpServerResponse.jsonUnsafe(

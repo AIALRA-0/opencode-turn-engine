@@ -656,3 +656,42 @@ exec-server 那种实时 stdout/stderr seq 分片；approval 事件已经能展�
 | 安全审查场景 | 越界写入、symlink escape、`.git/.agents/.codex`、网络命令、审批拒绝、审批允许一次 | 这些可以由实现者自行测试，不需要用户手动承担风险 | 当前本机可自动测，线上高风险项先在 `/srv/aialra/turn-harness-target` 靶场跑 |
 
 用户自己建议手测的最小路径：打开沙盒控制中心，保持默认工作区可写、需要时询问、网络每次询问、命令每次询问，然后让 agent 执行 `pwd`、写工作区文件、尝试写工作区外文件、执行 `curl --version`，预期是命令会先问，工作区内写可在批准后成功，工作区外写被拒绝，网络命令会单独问网络权限
+
+## 2026-06-01：中断审计、Raw Lab、实时命令分片和沙盒生效证明
+
+本轮目标是把真实工作流里的“为什么中断、为什么网络失败、沙盒控制到底有没有生效、原始流在哪里”变成用户能看见的证据
+
+### 用户怎么观察
+
+1. 打开 Turn Inspector，看到 `turn.abort.requested` 和 `turn.abort.resolved`，可以知道中断来自停止按钮、快捷键、API、runner 还是 unknown
+2. bash 长命令执行时看 `command.output`，每个事件有 stream、seq、chars 和 preview，可判断命令是否仍在输出
+3. 任何 bash 或 webfetch 执行前看 `sandbox.effective`，能看到实际生效的 cwd、network_policy、command_policy、approval_policy、sandbox_policy 和 active_permission_profile
+4. webfetch 失败时看 `http.request.classified`。404 是目标 URL 不存在，network_denied_by_policy 是沙盒策略拒绝，二者不会再混成 non-2xx
+5. 点击 Turn Inspector 顶部 Raw Lab，可以统一搜索并下载 public event、rawRef、trace JSONL、DB message、DB part
+
+### 和 Codex CLI 的差距
+
+| 能力 | AIALRA 当前 | Codex CLI 参考 | 差距 |
+| --- | --- | --- | --- |
+| 中断来源 | 已记录 request/resolved/source/actor/reason | CLI 内部 stop 链路更集中 | client disconnect、server restart、unknown 还需真实采样补齐 |
+| 终端流 | 已有 command.output 分片事件 | 原生 stdout/stderr seq item 更稳定 | UI 还不是完整 terminal emulator 回放 |
+| Raw 原始数据 | Raw Lab 汇总 public event、rawRef、trace、DB message/part | Codex item stream 和 internal logs 更一体化 | AIALRA 仍是多来源汇总，不是单一 item protocol |
+| 沙盒生效证明 | bash/webfetch 前记录 sandbox.effective | Codex sandbox profile 直接进入执行上下文 | 需要继续把 file tool、HTTP、FS helper 都补齐生效证明 |
+| stop gate | 覆盖 test/build/lint/e2e/health/docker/systemd | Codex 更依赖模型行为和执行器反馈共同收敛 | UI/设计类任务还要 evidence gate，不只是 test gate |
+
+### 本轮验证命令
+
+```bash
+bun --cwd packages/opencode test test/server/httpapi-public-event.test.ts test/session/engineering.test.ts test/tool/webfetch.test.ts test/tool/shell.test.ts --timeout 30000
+bun --cwd packages/opencode test test/session/message-v2.test.ts -t aborted --timeout 30000
+bun --cwd packages/opencode test test/session/prompt.test.ts -t "aborted shell|cancel persists|abort" --timeout 30000
+bun --cwd packages/opencode typecheck
+bun --cwd packages/app typecheck
+bun --cwd packages/app build
+```
+
+### 重要安全备注
+
+本轮在工作区发现意外的 `packages/opencode/xfsd` 和 `packages/opencode/config.json`，内容指向 Monero mining pool。该文件未进入 git，已删除，并已杀掉运行中的 `xfsd` 进程。后续部署前必须继续跑密钥/恶意二进制扫描，避免把非项目产物带进构建或提交
+
+2026-06-01 追加安全记录：同一事件继续追查后发现 `/srv/aialra/state/root-home/.bashrc` 含有 `.sysvsd` 后台启动项，且 `/srv/aialra/state/root-home/c3pool/config.json` 存在。已取证 sha256，杀掉 `xfsd` 与伪装为 `[nfsd]` 的 `.sysvsd` 进程，把 `.sysvsd`、`c3pool` 和可疑 `/etc/cron.hourly/free` 移入 `/srv/aialra/security-quarantine/20260601/`，并删除 `.bashrc` 启动行。当前进程扫描未再发现相关挖矿进程。此项不是本仓库代码功能，需要后续按服务器安全事件单独做入侵路径审计、凭据轮换和主机完整性复查

@@ -26,6 +26,7 @@ import type {
   ConfigUpdateResponses,
   EventSessionPublicRawResponses,
   EventSessionPublicResponses,
+  EventSessionRawLabResponses,
   EventSubscribePublicResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute2,
@@ -175,6 +176,8 @@ import type {
   SessionDelivery,
   SessionDiffErrors,
   SessionDiffResponses,
+  SessionEnvironmentErrors,
+  SessionEnvironmentResponses,
   SessionForkErrors,
   SessionForkResponses,
   SessionGetErrors,
@@ -727,6 +730,38 @@ export class Event extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<EventSessionPublicRawResponses, unknown, ThrowOnError>({
       url: "/session/{sessionID}/events/{eventID}/raw",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Read unified raw lab data
+   *
+   * Read public events, raw references, trace JSONL, and DB message/part JSON for one session.
+   */
+  public sessionRawLab<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<EventSessionRawLabResponses, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/raw-lab",
       ...options,
       ...params,
     })
@@ -3772,6 +3807,22 @@ export class Session2 extends HeyApiClient {
       sessionID: string
       directory?: string
       workspace?: string
+      source?:
+        | "stop_button"
+        | "prompt_escape"
+        | "prompt_ctrl_g"
+        | "empty_submit"
+        | "route_halt"
+        | "session_switch"
+        | "client_disconnect"
+        | "server_restart"
+        | "tool_timeout"
+        | "system_reconciler"
+        | "api"
+        | "benchmark_runner"
+        | "unknown"
+      reason?: string
+      route?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -3783,6 +3834,9 @@ export class Session2 extends HeyApiClient {
             { in: "path", key: "sessionID" },
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { in: "query", key: "source" },
+            { in: "query", key: "reason" },
+            { in: "query", key: "route" },
           ],
         },
       ],
@@ -4210,6 +4264,38 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<SessionSecurityResponses, SessionSecurityErrors, ThrowOnError>({
       url: "/session/{sessionID}/security",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get turn execution environments
+   *
+   * Read the selected environment and available local/remote environment status used by TurnContext path resolution.
+   */
+  public environment<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionEnvironmentResponses, SessionEnvironmentErrors, ThrowOnError>({
+      url: "/session/{sessionID}/environment",
       ...options,
       ...params,
     })

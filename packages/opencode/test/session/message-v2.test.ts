@@ -896,7 +896,7 @@ describe("session.message-v2.toModelMessage", () => {
       "4575",
       "",
       "<shell_metadata>",
-      "User aborted the command",
+      "Command aborted by OpenCode abort signal",
       "</shell_metadata>",
     ].join("\n")
 

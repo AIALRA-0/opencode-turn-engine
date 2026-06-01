@@ -68,6 +68,7 @@ import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
 import { CodexTurn, type TurnAbortReason, type TurnContext } from "./turn-context"
 import { SessionSecurity } from "./security"
 import { EngineeringHarness } from "./engineering"
+import { AbortAudit, abortSourceLabel } from "./abort-audit"
 import type { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
@@ -332,8 +333,18 @@ export const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* elog.info("cancel", { sessionID })
       const activeTurn = activeTurns.get(sessionID)
-      if (activeTurn) yield* emitTurnAborted(activeTurn, "interrupted")
+      if (activeTurn) {
+        if (!AbortAudit.latestForTurn(activeTurn)) {
+          AbortAudit.recordRequested({ sessionID, turnID: activeTurn.turnID, source: "unknown", actor: "unknown" })
+        }
+        yield* emitTurnAborted(activeTurn, "interrupted")
+      }
       yield* state.cancel(sessionID)
+      AbortAudit.recordResolved({
+        sessionID,
+        turn: activeTurn,
+        result: activeTurn ? "turn_aborted" : "no_active_turn",
+      })
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -1172,7 +1183,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const finish = Effect.uninterruptible(
             Effect.gen(function* () {
               if (aborted) {
-                output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
+                const abortMetadata = AbortAudit.shellMetadata(activeTurns.get(input.sessionID))
+                output +=
+                  "\n\n" +
+                  [
+                    "<metadata>",
+                    "Command aborted by OpenCode abort signal",
+                    `source=${abortMetadata.source}`,
+                    `sourceLabel=${abortMetadata.sourceLabel}`,
+                    `actor=${abortMetadata.actor}`,
+                    abortMetadata.requestID ? `requestID=${abortMetadata.requestID}` : "requestID=missing",
+                    abortMetadata.reason ? `reason=${abortMetadata.reason}` : "reason=not_provided",
+                    "</metadata>",
+                  ].join("\n")
               }
               const completed = Date.now()
               if (flags.experimentalEventSystem) {
@@ -1904,6 +1927,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       closedTurns.add(turn.turnID)
       activeTurns.delete(turn.sessionID)
       const completedAt = Date.now()
+      const abortRequest = AbortAudit.latestForTurn(turn)
       yield* bus.publish(Session.Event.TurnAborted, {
         turnID: turn.turnID,
         sessionID: turn.sessionID,
@@ -1918,6 +1942,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         messageID: turn.messageID,
         data: {
           reason,
+          abortSource: abortRequest?.source ?? "unknown",
+          abortSourceLabel: abortSourceLabel(abortRequest?.source ?? "unknown"),
+          abortRequestID: abortRequest?.id,
+          abortActor: abortRequest?.actor ?? "unknown",
           completedAt,
           durationMs: Math.max(0, completedAt - turn.startedAt),
         },
@@ -1930,6 +1958,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         data: {
           outcome: "aborted",
           reason,
+          abortSource: abortRequest?.source ?? "unknown",
+          abortRequestID: abortRequest?.id,
+          abortActor: abortRequest?.actor ?? "unknown",
           completedAt,
         },
       })
