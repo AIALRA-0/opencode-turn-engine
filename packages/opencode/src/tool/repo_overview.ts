@@ -7,6 +7,8 @@ import DESCRIPTION from "./repo_overview.txt"
 import * as Tool from "./tool"
 import { parseRepositoryReference, repositoryCachePath } from "@/util/repository"
 import { InstanceState } from "@/effect/instance-state"
+import { TurnSandbox } from "./turn-sandbox"
+import { CodexFs } from "./codex-fs"
 
 export const Parameters = Schema.Struct({
   repository: Schema.optional(Schema.String).annotate({
@@ -106,11 +108,10 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
 
     const resolveTarget = Effect.fn("RepoOverviewTool.resolveTarget")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
+      ctx: Tool.Context<Metadata>,
     ) {
       if (params.path) {
-        const full = path.isAbsolute(params.path)
-          ? params.path
-          : path.resolve(yield* InstanceState.directory, params.path)
+        const full = TurnSandbox.resolvePath(ctx, params.path, yield* InstanceState.directory)
         return { path: full, repository: params.repository }
       }
 
@@ -126,7 +127,11 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
       }
     })
 
-    const structure = Effect.fn("RepoOverviewTool.structure")(function* (root: string, depth: number) {
+    const structure = Effect.fn("RepoOverviewTool.structure")(function* (
+      ctx: Tool.Context<Metadata>,
+      root: string,
+      depth: number,
+    ) {
       let truncated = false
       const lines: string[] = []
 
@@ -139,13 +144,13 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
           return
         }
 
-        const entries = yield* fs.readDirectoryEntries(dir).pipe(Effect.orElseSucceed(() => []))
+        const entries = yield* CodexFs.readDirectoryEntries(ctx, fs, dir).pipe(Effect.orElseSucceed(() => []))
         const sorted = yield* Effect.forEach(
           entries,
           Effect.fnUntraced(function* (entry) {
             if (IGNORED_DIRS.has(entry.name)) return undefined
             const full = path.join(dir, entry.name)
-            const info = yield* fs.stat(full).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            const info = yield* CodexFs.stat(ctx, fs, full).pipe(Effect.catch(() => Effect.succeed(undefined)))
             if (!info) return undefined
             return { name: entry.name, full, directory: info.type === "Directory" }
           }),
@@ -173,15 +178,28 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
       return { lines, truncated }
     })
 
+    const readPackageJson = Effect.fn("RepoOverviewTool.readPackageJson")(function* (
+      ctx: Tool.Context<Metadata>,
+      filepath: string,
+    ) {
+      const bytes = yield* CodexFs.readFile(ctx, fs, filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (!bytes) return {}
+      return yield* Effect.try({
+        try: () => JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>,
+        catch: () => ({}),
+      })
+    })
+
     return {
       description: DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
-          const target = yield* resolveTarget(params)
+          const target = yield* resolveTarget(params, ctx)
           const depth =
             !params.depth || !Number.isInteger(params.depth) || params.depth < 1 || params.depth > 6 ? 3 : params.depth
 
+          yield* TurnSandbox.assertSearchScope(ctx, target.path)
           yield* assertExternalDirectoryEffect(ctx, target.path, { kind: "directory" })
           yield* ctx.ask({
             permission: "repo_overview",
@@ -194,7 +212,7 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
             },
           })
 
-          const info = yield* fs.stat(target.path).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const info = yield* CodexFs.stat(ctx, fs, target.path).pipe(Effect.catch(() => Effect.succeed(undefined)))
           if (!info) {
             if (target.repository)
               throw new Error(`Repository is not cloned: ${target.repository}. Use repo_clone first.`)
@@ -202,13 +220,11 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
           }
           if (info.type !== "Directory") throw new Error(`Path is not a directory: ${target.path}`)
 
-          const entries = yield* fs.readDirectoryEntries(target.path).pipe(Effect.orElseSucceed(() => []))
+          const entries = yield* CodexFs.readDirectoryEntries(ctx, fs, target.path).pipe(Effect.orElseSucceed(() => []))
           const topLevel = new Set(entries.map((entry) => entry.name))
           const dependencyFiles = DEPENDENCY_FILES.filter((file) => topLevel.has(file))
           const packageJson = topLevel.has("package.json")
-            ? ((yield* fs
-                .readJson(path.join(target.path, "package.json"))
-                .pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>)
+            ? yield* readPackageJson(ctx, path.join(target.path, "package.json"))
             : {}
 
           const entrypoints = [
@@ -234,7 +250,7 @@ export const RepoOverviewTool = Tool.define<typeof Parameters, Metadata, AppFile
                 .flatMap(() => ["src/index.ts", "src/index.tsx", "src/index.js", "src/main.ts", "src/main.js"]),
             ]),
           )
-          const structureResult = yield* structure(target.path, depth)
+          const structureResult = yield* structure(ctx, target.path, depth)
           const branch = yield* git.branch(target.path)
           const head = yield* git.run(["rev-parse", "HEAD"], { cwd: target.path })
           const headText = head.exitCode === 0 ? head.text().trim() : undefined

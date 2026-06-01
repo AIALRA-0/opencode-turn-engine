@@ -10,6 +10,7 @@ import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { MessageID, SessionID } from "../../src/session/schema"
+import { PublicEventLog } from "../../src/session/public-event"
 
 const bus = Bus.layer
 const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
@@ -869,6 +870,123 @@ it.instance(
       yield* Fiber.join(a)
       yield* Fiber.join(b)
       expect(yield* list()).toHaveLength(0)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "reply - turn-all allows later requests in the same turn only",
+  () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session_turn_scope")
+      const turnID = MessageID.make("msg_turn_scope")
+      const a = yield* ask({
+        id: PermissionID.make("per_turn_scope_a"),
+        sessionID,
+        turnID,
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionID.make("per_turn_scope_a"), reply: "once", scope: "turn-all" })
+      yield* Fiber.join(a)
+      expect(PublicEventLog.list({ sessionID })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "security.override.resolved",
+            status: "turn-all",
+            data: expect.objectContaining({ linkage: "approval_scope_updates_server_reviewer_state" }),
+          }),
+        ]),
+      )
+
+      expect(
+        yield* ask({
+          sessionID,
+          turnID,
+          permission: "edit",
+          patterns: ["src/tool.ts"],
+          metadata: {},
+          always: [],
+          ruleset: [],
+        }),
+      ).toBeUndefined()
+
+      const otherTurn = yield* ask({
+        id: PermissionID.make("per_turn_scope_b"),
+        sessionID,
+        turnID: MessageID.make("msg_turn_scope_other"),
+        permission: "edit",
+        patterns: ["src/other.ts"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      expect(yield* waitForPending(1)).toHaveLength(1)
+      yield* rejectAll()
+      yield* Fiber.await(otherTurn)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "reply - always-all allows later requests in the same session only",
+  () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session_always_all")
+      const a = yield* ask({
+        id: PermissionID.make("per_always_all_a"),
+        sessionID,
+        turnID: MessageID.make("msg_always_all_a"),
+        permission: "bash",
+        patterns: ["pwd"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionID.make("per_always_all_a"), reply: "once", scope: "always-all" })
+      yield* Fiber.join(a)
+      expect(PublicEventLog.list({ sessionID })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "security.override.resolved",
+            status: "always-all",
+            data: expect.objectContaining({ linkage: "approval_scope_updates_server_reviewer_state" }),
+          }),
+        ]),
+      )
+
+      expect(
+        yield* ask({
+          sessionID,
+          turnID: MessageID.make("msg_always_all_b"),
+          permission: "edit",
+          patterns: ["src/tool.ts"],
+          metadata: {},
+          always: [],
+          ruleset: [],
+        }),
+      ).toBeUndefined()
+
+      const otherSession = yield* ask({
+        id: PermissionID.make("per_always_all_b"),
+        sessionID: SessionID.make("session_always_all_other"),
+        turnID: MessageID.make("msg_always_all_c"),
+        permission: "edit",
+        patterns: ["src/tool.ts"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      expect(yield* waitForPending(1)).toHaveLength(1)
+      yield* rejectAll()
+      yield* Fiber.await(otherSession)
     }),
   { git: true },
 )

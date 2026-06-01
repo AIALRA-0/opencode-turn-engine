@@ -2480,6 +2480,39 @@ it.instance(
 )
 
 it.instance(
+  "emits exactly one terminal event for noReply prompt intake",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const traceDir = path.join(dir, "trace-no-reply-terminal")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+
+      const message = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "store this without reply" }],
+        }),
+      )
+
+      expect(message.info.role).toBe("user")
+      const events = readTraceEvents(traceDir)
+      const terminal = events.filter((event) => event.phase === "turn.completed" || event.phase === "turn.aborted")
+      expect(terminal).toHaveLength(1)
+      expect(terminal[0]?.phase).toBe("turn.completed")
+      expect(events.some((event) => event.phase === "prompt.no_reply" && event.turnID === message.info.id)).toBe(true)
+      expect(events.some((event) => event.phase === "turn.terminal.anomaly")).toBe(false)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true, config: cfg },
+)
+
+it.instance(
   "emits Codex retry trace for model request retries",
   () =>
     Effect.gen(function* () {

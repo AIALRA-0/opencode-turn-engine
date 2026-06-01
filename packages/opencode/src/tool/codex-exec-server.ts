@@ -45,6 +45,23 @@ type FsReadDirectoryResponse = {
   }>
 }
 
+type FsGetMetadataResponse = {
+  isDirectory: boolean
+  isFile: boolean
+  isSymlink: boolean
+  createdAtMs: number
+  modifiedAtMs: number
+}
+
+type HttpRequestResponse = {
+  status: number
+  headers: Array<{
+    name: string
+    value: string
+  }>
+  bodyBase64: string
+}
+
 type ManagedServer = {
   child: ReturnType<typeof Bun.spawn>
   url: string
@@ -62,6 +79,8 @@ type RunProcessInput = {
 
 const decoder = new TextDecoder()
 const encoder = new TextEncoder()
+const DEFAULT_SIDECAR_URL = "ws://127.0.0.1:12650"
+let resolvedDefaultSidecar: string | null | undefined
 
 export class CodexExecServerRpcError extends Error {
   readonly code: number
@@ -102,15 +121,18 @@ async function firstLine(stream: ReadableStream<Uint8Array> | null) {
   throw new Error("timed out waiting for codex exec-server listen URL")
 }
 
-async function openWebSocket(url: string) {
+async function openWebSocket(url: string, timeoutMs = 10_000) {
   const started = Date.now()
   let lastError: Error | undefined
-  while (Date.now() - started < 10_000) {
+  while (Date.now() - started < timeoutMs) {
     const ws = new WebSocket(url)
     ws.binaryType = "arraybuffer"
     try {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`timed out connecting to codex exec-server ${url}`)), 1_000)
+        const timer = setTimeout(
+          () => reject(new Error(`timed out connecting to codex exec-server ${url}`)),
+          Math.min(1_000, timeoutMs),
+        )
         ws.addEventListener("open", () => {
           clearTimeout(timer)
           resolve()
@@ -134,6 +156,20 @@ async function openWebSocket(url: string) {
   throw lastError ?? new Error(`timed out connecting to codex exec-server ${url}`)
 }
 
+async function defaultSidecarUrl() {
+  if (resolvedDefaultSidecar !== undefined) return resolvedDefaultSidecar ?? undefined
+  const url = process.env.AIALRA_CODEX_EXEC_SERVER_DEFAULT_URL ?? DEFAULT_SIDECAR_URL
+  try {
+    const ws = await openWebSocket(url, 250)
+    ws.close()
+    resolvedDefaultSidecar = url
+    return url
+  } catch {
+    resolvedDefaultSidecar = null
+    return undefined
+  }
+}
+
 export class CodexExecServerClient {
   #ws: WebSocket
   #seq = 0
@@ -149,7 +185,7 @@ export class CodexExecServerClient {
   }
 
   static enabled() {
-    return process.env.AIALRA_EXEC_BACKEND === "codex"
+    return process.env.AIALRA_EXEC_BACKEND !== "node-bun"
   }
 
   static async connect(input?: { url?: string }) {
@@ -260,6 +296,27 @@ function codexPermissionEntry(entry: PermissionProfileFileSystemEntry) {
   return { path: nextPath, access: entry.access }
 }
 
+function withNetworkAccess(turn: TurnContext, enabled?: boolean) {
+  if (!enabled) return turn
+  return {
+    ...turn,
+    permission_profile:
+      turn.permission_profile.type === "managed"
+        ? { ...turn.permission_profile, network: "enabled" as const }
+        : turn.permission_profile.type === "external"
+          ? { ...turn.permission_profile, network: "enabled" as const }
+          : turn.permission_profile,
+    sandbox_policy:
+      turn.sandbox_policy.type === "read-only"
+        ? { ...turn.sandbox_policy, network_access: true }
+        : turn.sandbox_policy.type === "workspace-write"
+          ? { ...turn.sandbox_policy, network_access: true }
+          : turn.sandbox_policy.type === "external-sandbox"
+            ? { ...turn.sandbox_policy, network_access: "enabled" as const }
+            : turn.sandbox_policy,
+  }
+}
+
 function codexPermissionProfile(turn: TurnContext) {
   const profile = turn.permission_profile
   if (profile.type === "disabled") return { type: "disabled" }
@@ -282,9 +339,9 @@ function codexPermissionProfile(turn: TurnContext) {
   }
 }
 
-function sandboxContext(turn?: TurnContext) {
+function sandboxContext(turn?: TurnContext, input?: { networkAccess?: boolean }) {
   if (!turn) return undefined
-  turn = SessionSecurity.applyToTurn(turn)
+  turn = withNetworkAccess(SessionSecurity.applyToTurn(turn), input?.networkAccess)
   return {
     permissions: codexPermissionProfile(turn),
     cwd: CodexTurn.environmentCwd(turn),
@@ -306,7 +363,7 @@ async function startManagedServer(): Promise<ManagedServer> {
 }
 
 async function withClient<T>(fn: (client: CodexExecServerClient) => Promise<T>) {
-  const url = process.env.AIALRA_CODEX_EXEC_SERVER_URL
+  const url = process.env.AIALRA_CODEX_EXEC_SERVER_URL ?? await defaultSidecarUrl()
   const client = await CodexExecServerClient.connect(url ? { url } : undefined)
   try {
     return await fn(client)
@@ -316,11 +373,21 @@ async function withClient<T>(fn: (client: CodexExecServerClient) => Promise<T>) 
 }
 
 export async function runProcess(input: RunProcessInput) {
-  const url = process.env.AIALRA_CODEX_EXEC_SERVER_URL
+  const url = process.env.AIALRA_CODEX_EXEC_SERVER_URL ?? await defaultSidecarUrl()
   const client = await CodexExecServerClient.connect(url ? { url } : undefined)
   const processID = `proc_${Date.now().toString(36)}_${Math.random().toString(16).slice(2)}`
   const started = Date.now()
   const argv = input.sandbox ? [input.sandbox.program, ...input.sandbox.args] : input.argv
+  let aborted = input.ctx?.abort.aborted ?? false
+  let terminate: Promise<void> | undefined
+  const requestTerminate = () => {
+    terminate ??= client.terminate(processID).catch(() => {})
+    return terminate
+  }
+  const onAbort = () => {
+    aborted = true
+    requestTerminate()
+  }
 
   try {
     await Effect.runPromise(AialraTurnTrace.emit({
@@ -347,15 +414,21 @@ export async function runProcess(input: RunProcessInput) {
       arg0: null,
     })
 
+    input.ctx?.abort.addEventListener("abort", onAbort, { once: true })
+
     let afterSeq: number | null = null
     let exitCode: number | null = null
     let failure: string | null = null
     while (Date.now() - started <= input.timeoutMs) {
+      if (aborted) {
+        await Promise.race([requestTerminate(), new Promise((resolve) => setTimeout(resolve, 100))])
+        return { exitCode: null, failure: null, timedOut: false, aborted: true }
+      }
       const result = (await client.request("process/read", {
         processId: processID,
         afterSeq,
-        maxBytes: 64 * 1024,
-        waitMs: 250,
+        maxBytes: 1024 * 1024,
+        waitMs: 50,
       })) as ProcessReadResponse
       afterSeq = result.nextSeq
       exitCode = result.exitCode
@@ -363,14 +436,19 @@ export async function runProcess(input: RunProcessInput) {
       for (const chunk of result.chunks ?? []) {
         input.onOutput({ stream: chunk.stream, text: decodeChunk(chunk.chunk), seq: chunk.seq })
       }
+      if (aborted) {
+        await Promise.race([requestTerminate(), new Promise((resolve) => setTimeout(resolve, 100))])
+        return { exitCode: null, failure: null, timedOut: false, aborted: true }
+      }
       if (result.closed) {
-        return { exitCode, failure, timedOut: false }
+        return { exitCode, failure, timedOut: false, aborted: false }
       }
     }
 
     await client.terminate(processID)
-    return { exitCode: null, failure: "timeout", timedOut: true }
+    return { exitCode: null, failure: "timeout", timedOut: true, aborted: false }
   } finally {
+    input.ctx?.abort.removeEventListener("abort", onAbort)
     await Effect.runPromise(AialraTurnTrace.emit({
       phase: "exec_server.process.finished",
       turnID: input.ctx?.turn?.turnID,
@@ -436,6 +514,33 @@ async function readDirectory(input: { path: string; ctx?: Tool.Context }) {
       sessionID: input.ctx?.sessionID,
       messageID: input.ctx?.messageID,
       data: { method: "fs/readDirectory", path: input.path, durationMs: Math.max(0, Date.now() - started) },
+    }))
+  }
+}
+
+async function getMetadata(input: { path: string; ctx?: Tool.Context }) {
+  const started = Date.now()
+  try {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.started",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/getMetadata", path: input.path },
+    }))
+    return await withClient((client) =>
+      client.request("fs/getMetadata", {
+        path: input.path,
+        sandbox: sandboxContext(input.ctx?.turn),
+      }),
+    ) as FsGetMetadataResponse
+  } finally {
+    await Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.fs.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: { method: "fs/getMetadata", path: input.path, durationMs: Math.max(0, Date.now() - started) },
     }))
   }
 }
@@ -538,8 +643,8 @@ async function copy(input: { from: string; to: string; recursive?: boolean; ctx?
     }))
     await withClient((client) =>
       client.request("fs/copy", {
-        from: input.from,
-        to: input.to,
+        sourcePath: input.from,
+        destinationPath: input.to,
         recursive: input.recursive ?? false,
         sandbox: sandboxContext(input.ctx?.turn),
       }),
@@ -560,9 +665,11 @@ async function httpRequest(input: {
   method?: string
   headers?: Record<string, string>
   body?: string | Uint8Array
+  networkAccess?: boolean
   ctx?: Tool.Context
 }) {
   const started = Date.now()
+  const requestID = `http_${Date.now().toString(36)}_${Math.random().toString(16).slice(2)}`
   try {
     await Effect.runPromise(AialraTurnTrace.emit({
       phase: "exec_server.http.started",
@@ -576,11 +683,14 @@ async function httpRequest(input: {
       client.request("http/request", {
         url: input.url,
         method: input.method ?? "GET",
-        headers: input.headers ?? {},
+        headers: Object.entries(input.headers ?? {}).map(([name, value]) => ({ name, value })),
         bodyBase64: body ? Buffer.from(body).toString("base64") : null,
-        sandbox: sandboxContext(input.ctx?.turn),
+        timeoutMs: null,
+        requestId: requestID,
+        streamResponse: false,
+        sandbox: sandboxContext(input.ctx?.turn, { networkAccess: input.networkAccess }),
       }),
-    )
+    ) as HttpRequestResponse
   } finally {
     await Effect.runPromise(AialraTurnTrace.emit({
       phase: "exec_server.http.finished",
@@ -601,6 +711,7 @@ export const CodexExecServer = {
   runProcess,
   readFile,
   readDirectory,
+  getMetadata,
   writeFile,
   createDirectory,
   remove,

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { assertV3BenchmarkGate } from "./v3-status-gate.mjs"
 
 const REPO_ROOT = "/srv/aialra/apps/opencode-turn-engine"
 const MANIFEST_PATH =
@@ -12,6 +13,9 @@ const ROOT = process.env.AIALRA_REAL_BENCH_ROOT ?? "/srv/aialra/turn-harness-tar
 const REPORT_DIR =
   process.env.AIALRA_REAL_BENCH_REPORT_DIR ??
   join(REPO_ROOT, "aialra/turn-observability/real-benchmark-reports")
+const V3_STATUS_PATH =
+  process.env.AIALRA_V3_STATUS_PATH ??
+  join(REPO_ROOT, "aialra/turn-observability/project-plans/v3-general-engineering-harness/status.json")
 const REPO_CACHE = process.env.AIALRA_REAL_BENCH_REPO_CACHE ?? "/srv/aialra/cache/agent-benchmark/repos"
 const SECRETS_AIALRA = process.env.AIALRA_AB_AIALRA_ENV ?? "/srv/aialra/config/secrets/opencode.env"
 const SECRETS_DEBUG1 = process.env.AIALRA_AB_DEBUG1_ENV ?? "/srv/aialra/config/secrets/opencode-debug1.env"
@@ -823,8 +827,10 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
     const terminalAnomalies = publicEvents
       .filter((event) => event.type === "turn.terminal.anomaly")
       .map((event) => event.data?.reason ?? event.status ?? "anomaly")
+    if (missingPublicTerminal) terminalAnomalies.push("runner_no_terminal")
     const stopped = timedOut || startTimedOut || progressTimedOut || emergencyStopped
     const completedWithoutText = !stopped && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
+    if (completedWithoutText) terminalAnomalies.push("empty_final")
     return {
       sessionID,
       ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText && !missingPublicTerminal,
@@ -842,6 +848,13 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
+      terminalErrorCategory: startTimedOut
+        ? "model_not_started"
+        : missingPublicTerminal
+          ? "runner_no_terminal"
+          : completedWithoutText
+            ? "empty_final"
+            : "",
       error: startTimedOut
         ? `OpenCode did not start assistant/model activity within ${OPENCODE_START_TIMEOUT_MS}ms`
         : progressTimedOut || emergencyStopped || timedOut
@@ -1008,8 +1021,10 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
     const terminalAnomalies = publicEvents
       .filter((event) => event.type === "turn.terminal.anomaly")
       .map((event) => event.data?.reason ?? event.status ?? "anomaly")
+    if (missingPublicTerminal) terminalAnomalies.push("runner_no_terminal")
     const stopped = timedOut || progressTimedOut || emergencyStopped
     const completedWithoutText = !stopped && !waitingApproval && !waitingQuestion && !finalText && !hasAssistant && hasTurnTerminal
+    if (completedWithoutText) terminalAnomalies.push("empty_final")
     return {
       sessionID,
       ok: !stopped && !waitingApproval && !waitingQuestion && !completedWithoutText && !missingPublicTerminal,
@@ -1025,6 +1040,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
+      terminalErrorCategory: missingPublicTerminal ? "runner_no_terminal" : completedWithoutText ? "empty_final" : "",
       error:
         progressTimedOut || emergencyStopped || timedOut
           ? timeoutReason
@@ -1544,6 +1560,7 @@ function stripTrailingWhitespace(text) {
   return text.replace(/[ \t]+$/gm, "")
 }
 
+await assertV3BenchmarkGate({ tier: TIER, statusPath: V3_STATUS_PATH })
 const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"))
 const selected = tierCases(manifest.cases)
 await validateTargets()

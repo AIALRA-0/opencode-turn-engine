@@ -1,5 +1,40 @@
 # AIALRA changelog
 
+## 2026-06-01
+
+- Completed the hard V3 acceptance status pass: all 16 General Engineering
+  Harness V3 implementation targets are now marked `完全完成` in
+  `aialra/turn-observability/project-plans/v3-general-engineering-harness/status.json`.
+  The benchmark runner enforces that `regression-6` and `full-24` cannot start
+  while any target is still `未开始`, `部分完成`, or `核心完成`.
+- Ran the post-completion `regression-6` gate for AIALRA OpenCode with
+  DeepSeek V4 Pro max, run `20260601030607`. Result: 6/6 completed, 6/6
+  non-empty patches, 4/6 verified passes, 0 zero patches, 0 timeouts, 0 approval
+  stalls, 6/6 turn terminal events, and patch quality average 78. Report:
+  `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md`.
+- Kept `full-24` blocked after the post-completion gate because the same 6-task
+  baseline was already 4/6 verified with 0 zero patches. V3 improved patch
+  quality average from 77 to 78, but did not improve verified pass count or
+  reduce zero-patch count, so the full-24 cost gate correctly refused to open.
+- Fixed shell cancellation and exec-server polling behavior that made the full
+  prompt test suite flaky. The Codex exec-server adapter now terminates running
+  processes when the turn abort signal fires, shell tools mark aborted runs
+  correctly, process reads use shorter waits, and shell commands are passed to
+  bash/zsh as positional arguments so nested variables inside sandboxed scripts
+  are not expanded too early.
+- Preferred the stable Codex exec-server sidecar at
+  `ws://127.0.0.1:12650` before spawning a managed sidecar, with a cached
+  readiness probe and audited fallback behavior.
+- Added `full-24` benchmark gate tests so `full-24` requires a completed
+  post-16/16 `regression-6` run that proves either verified-pass improvement or
+  zero-patch reduction.
+- Deployed version `0.0.0-dev-202606010402` to `opencode.aialra.online`.
+  Web, login, and Codex exec-server services are active; deployment smoke and
+  authenticated API smoke passed. Local Playwright smoke was attempted: the
+  default port conflicted with nginx, and a retry on port 3187 entered the
+  browser test but did not finish stably, so it is recorded as not passed rather
+  than counted as browser acceptance.
+
 ## 2026-05-31
 
 - Completed the V3 full-24 AIALRA-only validation gate after the regression-6

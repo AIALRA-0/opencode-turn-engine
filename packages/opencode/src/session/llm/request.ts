@@ -5,6 +5,7 @@ import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
+import type { TurnContext } from "../turn-context"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -31,6 +32,7 @@ type PrepareInput = {
   readonly plugin: Plugin.Interface
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
+  readonly turn?: TurnContext
 }
 
 export type Prepared = {
@@ -87,6 +89,20 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
         providerOptions: input.provider.options,
       })
   const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
+  if (input.turn?.effort) {
+    options.reasoningEffort ??= input.turn.effort
+    options.reasoning_effort ??= input.turn.effort
+    options.effort ??= input.turn.effort
+  }
+  if (input.turn?.summary) {
+    options.reasoningSummary ??= input.turn.summary
+    options.reasoning_summary ??= input.turn.summary
+    options.summary ??= input.turn.summary
+  }
+  if (input.turn?.service_tier) {
+    options.serviceTier ??= input.turn.service_tier
+    options.service_tier ??= input.turn.service_tier
+  }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
   const messages =

@@ -317,6 +317,7 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const activeTurns = new Map<SessionID, TurnContext>()
     const closedTurns = new Set<string>()
+    const terminalErrorReasons = new Map<string, string>()
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
     })
@@ -1839,10 +1840,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const completedAt = Date.now()
       const finalText =
         lastAgentMessage && !turn.noReply ? assistantText(lastAgentMessage).trim() : undefined
+      const forcedReason = terminalErrorReasons.get(turn.turnID)
+      terminalErrorReasons.delete(turn.turnID)
       const terminalAnomaly = EngineeringHarness.terminalAnomaly({
         turn,
         lastAgentMessage,
         finalText,
+        forcedReason,
       })
       if (terminalAnomaly) {
         yield* AialraTurnTrace.emit({
@@ -2094,9 +2098,52 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         emitTurnCompleted(turn, lastAgentMessage)
       const abortTurn = (reason: TurnAbortReason) =>
         emitTurnAborted(turn, reason)
+      const createTerminalErrorAssistant = Effect.fn("SessionPrompt.terminalErrorAssistant")(function* (
+        reason: string,
+        error: unknown,
+      ) {
+        const now = Date.now()
+        const msg: MessageV2.Assistant = {
+          id: MessageID.ascending(),
+          parentID: message.info.id,
+          role: "assistant",
+          mode: message.info.agent,
+          agent: message.info.agent,
+          variant: message.info.model.variant,
+          path: { cwd: turn.cwd, root: instance.worktree },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: message.info.model.modelID,
+          providerID: message.info.model.providerID,
+          time: { created: now, completed: now },
+          sessionID: normalizedInput.sessionID,
+          finish: "stop",
+          error: MessageV2.fromError(error instanceof Error ? error : new Error(String(error)), {
+            providerID: message.info.model.providerID,
+          }),
+        }
+        terminalErrorReasons.set(turn.turnID, reason)
+        yield* sessions.updateMessage(msg)
+        yield* AialraTurnTrace.emit({
+          phase: "turn.terminal.assistant_error",
+          turnID: turn.turnID,
+          sessionID: normalizedInput.sessionID,
+          messageID: msg.id,
+          data: {
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        })
+        return msg.id
+      })
       const result = yield* loop({ sessionID: normalizedInput.sessionID, turn }).pipe(
         Effect.onInterrupt(() => abortTurn("interrupted")),
-        Effect.catch((error: Image.Error) => completeTurn().pipe(Effect.andThen(Effect.fail(error)))),
+        Effect.catch((error: Image.Error) =>
+          createTerminalErrorAssistant("model_not_started", error).pipe(
+            Effect.flatMap((messageID) => completeTurn(messageID)),
+            Effect.andThen(Effect.fail(error)),
+          ),
+        ),
       )
       yield* AialraTurnTrace.emit({
         phase: "prompt.completed",
@@ -2562,6 +2609,44 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 tokens: handle.message.tokens,
               },
             })
+
+            const verificationRepairPrompt = EngineeringHarness.verificationRepairPrompt(
+              activeTurn,
+              assistantText(handle.message.id),
+            )
+            if (verificationRepairPrompt) {
+              const continuation: MessageV2.User = {
+                id: MessageID.ascending(),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+                tools: lastUser.tools,
+                system: lastUser.system,
+                format: lastUser.format,
+              }
+              yield* sessions.updateMessage(continuation)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continuation.id,
+                sessionID,
+                type: "text",
+                text: verificationRepairPrompt,
+                synthetic: true,
+              } satisfies MessageV2.TextPart)
+              yield* AialraTurnTrace.emit({
+                phase: "engineering.verification.repair_requested",
+                turnID: activeTurn?.turnID,
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                data: {
+                  continuationID: continuation.id,
+                },
+              })
+              return "continue" as const
+            }
 
             const workspaceChanged = activeTurn ? yield* workspaceHasGitChange(activeTurn) : undefined
             const zeroPatchPrompt = EngineeringHarness.zeroPatchPrompt(activeTurn, assistantText(handle.message.id), {

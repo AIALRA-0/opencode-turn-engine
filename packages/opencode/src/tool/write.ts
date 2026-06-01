@@ -44,7 +44,7 @@ export const WriteTool = Tool.define(
           yield* TurnSandbox.assertWritableParentExists(ctx, filepath)
           yield* assertExternalDirectoryEffect(ctx, filepath, { access: "write" })
 
-          const exists = yield* fs.existsSafe(filepath)
+          const exists = yield* CodexFs.existsSafe(ctx, fs, filepath)
           const source = exists ? yield* CodexFs.readBomFile(ctx, fs, filepath) : { bom: false, text: "" }
           const next = Bom.split(params.content)
           const desiredBom = source.bom || next.bom

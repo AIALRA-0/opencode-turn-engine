@@ -108,7 +108,7 @@ export const ApplyPatchTool = Tool.define(
 
           case "update": {
             // Check if file exists for update
-            const stats = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            const stats = yield* CodexFs.stat(ctx, afs, filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
             if (!stats || stats.type === "Directory") {
               return yield* Effect.fail(
                 new Error(`apply_patch verification failed: Failed to read file to update: ${filePath}`),

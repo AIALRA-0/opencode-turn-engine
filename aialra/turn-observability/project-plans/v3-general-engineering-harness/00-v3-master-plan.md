@@ -100,9 +100,27 @@ git diff --check
 
 ## Benchmark Gate
 
-Do not immediately run the full five-combination benchmark.
+Hard rule as of 2026-06-01:
 
-Run this first:
+```text
+16/16 targets must be 完全完成 before any regression-6 run.
+regression-6 must pass the improvement gate before any full-24 run.
+```
+
+This is now a code-level gate, not only a document rule. The benchmark runner reads:
+
+```text
+aialra/turn-observability/project-plans/v3-general-engineering-harness/status.json
+```
+
+If any target is not `完全完成`, the runner refuses:
+
+```text
+AIALRA_REAL_BENCH_TIER=regression-6
+AIALRA_REAL_BENCH_TIER=full-24
+```
+
+Only after 16/16 are complete, run this first:
 
 ```text
 tier-regression-6
@@ -117,6 +135,39 @@ full-24 AIALRA-only
 ```
 
 Five-combination full benchmark is reserved for release-level comparison.
+
+The previous V3 benchmark runs from 2026-05-31 are retained for history, but they are not accepted as final V3 completion proof because they ran before this hard 16/16 gate was established.
+
+## 2026-06-01 Gate Result
+
+The 16 implementation targets are now marked `完全完成`.
+
+Post-completion regression-6 was run:
+
+```text
+runID: 20260601030607
+target: AIALRA DeepSeek V4 Pro max
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md
+verified pass: 4/6
+zero patch: 0/6
+patch quality average: 78
+timeout: 0
+approval stuck: 0
+```
+
+The same 6-task baseline was:
+
+```text
+verified pass: 4/6
+zero patch: 0/6
+patch quality average: 77
+```
+
+Result:
+
+```text
+full-24 remains blocked because verified pass did not improve and zero patch did not decrease
+```
 
 ## Documentation Requirements
 
@@ -149,6 +200,12 @@ V3 is not complete until:
 - verification failure returns as structured repair feedback
 - verification pass activates stop gate
 - patch quality is scored and explained in benchmark reports
-- tier-regression-6 has run and been compared with baseline
 - all new behavior appears in public events and Turn Inspector where user-facing
 - docs, tests, commit, push, and deployment are done
+- `status.json` marks all 16 targets as `完全完成`
+
+Benchmarking is a post-completion gate:
+
+```text
+16/16 完全完成 -> regression-6 -> improvement gate -> full-24 AIALRA-only
+```

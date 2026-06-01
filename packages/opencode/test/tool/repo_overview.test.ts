@@ -7,6 +7,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Git } from "../../src/git"
 import { Global } from "@opencode-ai/core/global"
 import { MessageID, SessionID } from "../../src/session/schema"
+import { CodexTurn, type TurnContext } from "../../src/session/turn-context"
 import { Truncate } from "../../src/tool/truncate"
 import { RepoOverviewTool } from "../../src/tool/repo_overview"
 import { disposeAllInstances, provideTmpdirInstance, tmpdirScoped } from "../fixture/fixture"
@@ -25,6 +26,34 @@ const ctx = {
   messages: [],
   metadata: () => Effect.void,
   ask: () => Effect.void,
+}
+
+function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
+  const sessionID = SessionID.make("ses_repo_overview")
+  const messageID = MessageID.make("msg_repo_overview")
+  return {
+    version: "aialra.user_turn.v1",
+    turnID: messageID,
+    sessionID,
+    messageID,
+    startedAt: Date.now(),
+    items: [],
+    cwd,
+    approval_policy: "never",
+    sandbox_policy: CodexTurn.defaultSandboxPolicy(cwd),
+    permission_profile: CodexTurn.workspacePermissionProfile(cwd),
+    active_permission_profile: { id: ":workspace" },
+    model: { providerID: "test", modelID: "test" },
+    collaboration_mode: { kind: "default" },
+    environments: [{ environmentID: "default", cwd }],
+    selected_environment_id: "default",
+    route: "prompt",
+    agent: "scout",
+    noReply: false,
+    format: "text",
+    retry: CodexTurn.retryConfig({}),
+    ...overrides,
+  }
 }
 
 const it = testEffect(
@@ -108,6 +137,20 @@ describe("tool.repo_overview", () => {
 
         expect(result.metadata.path).toBe(path.join(dir, "nested"))
         expect(result.output).toContain("README.md")
+      }),
+    ),
+  )
+
+  it.live("denies turn-scoped repo overview searches outside the selected workspace", () =>
+    provideTmpdirInstance((_dir) =>
+      Effect.gen(function* () {
+        const repo = yield* tmpdirScoped({ git: true })
+        const outside = yield* tmpdirScoped({ git: true })
+        const tool = yield* init()
+        const result = yield* tool.execute({ path: outside }, { ...ctx, turn: turn(repo) }).pipe(Effect.exit)
+
+        expect(Exit.isFailure(result)).toBe(true)
+        if (Exit.isFailure(result)) expect(Cause.pretty(result.cause)).toContain("recursive search outside")
       }),
     ),
   )

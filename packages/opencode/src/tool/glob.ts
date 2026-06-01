@@ -9,6 +9,8 @@ import DESCRIPTION from "./glob.txt"
 import * as Tool from "./tool"
 import { Reference } from "@/reference/reference"
 import { TurnSandbox } from "./turn-sandbox"
+import { CodexFs } from "./codex-fs"
+import { AialraTurnTrace } from "@/session/turn-trace"
 
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The glob pattern to match files against" }),
@@ -44,7 +46,7 @@ export const GlobTool = Tool.define(
           yield* TurnSandbox.assertFileAccess(ctx, "read", search)
           yield* TurnSandbox.assertSearchScope(ctx, search)
           yield* reference.ensure(search)
-          const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const info = yield* CodexFs.stat(ctx, fs, search).pipe(Effect.catch(() => Effect.succeed(undefined)))
           if (info?.type === "File") {
             throw new Error(`glob path must be a directory: ${search}`)
           }
@@ -52,6 +54,19 @@ export const GlobTool = Tool.define(
             bypass: yield* reference.contains(search),
             kind: "directory",
           })
+          yield* AialraTurnTrace.emit({
+            phase: "exec_server.fallback",
+            turnID: ctx.turn?.turnID,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            data: {
+              method: "fs/search",
+              tool: "glob",
+              reason: "Codex exec-server has no fs/glob API; using TurnContext-gated ripgrep adapter",
+              search,
+              pattern: params.pattern,
+            },
+          }).pipe(Effect.ignore)
 
           const limit = 100
           let truncated = false
@@ -59,7 +74,7 @@ export const GlobTool = Tool.define(
             Stream.mapEffect((file) =>
               Effect.gen(function* () {
                 const full = path.resolve(search, file)
-                const info = yield* fs.stat(full).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                const info = yield* CodexFs.stat(ctx, fs, full).pipe(Effect.catch(() => Effect.succeed(undefined)))
                 const mtime =
                   info?.mtime.pipe(
                     Option.map((date) => date.getTime()),

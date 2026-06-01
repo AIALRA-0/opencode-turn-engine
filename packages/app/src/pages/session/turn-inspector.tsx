@@ -11,6 +11,7 @@ import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { authTokenFromCredentials } from "@/utils/server"
+import { Virtualizer } from "virtua/solid"
 
 export type PublicEvent = {
   schema: "aialra.public_event.v1"
@@ -54,6 +55,10 @@ type EventSection = {
   events: PublicEvent[]
 }
 
+type InspectorRow =
+  | { type: "section"; section: EventSection }
+  | { type: "event"; sectionKey: string; event: PublicEvent }
+
 const filterLabels: Record<Filter, string> = {
   all: "全部",
   error: "错误",
@@ -77,6 +82,7 @@ const typeLabels: Record<string, string> = {
   "turn.step_budget.changed": "步骤上限已切换",
   "turn.completed": "回合完成",
   "turn.aborted": "回合中断",
+  "turn.terminal.assistant_error": "终态错误消息",
   "turn.terminal.anomaly": "终态异常",
   "turn.terminal.reconciled": "终态已校准",
   "engineering.controls.changed": "工程控制已变更",
@@ -86,6 +92,7 @@ const typeLabels: Record<string, string> = {
   "engineering.phase.changed": "工程阶段切换",
   "engineering.artifact.updated": "工程产物已更新",
   "engineering.verification.finished": "工程验证结束",
+  "engineering.verification.repair_requested": "验证反馈已注入",
   "engineering.phase_gate.blocked_tool": "阶段门禁阻止工具",
   "engineering.phase_gate.premature_final": "阶段门禁继续执行",
   "engineering.zero_patch.detected": "检测到零补丁",
@@ -140,6 +147,9 @@ const statusLabels: Record<string, string> = {
   replaced: "已替换",
   review_ended: "评审结束",
   budget_limited: "预算耗尽",
+  assistant_error: "助手消息错误",
+  model_not_started: "模型没有成功启动",
+  runner_no_terminal: "评测器没有等到终态",
   retrying: "重试中",
   error: "错误",
   failed: "失败",
@@ -214,6 +224,22 @@ const textValue = (value: unknown) => (typeof value === "string" && value.trim()
 
 const numberValue = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined)
 
+function sectionInsights(events: PublicEvent[]) {
+  return [
+    events.some((event) => event.type === "engineering.zero_patch.detected" || event.type === "engineering.zero_patch.recovery_requested")
+      ? "零补丁恢复"
+      : undefined,
+    events.some((event) => event.type === "engineering.verification.finished" && event.status !== "passed")
+      ? "验证失败反馈"
+      : undefined,
+    events.some((event) => event.type === "engineering.stop_gate.activated") ? "通过即停止" : undefined,
+    events.some((event) => event.type === "executor.fallback") ? "执行器回退" : undefined,
+    events.some((event) => event.severity === "error")
+      ? `${events.filter((event) => event.severity === "error").length} 个错误`
+      : undefined,
+  ].filter((item): item is string => !!item)
+}
+
 function localizedTitle(event: PublicEvent) {
   return typeLabels[event.type] ?? event.title ?? event.type
 }
@@ -257,6 +283,8 @@ function localizedSummary(event: PublicEvent) {
       return `本轮正常收尾${durationMs !== undefined ? `，耗时 ${durationMs} ms` : ""}`
     case "turn.aborted":
       return `本轮被中断${reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
+    case "turn.terminal.assistant_error":
+      return `系统已写入错误消息${reason ? `，原因：${localizedStatus(reason) ?? reason}` : ""}`
     case "turn.terminal.anomaly":
       return `本轮收尾时发现异常${reason ? `：${localizedStatus(reason) ?? reason}` : ""}`
     case "turn.terminal.reconciled":
@@ -275,6 +303,8 @@ function localizedSummary(event: PublicEvent) {
       return event.summary || "工程状态机更新了定位、修改或验证产物"
     case "engineering.verification.finished":
       return event.status === "passed" ? "验证命令通过，系统将进入最终汇报" : "验证命令失败，系统会把失败信息反馈给模型继续修"
+    case "engineering.verification.repair_requested":
+      return "模型在验证失败后准备结束，系统已把失败日志重新塞回修复阶段"
     case "engineering.phase_gate.blocked_tool":
       return `模型在当前工程阶段过早调用工具，系统已阻止${tool ? `：${tool}` : ""}`
     case "engineering.phase_gate.premature_final":
@@ -412,6 +442,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
     error: undefined as string | undefined,
   })
   const [pinnedToBottom, setPinnedToBottom] = createSignal(true)
+  const [scrollRoot, setScrollRoot] = createSignal<HTMLDivElement>()
   let autoCollapsedLatestTurn: string | undefined
   let viewportRef: HTMLDivElement | undefined
 
@@ -469,6 +500,15 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
     if (!section.turnID) return
     setStore("collapsedTurns", section.key, !isCollapsed(section))
   }
+
+  const inspectorRows = createMemo<InspectorRow[]>(() =>
+    eventSections().flatMap((section) => [
+      { type: "section", section } satisfies InspectorRow,
+      ...(isCollapsed(section)
+        ? []
+        : section.events.map((event) => ({ type: "event", sectionKey: section.key, event }) satisfies InspectorRow)),
+    ]),
+  )
 
   const updatePinnedToBottom = () => {
     const viewport = viewportRef
@@ -638,6 +678,7 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
           data-scrollable
           viewportRef={(el) => {
             viewportRef = el
+            setScrollRoot(el)
             updatePinnedToBottom()
           }}
           onScroll={updatePinnedToBottom}
@@ -651,72 +692,80 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
                 </div>
               }
             >
-              <div class="flex flex-col gap-3">
-                <For each={eventSections()}>
-                  {(section) => (
-                    <div class="flex flex-col gap-1">
-                      <div class="px-1 pt-1 flex items-center gap-2 text-10-regular text-text-muted">
-                        <div class="h-px flex-1 bg-border-weaker-base" />
-                        <button
-                          type="button"
-                          class="shrink-0 inline-flex items-center gap-1 hover:text-text-base"
-                          onClick={() => toggleSection(section)}
-                        >
-                          <Show when={section.turnID}>
-                            <Icon name={isCollapsed(section) ? "chevron-right" : "chevron-down"} size="small" />
-                          </Show>
-                          <span>{section.turnID ? `回合 ${shortID(section.turnID)}` : "全局事件"}</span>
-                        </button>
-                        <span class="shrink-0">{section.events.length} 条</span>
-                        <div class="h-px flex-1 bg-border-weaker-base" />
-                      </div>
-                      <Show
-                        when={!isCollapsed(section)}
-                        fallback={<></>}
-                      >
-                        <For each={section.events}>
+              <Show when={scrollRoot()}>
+                {(root) => (
+                  <Virtualizer data={inspectorRows()} itemSize={58} scrollRef={root()}>
+                    {(row) => (
+                      <Switch>
+                        <Match when={row.type === "section" ? row.section : undefined}>
+                          {(section) => (
+                            <div class="px-1 pt-2 pb-1 flex items-center gap-2 text-10-regular text-text-muted">
+                              <div class="h-px flex-1 bg-border-weaker-base" />
+                              <button
+                                type="button"
+                                class="shrink-0 inline-flex items-center gap-1 hover:text-text-base"
+                                onClick={() => toggleSection(section())}
+                              >
+                                <Show when={section().turnID}>
+                                  <Icon name={isCollapsed(section()) ? "chevron-right" : "chevron-down"} size="small" />
+                                </Show>
+                                <span>{section().turnID ? `回合 ${shortID(section().turnID)}` : "全局事件"}</span>
+                              </button>
+                              <span class="shrink-0">{section().events.length} 条</span>
+                              <For each={sectionInsights(section().events)}>
+                                {(insight) => (
+                                  <span class="shrink-0 rounded bg-surface-weak px-1.5 py-0.5 text-10-regular text-text-weak">
+                                    {insight}
+                                  </span>
+                                )}
+                              </For>
+                              <div class="h-px flex-1 bg-border-weaker-base" />
+                            </div>
+                          )}
+                        </Match>
+                        <Match when={row.type === "event" ? row.event : undefined}>
                           {(event) => {
-                            const raw = () => store.raw[event.id]
+                            const raw = () => store.raw[event().id]
                             return (
                               <div class="group rounded-md border border-transparent hover:border-border-weaker-base hover:bg-surface-panel transition-colors">
                                 <div class="px-2 py-2 flex items-start gap-2">
                                   <div
                                     class="mt-0.5 size-5 shrink-0 rounded flex items-center justify-center"
                                     classList={{
-                                      "bg-surface-critical-weak text-text-on-critical-weak": event.severity === "error",
-                                      "bg-surface-warning-weak text-text-on-warning-base": event.severity === "warning",
-                                      "bg-surface-weak text-icon-weak": event.severity === "info",
+                                      "bg-surface-critical-weak text-text-on-critical-weak": event().severity === "error",
+                                      "bg-surface-warning-weak text-text-on-warning-base": event().severity === "warning",
+                                      "bg-surface-weak text-icon-weak": event().severity === "info",
                                     }}
                                   >
-                                    <Icon name={groupIcon(event)} size="small" />
+                                    <Icon name={groupIcon(event())} size="small" />
                                   </div>
                                   <div class="min-w-0 flex-1">
                                     <div class="flex items-center gap-2 min-w-0">
-                                      <div class="text-12-medium text-text-strong truncate">{localizedTitle(event)}</div>
-                                      <div class="text-10-regular text-text-muted shrink-0">{formatTime(event.ts)}</div>
+                                      <div class="text-12-medium text-text-strong truncate">{localizedTitle(event())}</div>
+                                      <div class="text-10-regular text-text-muted shrink-0">{formatTime(event().ts)}</div>
                                     </div>
                                     <div class="mt-0.5 text-11-regular text-text-weak truncate">
-                                      {localizedSummary(event)}
+                                      {localizedSummary(event())}
                                     </div>
                                     <div class="mt-1 flex flex-wrap gap-1 text-10-regular text-text-muted">
-                                      <span>{event.type}</span>
-                                      <Show when={event.status}>
+                                      <span>{event().type}</span>
+                                      <Show when={event().status}>
                                         {(status) => <span>{localizedStatus(status())}</span>}
                                       </Show>
-                                      <Show when={event.toolCallID}>
-                                        <span>{event.toolCallID}</span>
+                                      <Show when={event().toolCallID}>
+                                        <span>{event().toolCallID}</span>
                                       </Show>
                                     </div>
                                   </div>
-                                  <Show when={event.rawRef}>
+                                  <Show when={event().rawRef}>
                                     <Button
                                       variant="ghost"
                                       size="small"
                                       class="h-6 px-2 opacity-0 group-hover:opacity-100 focus:opacity-100"
                                       onClick={() =>
                                         raw()?.value !== undefined || raw()?.error
-                                          ? clearRaw(event.id)
-                                          : void loadRaw(event)
+                                          ? clearRaw(event().id)
+                                          : void loadRaw(event())
                                       }
                                     >
                                       {raw()?.value !== undefined || raw()?.error ? "收起" : "原始"}
@@ -745,12 +794,12 @@ export function TurnInspectorPanel(props: { sessionID: string | undefined; activ
                               </div>
                             )
                           }}
-                        </For>
-                      </Show>
-                    </div>
-                  )}
-                </For>
-              </div>
+                        </Match>
+                      </Switch>
+                    )}
+                  </Virtualizer>
+                )}
+              </Show>
             </Show>
           </div>
         </ScrollView>

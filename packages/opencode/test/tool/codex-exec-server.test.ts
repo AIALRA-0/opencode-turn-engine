@@ -83,12 +83,43 @@ runIfCodex("Codex exec-server FS API reads and writes inside the turn workspace"
     const active = turn(cwd)
     const file = path.join(cwd, "inside.txt")
     await CodexExecServer.writeFile({ path: file, data: "fs-ok", ctx: ctx(active) })
+    const metadata = await CodexExecServer.getMetadata({ path: file, ctx: ctx(active) })
+    expect(metadata.isFile).toBe(true)
     const bytes = await CodexExecServer.readFile({ path: file, ctx: ctx(active) })
     expect(bytes.toString("utf8")).toBe("fs-ok")
+    await CodexExecServer.copy({ from: file, to: path.join(cwd, "copied.txt"), ctx: ctx(active) })
+    const copied = await CodexExecServer.readFile({ path: path.join(cwd, "copied.txt"), ctx: ctx(active) })
+    expect(copied.toString("utf8")).toBe("fs-ok")
     const listed = await CodexExecServer.readDirectory({ path: cwd, ctx: ctx(active) })
     expect(listed.entries.some((entry) => entry.fileName === "inside.txt" && entry.isFile)).toBe(true)
+    expect(listed.entries.some((entry) => entry.fileName === "copied.txt" && entry.isFile)).toBe(true)
   } finally {
     await fs.rm(cwd, { recursive: true, force: true })
+  }
+})
+
+runIfCodex("Codex exec-server HTTP API performs a buffered request", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (request) =>
+      new Response(`method=${request.method};body=${await request.text()}`, {
+        status: 201,
+        headers: { "x-aialra-http": "ok" },
+      }),
+  })
+  try {
+    const response = await CodexExecServer.httpRequest({
+      url: new URL("/exec-http", server.url).toString(),
+      method: "POST",
+      headers: { "x-aialra-test": "http" },
+      body: "hello",
+      ctx: ctx(turn(process.cwd(), { network_policy: "on" })),
+    })
+    expect(response.status).toBe(201)
+    expect(response.headers.some((header) => header.name.toLowerCase() === "x-aialra-http" && header.value === "ok")).toBe(true)
+    expect(Buffer.from(response.bodyBase64, "base64").toString("utf8")).toBe("method=POST;body=hello")
+  } finally {
+    server.stop(true)
   }
 })
 

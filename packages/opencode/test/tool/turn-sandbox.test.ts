@@ -601,6 +601,56 @@ describe("Codex turn sandbox tool gates", () => {
     }),
   )
 
+  it.instance("prevents bash mkdir mv cp hardlink and temp-file writes outside the workspace", () =>
+    Effect.gen(function* () {
+      if (!canRunBwrapSandbox()) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      const outside = outsideRepoFile("outside-primitives")
+      const outsideDir = `${outside}-dir`
+      const outsideCp = `${outside}-copy`
+      const outsideLink = `${outside}-hardlink`
+      const outsideTmp = `${outside}-tmp`
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      yield* Effect.promise(() => fs.writeFile(path.join(cwd, "inside-source.txt"), "inside"))
+      Shell.acceptable.reset()
+      const tool = yield* initShell()
+
+      try {
+        const result = yield* tool.execute(
+          {
+            command: [
+              `mkdir -p ${JSON.stringify(outsideDir)}`,
+              `mv inside-source.txt ${JSON.stringify(outside)}`,
+              `cp /etc/hosts ${JSON.stringify(outsideCp)}`,
+              `ln /etc/hosts ${JSON.stringify(outsideLink)}`,
+              `printf bad > ${JSON.stringify(outsideTmp)}`,
+            ].join("; "),
+            description: "attempt outside write primitives",
+          },
+          ctx(turn(cwd)),
+        )
+
+        expect(result.metadata.exit).not.toBe(0)
+        expect(fssync.existsSync(outside)).toBe(false)
+        expect(fssync.existsSync(outsideDir)).toBe(false)
+        expect(fssync.existsSync(outsideCp)).toBe(false)
+        expect(fssync.existsSync(outsideLink)).toBe(false)
+        expect(fssync.existsSync(outsideTmp)).toBe(false)
+      } finally {
+        yield* Effect.promise(() =>
+          Promise.all([
+            fs.rm(outside, { force: true }),
+            fs.rm(outsideDir, { recursive: true, force: true }),
+            fs.rm(outsideCp, { force: true }),
+            fs.rm(outsideLink, { force: true }),
+            fs.rm(outsideTmp, { force: true }),
+          ]),
+        )
+      }
+    }),
+  )
+
   it.instance("keeps missing protected metadata mounts stable across concurrent bash calls", () =>
     Effect.gen(function* () {
       if (!canRunBwrapSandbox()) return

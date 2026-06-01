@@ -15,7 +15,12 @@ export type LinuxSandboxCapability = {
   kernel: {
     release: string
     landlockLikelyAvailable: boolean
-    landlockProbe: "kernel-version-only" | "unsupported-platform"
+    landlockProbe: "sysfs-and-lsm" | "unsupported-platform"
+    lsmRaw?: string
+    lsmEnabled: boolean
+    abi?: number
+    abiError?: string
+    enforcePoC: CommandProbe
   }
   bwrap: CommandProbe & {
     version?: string
@@ -80,6 +85,39 @@ function kernelSupportsLandlock(release: string) {
   const major = Number(match[1])
   const minor = Number(match[2])
   return major > 5 || (major === 5 && minor >= 13)
+}
+
+function readText(file: string) {
+  try {
+    return fs.readFileSync(file, "utf8").trim()
+  } catch {
+    return undefined
+  }
+}
+
+function landlockProbe(platform: NodeJS.Platform) {
+  if (platform !== "linux") {
+    return {
+      lsmRaw: undefined,
+      lsmEnabled: false,
+      abi: undefined,
+      abiError: "unsupported platform",
+      enforcePoC: { available: false, error: "unsupported platform" },
+    }
+  }
+  const lsmRaw = readText("/sys/kernel/security/lsm")
+  const abiRaw = readText("/sys/kernel/security/landlock/abi")
+  const abi = abiRaw ? Number(abiRaw) : undefined
+  return {
+    lsmRaw,
+    lsmEnabled: lsmRaw?.split(",").includes("landlock") ?? false,
+    abi: Number.isFinite(abi) ? abi : undefined,
+    abiError: abiRaw ? undefined : "missing /sys/kernel/security/landlock/abi; native syscall probe is required before claiming Landlock enforcement",
+    enforcePoC: {
+      available: false,
+      error: "not enforced in Node/Bun tool layer; use Codex Rust sandbox helper for syscall-level Landlock enforcement",
+    },
+  }
 }
 
 function bwrapProbe(path: string | undefined) {
@@ -197,8 +235,9 @@ export function probeLinuxSandboxCapability(input?: { refresh?: boolean }): Linu
     ? run([codexPath, "exec-server", "--help"])
     : { available: false, error: "codex not found" }
   const linuxSandbox = codexPath
-    ? run([codexPath, "sandbox", "linux", "--help"])
+    ? run([codexPath, "sandbox", "--help"])
     : { available: false, error: "codex not found" }
+  const landlock = landlockProbe(platform)
 
   const notes: string[] = []
   if (platform !== "linux") notes.push("Linux sandbox probes are informational on non-Linux platforms.")
@@ -207,14 +246,17 @@ export function probeLinuxSandboxCapability(input?: { refresh?: boolean }): Linu
   if (bwrap.available && !bwrap.userNamespaceProbe.available) notes.push("bubblewrap exists but could not create the user/pid namespace in this container.")
   if (bwrap.available && !bwrap.networkNamespaceProbe.available) notes.push("bubblewrap exists but could not create the network namespace in this container; OpenCode will omit --unshare-net and report the degraded network sandbox capability.")
   if (bwrap.available && !bwrap.mountProcProbe.available) notes.push("bubblewrap cannot mount /proc in this container; OpenCode will skip --proc like Codex's restrictive-container compatibility path.")
-  notes.push("Landlock is only kernel-version probed here; exact ABI enforcement requires the Codex Rust helper or a native syscall probe.")
+  if (platform === "linux" && !landlock.lsmEnabled) notes.push("Landlock is not listed in /sys/kernel/security/lsm; syscall-level file access enforcement is unavailable in this kernel configuration.")
+  if (platform === "linux" && landlock.lsmEnabled && !landlock.abi) notes.push("Landlock is listed as an LSM, but the ABI sysfs file is not available in this container; Node/Bun cannot claim Landlock enforcement.")
+  notes.push("AIALRA currently enforces Linux tool isolation through bwrap and Codex exec-server permissions; native Landlock enforcement still requires the Codex Rust helper path.")
 
   cached = {
     platform,
     kernel: {
       release,
       landlockLikelyAvailable: platform === "linux" && kernelSupportsLandlock(release),
-      landlockProbe: platform === "linux" ? "kernel-version-only" : "unsupported-platform",
+      landlockProbe: platform === "linux" ? "sysfs-and-lsm" : "unsupported-platform",
+      ...landlock,
     },
     bwrap,
     codex: {

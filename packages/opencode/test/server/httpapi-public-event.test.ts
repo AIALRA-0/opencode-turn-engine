@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { PublicEventLog } from "../../src/session/public-event"
+import { PUBLIC_EVENT_TYPES, PublicEventLog } from "../../src/session/public-event"
 import { SessionSecurity } from "../../src/session/security"
 import { AialraTurnTrace } from "../../src/session/turn-trace"
 import { Server } from "../../src/server/server"
@@ -91,6 +91,43 @@ describe("public event HttpApi", () => {
     })
   })
 
+  test("resumes public session event replay after Last-Event-ID", async () => {
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    const first = PublicEventLog.recordTrace({
+      phase: "turn.started",
+      sessionID: "ses_replay",
+      turnID: "msg_replay_1",
+      messageID: "msg_replay_1",
+      data: { cwd: tmp.path },
+    })
+    PublicEventLog.recordTrace({
+      phase: "turn.completed",
+      sessionID: "ses_replay",
+      turnID: "msg_replay_1",
+      messageID: "msg_replay_1",
+      data: { durationMs: 10 },
+    })
+
+    const response = await app().request(EventPaths.sessionPublicEvents.replace(":sessionID", "ses_replay"), {
+      headers: { "x-opencode-directory": tmp.path, "last-event-id": first!.id },
+    })
+
+    expect(response.status).toBe(200)
+    const event = await readEvent(response)
+    expect(event.id).not.toBe(first!.id)
+    expect(event.sequence).toBeGreaterThan(first!.sequence)
+    expect(PublicEventLog.list({ sessionID: "ses_replay", afterID: first!.id })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+      schema: "aialra.public_event.v1",
+      type: "turn.completed",
+      sessionID: "ses_replay",
+      turnID: "msg_replay_1",
+        }),
+      ]),
+    )
+  })
+
   test("stores raw payload separately and keeps safe events short", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
     const longPrompt = `${"x".repeat(9000)} opaque_marker_should_not_leak`
@@ -152,6 +189,69 @@ describe("public event HttpApi", () => {
         }),
       ]),
     )
+  })
+
+  test("public event protocol covers V3 terminal, executor, and engineering events", () => {
+    PublicEventLog.recordTrace({
+      phase: "turn.terminal.assistant_error",
+      sessionID: "ses_schema",
+      turnID: "msg_schema",
+      messageID: "msg_schema",
+      data: { reason: "model_not_started" },
+    })
+    PublicEventLog.recordTrace({
+      phase: "exec_server.http.started",
+      sessionID: "ses_schema",
+      turnID: "msg_schema",
+      messageID: "msg_schema",
+      data: { method: "GET", url: "https://example.com" },
+    })
+    PublicEventLog.recordManual({
+      type: "engineering.stop_gate.blocked_tool",
+      severity: "warning",
+      sessionID: "ses_schema",
+      turnID: "msg_schema",
+      messageID: "msg_schema",
+      title: "Stop gate blocked tool",
+      summary: "验证已通过，阻止继续调用工具",
+      status: "blocked",
+      data: { tool: "bash", reason: "verification_passed" },
+      raw: { tool: "bash", reason: "verification_passed" },
+    })
+
+    for (const event of PublicEventLog.list({ sessionID: "ses_schema" })) {
+      expect(event.schema).toBe("aialra.public_event.v1")
+      expect(typeof event.id).toBe("string")
+      expect(event.sequence).toBeGreaterThan(0)
+      expect(typeof event.ts).toBe("string")
+      expect(event.sessionID).toBe("ses_schema")
+      expect(event.turnID).toBe("msg_schema")
+      expect(typeof event.title).toBe("string")
+      expect(typeof event.data).toBe("object")
+    }
+    expect(PublicEventLog.list({ sessionID: "ses_schema" }).map((event) => event.type).filter((type) => type !== "audit.encryption.unavailable")).toEqual([
+      "turn.terminal.assistant_error",
+      "executor.started",
+      "engineering.stop_gate.blocked_tool",
+    ])
+  })
+
+  test("public event protocol registry documents every event type", () => {
+    const protocol = PublicEventLog.protocol()
+
+    expect(protocol.map((event) => event.type)).toEqual([...PUBLIC_EVENT_TYPES])
+    for (const event of protocol) {
+      expect(event.schema).toBe("aialra.public_event.v1")
+      expect(event.title.length).toBeGreaterThan(0)
+      expect(event.description.length).toBeGreaterThan(0)
+      expect(event.fields.map((field) => field.name)).toEqual(
+        expect.arrayContaining(["schema", "id", "sequence", "ts", "type", "severity", "title", "data", "data.*"]),
+      )
+      expect(event.fields.every((field) => field.description.length > 0)).toBe(true)
+      expect(event.permission).toBe("session_owner")
+      expect(event.replay).toBe("session_buffer_with_last_event_id")
+      expect(["none", "rawRef_only"]).toContain(event.raw)
+    }
   })
 
   test("Sandbox Control Center changes are public audit events", () => {

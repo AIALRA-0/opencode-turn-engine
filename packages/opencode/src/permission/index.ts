@@ -13,6 +13,7 @@ import { Deferred, Effect, Layer, Schema, Context } from "effect"
 import os from "os"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { PermissionID } from "./schema"
+import { PublicEventLog } from "@/session/public-event"
 
 const log = Log.create({ service: "permission" })
 
@@ -148,10 +149,96 @@ interface PendingEntry {
 interface State {
   pending: Map<PermissionID, PendingEntry>
   approved: Rule[]
+  turnCommandApproved: Map<string, boolean>
+  turnAllApproved: Map<string, boolean>
+  sessionCommandApproved: Map<string, boolean>
+  sessionAllApproved: Map<SessionID, boolean>
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: Ruleset[]): Rule {
   return PermissionV2.evaluate(permission, pattern, ...rulesets)
+}
+
+type ScopedPermissionRequest = Pick<Request, "sessionID" | "turnID" | "permission" | "patterns">
+
+function commandSignature(input: Pick<ScopedPermissionRequest, "permission" | "patterns">) {
+  return `${input.permission}:${input.patterns.join("\u0000")}`
+}
+
+function turnKey(input: Pick<ScopedPermissionRequest, "sessionID" | "turnID">) {
+  if (!input.turnID) return
+  return `${input.sessionID}:${input.turnID}`
+}
+
+function turnCommandKey(input: ScopedPermissionRequest) {
+  const key = turnKey(input)
+  if (!key) return
+  return `${key}:${commandSignature(input)}`
+}
+
+function sessionCommandKey(input: Pick<ScopedPermissionRequest, "sessionID" | "permission" | "patterns">) {
+  return `${input.sessionID}:${commandSignature(input)}`
+}
+
+function isScopedApproved(state: State, input: ScopedPermissionRequest) {
+  if (state.sessionAllApproved.get(input.sessionID)) return true
+  if (state.sessionCommandApproved.get(sessionCommandKey(input))) return true
+  const key = turnKey(input)
+  if (key && state.turnAllApproved.get(key)) return true
+  const commandKey = turnCommandKey(input)
+  return commandKey ? state.turnCommandApproved.get(commandKey) === true : false
+}
+
+function approveScope(state: State, input: ScopedPermissionRequest, scope: ReplyScope | undefined) {
+  if (scope === "turn-command") {
+    const key = turnCommandKey(input)
+    if (key) state.turnCommandApproved.set(key, true)
+    return
+  }
+  if (scope === "turn-all") {
+    const key = turnKey(input)
+    if (key) state.turnAllApproved.set(key, true)
+    return
+  }
+  if (scope === "always-command") {
+    state.sessionCommandApproved.set(sessionCommandKey(input), true)
+    return
+  }
+  if (scope === "always-all") {
+    state.sessionAllApproved.set(input.sessionID, true)
+  }
+}
+
+function recordApprovalScope(input: { request: Request; reply: Reply; scope?: ReplyScope; propagated?: boolean }) {
+  PublicEventLog.recordManual({
+    type: input.reply === "reject" ? "security.override.resolved" : "security.override.resolved",
+    severity: input.reply === "reject" ? "warning" : "info",
+    sessionID: input.request.sessionID,
+    turnID: input.request.turnID,
+    messageID: input.request.tool?.messageID ?? input.request.turnID,
+    toolCallID: input.request.tool?.callID,
+    title: "Approval reviewer resolved",
+    summary: `审批处理：${input.scope ?? input.reply}`,
+    status: input.scope ?? input.reply,
+    data: {
+      reply: input.reply,
+      scope: input.scope,
+      permission: input.request.permission,
+      patterns: input.request.patterns,
+      approvalPolicy: input.request.approvalPolicy,
+      permissionProfile: input.request.permissionProfile,
+      sandboxPolicy: input.request.sandboxPolicy,
+      propagated: input.propagated === true,
+      linkage: "approval_scope_updates_server_reviewer_state",
+    },
+    raw: {
+      source: "permission.reply",
+      reply: input.reply,
+      scope: input.scope,
+      request: input.request,
+      propagated: input.propagated === true,
+    },
+  })
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Permission") {}
@@ -168,6 +255,10 @@ export const layer = Layer.effect(
         const state = {
           pending: new Map<PermissionID, PendingEntry>(),
           approved: [...(row?.data ?? [])],
+          turnCommandApproved: new Map<string, boolean>(),
+          turnAllApproved: new Map<string, boolean>(),
+          sessionCommandApproved: new Map<string, boolean>(),
+          sessionAllApproved: new Map<SessionID, boolean>(),
         }
 
         yield* Effect.addFinalizer(() =>
@@ -201,6 +292,7 @@ export const layer = Layer.effect(
       }
 
       if (!needsAsk) return
+      if (isScopedApproved(yield* InstanceState.get(state), request)) return
 
       const id = request.id ?? PermissionID.ascending()
       const info: Request = {
@@ -241,6 +333,7 @@ export const layer = Layer.effect(
         reply: input.reply,
         scope: input.scope,
       })
+      recordApprovalScope({ request: existing.info, reply: input.reply, scope: input.scope })
 
       if (input.reply === "reject") {
         yield* Deferred.fail(
@@ -257,11 +350,13 @@ export const layer = Layer.effect(
             reply: "reject",
             scope: input.scope,
           })
+          recordApprovalScope({ request: item.info, reply: "reject", scope: input.scope, propagated: true })
           yield* Deferred.fail(item.deferred, new RejectedError())
         }
         return
       }
 
+      approveScope(yield* InstanceState.get(state), existing.info, input.scope)
       yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 
@@ -275,9 +370,9 @@ export const layer = Layer.effect(
 
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
-        const ok = item.info.patterns.every(
-          (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
-        )
+        const ok =
+          isScopedApproved(yield* InstanceState.get(state), item.info) ||
+          item.info.patterns.every((pattern) => evaluate(item.info.permission, pattern, approved).action === "allow")
         if (!ok) continue
         pending.delete(id)
         yield* bus.publish(Event.Replied, {
@@ -286,6 +381,7 @@ export const layer = Layer.effect(
           reply: "always",
           scope: input.scope,
         })
+        recordApprovalScope({ request: item.info, reply: "always", scope: input.scope, propagated: true })
         yield* Deferred.succeed(item.deferred, undefined)
       }
     })

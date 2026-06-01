@@ -18,6 +18,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Git } from "@/git"
 import { Permission } from "../../src/permission"
 import type * as Tool from "../../src/tool/tool"
+import { PublicEventLog } from "../../src/session/public-event"
 
 const referenceLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Reference.layer.pipe(
@@ -115,6 +116,14 @@ describe("tool.glob", () => {
       expect(result.metadata.count).toBe(1)
       expect(result.output).toContain(path.join(test.directory, "a.ts"))
       expect(result.output).not.toContain(path.join(test.directory, "b.txt"))
+      expect(PublicEventLog.list({ sessionID: "ses_test" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "executor.fallback",
+            data: expect.objectContaining({ method: "fs/search", tool: "glob" }),
+          }),
+        ]),
+      )
     }),
   )
 

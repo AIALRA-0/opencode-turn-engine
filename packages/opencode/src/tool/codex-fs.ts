@@ -1,5 +1,5 @@
 import path from "node:path"
-import { Effect } from "effect"
+import { Effect, FileSystem, Option } from "effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { AialraTurnTrace } from "@/session/turn-trace"
 import type * as Tool from "./tool"
@@ -39,6 +39,46 @@ function withFallback<A>(
 }
 
 export namespace CodexFs {
+  export function stat(ctx: Tool.Context, fs: AppFileSystem.Interface, filePath: string) {
+    return withFallback(
+      ctx,
+      "fs/getMetadata",
+      Effect.tryPromise({
+        try: async () => {
+          const metadata = await CodexExecServer.getMetadata({ path: filePath, ctx })
+          return {
+            type: metadata.isDirectory
+              ? "Directory"
+              : metadata.isFile
+                ? "File"
+                : metadata.isSymlink
+                  ? "SymbolicLink"
+                  : "Unknown",
+            mtime: metadata.modifiedAtMs > 0 ? Option.some(new Date(metadata.modifiedAtMs)) : Option.none(),
+            atime: Option.none(),
+            birthtime: metadata.createdAtMs > 0 ? Option.some(new Date(metadata.createdAtMs)) : Option.none(),
+            dev: 0,
+            ino: Option.none(),
+            mode: 0,
+            nlink: Option.none(),
+            uid: Option.none(),
+            gid: Option.none(),
+            rdev: Option.none(),
+            size: FileSystem.Size(0),
+            blksize: Option.none(),
+            blocks: Option.none(),
+          } satisfies FileSystem.File.Info
+        },
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      }),
+      fs.stat(filePath),
+    )
+  }
+
+  export function existsSafe(ctx: Tool.Context, fs: AppFileSystem.Interface, filePath: string) {
+    return stat(ctx, fs, filePath).pipe(Effect.as(true), Effect.catch(() => Effect.succeed(false)))
+  }
+
   export function readDirectoryEntries(
     ctx: Tool.Context,
     fs: AppFileSystem.Interface,
@@ -138,6 +178,20 @@ export namespace CodexFs {
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       }),
       fs.remove(filePath, options),
+    )
+  }
+
+  export function copy(ctx: Tool.Context, fs: AppFileSystem.Interface, from: string, to: string, options?: {
+    recursive?: boolean
+  }) {
+    return withFallback(
+      ctx,
+      "fs/copy",
+      Effect.tryPromise({
+        try: () => CodexExecServer.copy({ from, to, recursive: options?.recursive ?? false, ctx }),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      }),
+      fs.copy(from, to),
     )
   }
 }

@@ -21,6 +21,7 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Git } from "@/git"
 import { Filesystem } from "@/util/filesystem"
+import { PublicEventLog } from "../../src/session/public-event"
 
 const referenceLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Reference.layer.pipe(
@@ -124,6 +125,14 @@ describe("tool.grep", () => {
       )
       expect(result.metadata.matches).toBe(0)
       expect(result.output).toBe("No files found")
+      expect(PublicEventLog.list({ sessionID: "ses_test" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "executor.fallback",
+            data: expect.objectContaining({ method: "fs/search", tool: "grep" }),
+          }),
+        ]),
+      )
     }),
   )
 

@@ -1,5 +1,36 @@
 # Assistant Output Log
 
+## 2026-06-01 输出记录：V3 hard gate 和 regression-6 收口
+
+用户明确要求 16 项 V3 目标只有 `未开始`、`部分完成`、`核心完成`、`完全完成` 四种状态，并且只有 16/16 全部 `完全完成` 才允许跑 regression-6，只有 regression-6 通过后才允许跑 full-24
+
+本轮执行结果如下：
+
+- 16 项 V3 状态已全部收敛为 `完全完成`
+- `run-real-benchmark.mjs` 的 gate，门禁，已经读取 `status.json`，确保不满足 16/16 时不会 clone 仓库，也不会调用模型
+- `full-24` 另有第二道门禁：必须在 16/16 之后跑过 regression-6，并且 verified pass，官方验证通过数，有提升，或者 zero patch，零补丁数，有下降
+- 已跑 post-completion regression-6，运行 ID `20260601030607`
+- regression-6 结果：4/6 verified pass，0/6 zero patch，0 timeout，0 approval stuck，6/6 turn terminal，patch quality average 78
+- 同 6 题基线：4/6 verified pass，0/6 zero patch，patch quality average 77
+- 结论：full-24 不允许启动，因为没有 verified pass 提升，也没有 zero patch 下降
+
+人话解释：
+
+这轮不是“没有完成 16 项”，16 项已经完成。问题是完成后用 6 道代表题验收，真实能力没有达到继续烧 full-24 的门槛。系统确实更干净，补丁质量均分略高，但核心目标 verified pass 没涨，zero patch 也没法再降，因为基线已经是 0
+
+这说明下一步不能直接继续大测，而要针对两个未过题做原因分析：`pylint-dev__pylint-7228` 和 `element-web-5e8488...`。尤其要看 repair feedback 是否真的把官方验证失败内容转化成更有用的下一轮修改，而不是只让模型短暂再跑一遍
+
+本轮还修了 shell cancel 和 exec-server 相关 flake。Codex exec-server adapter 会在 turn abort 时发送 `process/terminate`，shell tool 会把 abort 标成 aborted，shell 命令也改成通过 bash/zsh 位置参数执行，避免 sandbox 里 `$i` 这类变量被宿主 shell 提前展开
+
+本轮报告路径：
+
+```text
+aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md
+aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607-results.json
+```
+
+部署和浏览器验收记录：线上版本 `0.0.0-dev-202606010402` 已构建部署，`aialra-opencode-web.service`、`aialra-opencode-login.service`、`aialra-codex-exec-server.service` 均为 active。部署 smoke 11 pass，认证 API smoke 确认 `/config`、`/project/current`、`/command`、`/session/status`、`/provider`、`/lsp` 均为 200。本地 Playwright smoke 没有计为通过：默认 `3000` 端口被 nginx 占用，换到 `3187` 后测试进入用例但没有稳定结束，已终止并记录为浏览器 smoke 未通过，不能伪装成浏览器验收完成
+
 ## 2026-05-31 输出记录：V3 full-24 验收收口和 corrected 结果
 
 本轮继续端到端推进 V3，不再把部分适配说成完全完成

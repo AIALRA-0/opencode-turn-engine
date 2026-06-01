@@ -47,12 +47,26 @@
 
 ## Gate Rule
 
-Run full-24 AIALRA-only only if:
+Hard gate:
+
+```text
+Do not run regression-6 until all 16 V3 implementation targets are 完全完成.
+Do not run full-24 until the post-completion regression-6 gate passes.
+```
+
+The runner enforces this by reading:
+
+```text
+project-plans/v3-general-engineering-harness/status.json
+```
+
+If any target is `未开始`, `部分完成`, or `核心完成`, `regression-6` and `full-24` exit before cloning repos or calling models.
+
+After 16/16 are complete, run full-24 AIALRA-only only if:
 
 ```text
 verified pass count improves
 or zero patch count decreases
-or patch quality score improves materially
 ```
 
 If not:
@@ -105,13 +119,60 @@ Before big runs:
 ## Milestones
 
 1. Ensure tier-regression-6 manifest is current
-2. Add gate rule to benchmark runner
+2. Add hard 16/16 completion gate to benchmark runner
 3. Add quality score to report
 4. Add cleanup command if missing
-5. Run tier-regression-6
-6. Decide full-24 AIALRA-only
-7. Write comparison
+5. Mark every implementation target 完全完成 in status.json
+6. Run tier-regression-6
+7. Decide full-24 AIALRA-only
+8. Write comparison
+
+## 2026-06-01 Post-Completion Regression Result
+
+Run:
+
+```text
+20260601030607
+```
+
+Report:
+
+```text
+aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md
+```
+
+Result:
+
+```text
+verified pass: 4/6
+zero patch: 0/6
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+patch quality average: 78
+```
+
+Baseline on the same 6 tasks:
+
+```text
+verified pass: 4/6
+zero patch: 0/6
+patch quality average: 77
+```
+
+Decision:
+
+```text
+full-24 remains blocked
+```
+
+Reason:
+
+```text
+verified pass did not improve
+zero patch did not decrease
+```
 
 ## Done Means
 
-Benchmark cost is controlled, and every expensive run has a written reason.
+Benchmark cost is controlled, every expensive run has a written reason, and no benchmark can start before the 16 implementation targets are truly complete.

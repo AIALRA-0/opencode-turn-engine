@@ -18,7 +18,7 @@ type PermissionRespondFn = (input: {
   sessionID: string
   permissionID: string
   response: "once" | "always" | "reject"
-  scope?: string
+  scope?: "reject" | "once-command" | "turn-command" | "turn-all" | "always-command" | "always-all"
   directory?: string
 }) => void
 

@@ -105,6 +105,10 @@ export type EngineeringFeedbackItem = {
   detail?: string
   command?: string
   exit?: number | null
+  failedFiles?: string[]
+  assertions?: string[]
+  expected?: string
+  actual?: string
   tool?: string
   at: number
 }
@@ -129,6 +133,10 @@ export type EngineeringVerificationResult = {
   passed: boolean
   summary?: string
   detail?: string
+  failedFiles?: string[]
+  assertions?: string[]
+  expected?: string
+  actual?: string
   at: number
 }
 
@@ -652,6 +660,10 @@ export namespace EngineeringHarness {
         detail: failure.detail,
         command: input.command,
         exit: input.exit,
+        failedFiles: failure.failedFiles,
+        assertions: failure.assertions,
+        expected: failure.expected,
+        actual: failure.actual,
       })
     }
     runtime.artifacts.verificationResults = [
@@ -662,6 +674,10 @@ export namespace EngineeringHarness {
         passed: runtime.verification.passed,
         summary: failure?.summary,
         detail: failure?.detail,
+        failedFiles: failure?.failedFiles,
+        assertions: failure?.assertions,
+        expected: failure?.expected,
+        actual: failure?.actual,
         at: Date.now(),
       },
     ]
@@ -678,6 +694,10 @@ export namespace EngineeringHarness {
         outputChars: input.output?.length ?? 0,
         failureSummary: failure?.summary,
         failureDetail: failure?.detail,
+        failedFiles: failure?.failedFiles,
+        assertions: failure?.assertions,
+        expected: failure?.expected,
+        actual: failure?.actual,
         state: publicState(runtime),
       },
       raw: {
@@ -747,6 +767,53 @@ export namespace EngineeringHarness {
       "只有需要越界写入、删除数据、提升权限或缺少凭证时，才停下来问用户",
       "</system-reminder>",
     ].join("\n")
+  }
+
+  export function verificationRepairPrompt(turn: TurnContext | undefined, text: string) {
+    if (!turn) return
+    const runtime = states.get(turn.turnID)
+    if (!runtime) return
+    if (runtime.stopGate.active || runtime.phase !== "repair") return
+    const failure = runtime.feedback.items.at(-1)
+    if (failure?.kind !== "verification_failed") return
+    if (!looksLikeFinalText(text)) return
+    addFeedback(runtime, {
+      kind: "phase_gate",
+      summary: "模型在验证失败后准备结束，系统要求带着失败信息继续修",
+      detail: failure.detail,
+      command: failure.command,
+      exit: failure.exit,
+    })
+    record(turn, {
+      type: "engineering.artifact.updated",
+      severity: "warning",
+      title: "验证反馈已注入修复阶段",
+      summary: failure.summary,
+      status: "updated",
+      data: {
+        artifact: "repairFeedback",
+        command: failure.command,
+        exit: failure.exit,
+        state: publicState(runtime),
+      },
+      raw: {
+        text,
+        failure,
+      },
+    })
+    return [
+      "<system-reminder>",
+      "验证刚刚失败，不能直接结束本轮",
+      `失败命令：${failure.command ?? runtime.verification.lastCommand ?? "未记录"}`,
+      `失败摘要：${failure.summary}`,
+      failure.failedFiles?.length ? `失败文件：${failure.failedFiles.join(", ")}` : "",
+      failure.expected ? `期望值：${failure.expected}` : "",
+      failure.actual ? `实际值：${failure.actual}` : "",
+      failure.detail ? `失败细节：${failure.detail}` : "",
+      "请根据这条失败反馈继续定位并做最小修复",
+      "修复后重新运行最相关验证",
+      "</system-reminder>",
+    ].filter(Boolean).join("\n")
   }
 
   export function zeroPatchPrompt(turn: TurnContext | undefined, text: string, input?: { workspaceChanged?: boolean }) {
@@ -827,11 +894,14 @@ export namespace EngineeringHarness {
     turn: TurnContext | undefined
     lastAgentMessage?: string
     finalText?: string
+    forcedReason?: string
   }) {
     if (!input.turn || input.turn.noReply) return
     const runtime = states.get(input.turn.turnID)
     if (!runtime) return
-    const reason = !input.lastAgentMessage
+    const reason = input.forcedReason
+      ? input.forcedReason
+      : !input.lastAgentMessage
       ? "missing_assistant"
       : input.finalText !== undefined && input.finalText.trim().length === 0
         ? "empty_final"
@@ -976,6 +1046,9 @@ function writeLikeCommand(input: unknown) {
 function terminalAnomalyLabel(reason: string) {
   return (
     {
+      assistant_error: "助手消息以错误收尾",
+      model_not_started: "模型没有成功启动",
+      runner_no_terminal: "评测器没有等到回合终态",
       missing_assistant: "模型没有产生 assistant 消息",
       empty_final: "最终回复为空",
       zero_patch_exhausted: "零补丁恢复已经耗尽",
@@ -1014,9 +1087,28 @@ function verificationFailure(input: { command: string; exit: number | null; outp
     cleaned.filter((line) => /fail|error|expected|actual|assert|traceback|exception|not ok|ERR_|FAILED/i.test(line)).slice(-12)
       .join("\n") || cleaned.slice(-12).join("\n")
   const detail = interesting.slice(0, Math.min(input.maxChars, 4000))
+  const failedFiles = Array.from(
+    new Set(
+      cleaned
+        .flatMap((line) => [
+          line.match(/(?:File\s+["']|at\s+|location:\s*)([^"'\s:]+(?:\.[A-Za-z0-9]+))(?:["']|:|\s|$)/i)?.[1],
+          line.match(/([A-Za-z0-9_./-]+\.(?:test|spec)?\.(?:js|jsx|ts|tsx|py|rb|go|rs|java|php|cs))(?::\d+)?/)?.[1],
+        ])
+        .filter((item): item is string => !!item),
+    ),
+  ).slice(0, 12)
+  const assertions = cleaned
+    .filter((line) => /assert|expected|actual|toBe|toEqual|not ok|AssertionError|ERR_ASSERTION/i.test(line))
+    .slice(-8)
+  const expected = cleaned.find((line) => /expected/i.test(line))?.slice(0, 500)
+  const actual = cleaned.find((line) => /actual/i.test(line))?.slice(0, 500)
   return {
     summary: `验证命令失败：${input.command}，退出码 ${input.exit ?? "unknown"}`,
     detail: detail || "没有捕获到可读测试输出，请换更小的验证命令或先检查失败日志文件",
+    failedFiles,
+    assertions,
+    expected,
+    actual,
   }
 }
 
@@ -1052,7 +1144,7 @@ function stablePreview(value: unknown) {
 }
 
 function looksLikeVerification(command: string) {
-  return /\b(test|pytest|vitest|jest|mocha|ava|npm\s+test|pnpm\s+test|yarn\s+test|bun\s+test|cargo\s+test|go\s+test|mvn\s+test|gradle\s+test|tox|ruff|eslint|tsc|typecheck)\b/i.test(
+  return /\b(test|check|verify|pytest|vitest|jest|mocha|ava|npm\s+(test|run\s+[^;&|]*test)|pnpm\s+(test|run\s+[^;&|]*test)|yarn\s+(test|run\s+[^;&|]*test)|bun\s+test|node\s+--test|cargo\s+test|go\s+test|mvn\s+test|gradle\s+test|make\s+(test|check)|just\s+(test|check)|tox|nox|hatch\s+test|ruff|eslint|tsc|typecheck)\b/i.test(
     command,
   )
 }

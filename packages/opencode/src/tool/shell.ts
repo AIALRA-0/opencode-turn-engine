@@ -612,6 +612,7 @@ export const ShellTool = Tool.define(
         ).pipe(Effect.ensuring(TurnSandbox.cleanupShellSandboxCommand(input.sandbox)))
 
         if (result.timedOut) expired = true
+        if (result.aborted) aborted = true
         if (result.failure && result.failure !== "timeout") {
           last = preview(last + `\n<exec_server_failure>${result.failure}</exec_server_failure>`)
         }

@@ -1,0 +1,141 @@
+{
+  "version": "aialra.v3_acceptance_status.v1",
+  "updatedAt": "2026-06-01",
+  "allowedStatuses": ["未开始", "部分完成", "核心完成", "完全完成"],
+  "benchmarkGate": {
+    "rule": "只有 16/16 全部完全完成才允许跑 regression-6；regression-6 通过并证明有提升后才允许跑 full-24",
+    "regression6AllowedWhen": "targets.every(target.status === '完全完成')",
+    "full24AllowedWhen": "benchmarkGate.regression6.status === 'passed' && (verifiedPassImproved || zeroPatchDecreased)",
+    "regression6": {
+      "status": "no_improvement",
+      "verifiedPassImproved": false,
+      "zeroPatchDecreased": false,
+      "report": "aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md",
+      "runID": "20260601030607",
+      "target": "aialra-deepseek-v4-pro-max",
+      "verifiedPass": "4/6",
+      "zeroPatch": "0/6",
+      "timeout": 0,
+      "waitingApproval": 0,
+      "patchQualityAverage": 78,
+      "baselineVerifiedPass": "4/6",
+      "baselineZeroPatch": "0/6",
+      "baselinePatchQualityAverage": 77,
+      "decision": "full-24 remains blocked because verified pass did not improve and zero patch did not decrease"
+    }
+  },
+  "targets": [
+    {
+      "id": 1,
+      "name": "Turn terminal reconciler",
+      "status": "完全完成",
+      "evidence": ["turn.terminal.anomaly", "turn.terminal.reconciled", "turn.terminal.assistant_error", "exactly-one terminal noReply test", "prompt cancel and model-not-started paths produce terminal assistant errors"],
+      "remaining": []
+    },
+    {
+      "id": 2,
+      "name": "TurnContext and Codex UserTurn semantic parity",
+      "status": "完全完成",
+      "evidence": ["approvals_reviewer carried by TurnContext", "remote environment exposed as explicit unsupported state", "service_tier/summary/effort enter provider options", "final_output_json_schema carried from format", "http_context gates webfetch/network execution", "EngineeringHarness parity-field trace test"],
+      "remaining": []
+    },
+    {
+      "id": 3,
+      "name": "File tools fully converged to exec-server FS API",
+      "status": "完全完成",
+      "evidence": ["read/readDirectory/write/edit/apply_patch use CodexFs", "CodexFs uses fs/readFile fs/readDirectory fs/writeFile fs/createDirectory fs/getMetadata fs/remove fs/copy", "glob/grep are TurnContext-gated and emit explicit exec_server.fallback because Codex exec-server has no fs/glob or fs/grep method", "workspace/protected/symlink/fallback tests pass"],
+      "remaining": []
+    },
+    {
+      "id": 4,
+      "name": "Environment-scoped cwd",
+      "status": "完全完成",
+      "evidence": ["selected environment cwd participates in TurnSandbox.resolvePath", "GET /session/:sessionID/environment returns selected environment state", "local default environment is stable", "remote environment is explicit unsupported instead of hidden", "turn-sandbox environment cwd test passes"],
+      "remaining": []
+    },
+    {
+      "id": 5,
+      "name": "Outside-workspace write audit",
+      "status": "完全完成",
+      "evidence": ["write/edit/apply_patch/bash redirect/mkdir/mv/cp/hardlink/temp-file escapes are denied", "symlink escape protection exists", ".git/.agents/.codex protected-create is blocked", "Turn Inspector receives sandbox denial events with path and policy"],
+      "remaining": []
+    },
+    {
+      "id": 6,
+      "name": "Linux sandbox parity with Codex source",
+      "status": "完全完成",
+      "evidence": ["bwrap uses new-session die-with-parent unshare-user pid/ipc/net where available", "network on/off is enforced by bwrap args and live controls", "protected-create is emulated with read-only protected metadata mounts", "Codex Linux helper route is probed and documented", "Landlock support is probed with exact kernel/container result and not falsely claimed when native syscall enforce is unavailable", "capability events are emitted per bash launch"],
+      "remaining": []
+    },
+    {
+      "id": 7,
+      "name": "Exec-server as default backend for process, FS, HTTP",
+      "status": "完全完成",
+      "evidence": ["Codex exec-server sidecar is preferred by default and probed at ws://127.0.0.1:12650", "process/start process/read process/terminate pass live tests", "FS read/write/readDirectory/remove/copy paths pass tests", "HTTP request adapter passes buffered request test", "Node/Bun fallback remains audited with exec_server.fallback"],
+      "remaining": []
+    },
+    {
+      "id": 8,
+      "name": "Stable public event stream protocol",
+      "status": "完全完成",
+      "evidence": ["protocol registry covers every public event type", "each protocol entry has Chinese description, fields, raw policy, replay policy, version", "Last-Event-ID replay test passes", "rawRef test proves safe SSE does not expose raw payload"],
+      "remaining": []
+    },
+    {
+      "id": 9,
+      "name": "Productized Turn Inspector",
+      "status": "完全完成",
+      "evidence": ["virtual list is used for long histories", "current turn expands and history turns fold by default", "filters cover all/model/tool/file/command/approval/sandbox/network/fallback/error", "Chinese summaries avoid bare JSON by default", "quality panels cover zero patch, verification feedback, stop gate, fallback, errors", "raw expansion is stable"],
+      "remaining": []
+    },
+    {
+      "id": 10,
+      "name": "Approval reviewer semantics",
+      "status": "完全完成",
+      "evidence": ["six approval scopes are supported: reject, once-command, turn-command, turn-all, always-command, always-all", "server persists turn/session scopes", "Permission.ask auto-applies matching scopes without frontend-only state", "approval.requested/resolved events include TurnContext policy metadata", "Sandbox Control Center receives audit-linked policy changes"],
+      "remaining": []
+    },
+    {
+      "id": 11,
+      "name": "EngineeringRun V3 structured artifacts",
+      "status": "完全完成",
+      "evidence": ["intake schema, suspectedFiles, editPlan, verificationPlan, verificationResult, repairFeedback, finalSummary are represented", "phase transitions emit engineering.phase.changed", "localize/edit/verify/repair/finalize transitions are unit-tested", "zero patch, empty final, no progress and verification failure route into repair or blocked"],
+      "remaining": []
+    },
+    {
+      "id": 12,
+      "name": "Verification feedback loop",
+      "status": "完全完成",
+      "evidence": ["failed verification extracts command, exit, failed file, failed assertion, expected, actual and suggested direction", "FeedbackItem is injected when model tries to finish too early", "repair prompt includes the failure details", "passing verification activates stop gate"],
+      "remaining": []
+    },
+    {
+      "id": 13,
+      "name": "Stop gate completion",
+      "status": "完全完成",
+      "evidence": ["npm test, npm run test:*, pytest, bun test, node --test, cargo test, go test, make check, just test, nox, hatch, pnpm, yarn, ruff, eslint, typecheck are recognized", "verification pass blocks read/bash/edit/write/apply_patch", "blocked tool calls emit engineering.stop_gate.blocked_tool and appear in quality panel"],
+      "remaining": []
+    },
+    {
+      "id": 14,
+      "name": "Zero patch recovery",
+      "status": "完全完成",
+      "evidence": ["bug_fix/refactor/test tasks cannot finalize with empty git diff unless blocked is explicit", "zeroPatchRecoveryMax is controlled by Engineering Controls", "zero patch recovery counters are recorded", "exhaustion emits terminal anomaly and assistant error path", "UI quality panel surfaces zero patch"],
+      "remaining": []
+    },
+    {
+      "id": 15,
+      "name": "Patch quality scoring in benchmark reports",
+      "status": "完全完成",
+      "evidence": ["benchmark report includes patch quality score and per-case quality explanation", "score covers verification, patch presence, source edits, tests, noise, terminal state, repair", "reports include full prompt and cost/time/tool metrics"],
+      "remaining": []
+    },
+    {
+      "id": 16,
+      "name": "Benchmark gate: tier-regression-6 before full-24",
+      "status": "完全完成",
+      "evidence": ["run-real-benchmark refuses regression-6/full-24 until this file has 16/16 完全完成", "full-24 is separately refused until regression-6 has passed with verified-pass improvement or zero-patch decrease", "v3-status-gate tests cover both gates"],
+      "remaining": []
+    }
+  ]
+}

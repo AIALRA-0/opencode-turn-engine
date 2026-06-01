@@ -5,10 +5,18 @@ import * as Tool from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
+import { AialraTurnTrace } from "@/session/turn-trace"
+import { SessionSecurity } from "@/session/security"
+import { CodexExecServer } from "./codex-exec-server"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
+
+type FetchResponse = {
+  headers: Record<string, string>
+  arrayBuffer: ArrayBuffer
+}
 
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "The URL to fetch content from" }),
@@ -26,6 +34,64 @@ export const WebFetchTool = Tool.define(
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const httpOk = HttpClient.filterStatusOk(http)
+    const nodeFetch = (url: string, headers: Record<string, string>, timeout: number) => {
+      const request = HttpClientRequest.get(url).pipe(HttpClientRequest.setHeaders(headers))
+      return httpOk.execute(request).pipe(
+        Effect.catchIf(
+          (err) =>
+            err.reason._tag === "StatusCodeError" &&
+            err.reason.response.status === 403 &&
+            err.reason.response.headers["cf-mitigated"] === "challenge",
+          () =>
+            httpOk.execute(
+              HttpClientRequest.get(url).pipe(
+                HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
+              ),
+            ),
+        ),
+        Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
+        Effect.flatMap((response) =>
+          response.arrayBuffer.pipe(
+            Effect.map((arrayBuffer) => ({ headers: response.headers, arrayBuffer }) satisfies FetchResponse),
+          ),
+        ),
+      )
+    }
+    const fetchResponse = (
+      ctx: Tool.Context,
+      url: string,
+      headers: Record<string, string>,
+      networkAccess: boolean,
+      timeout: number,
+    ) => {
+      const viaNode = nodeFetch(url, headers, timeout)
+      if (!CodexExecServer.enabledForContext(ctx)) return viaNode
+      return Effect.tryPromise({
+        try: async () => {
+          const response = await CodexExecServer.httpRequest({ url, headers, networkAccess, ctx })
+          if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`)
+          const body = Buffer.from(response.bodyBase64, "base64")
+          return {
+            headers: Object.fromEntries(response.headers.map((item) => [item.name.toLowerCase(), item.value])),
+            arrayBuffer: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+          } satisfies FetchResponse
+        },
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      }).pipe(
+        Effect.catch((error) =>
+          AialraTurnTrace.emit({
+            phase: "exec_server.fallback",
+            turnID: ctx.turn?.turnID,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            data: {
+              method: "http/request",
+              reason: error.message,
+            },
+          }).pipe(Effect.ignore, Effect.andThen(viaNode)),
+        ),
+      )
+    }
 
     return {
       description: DESCRIPTION,
@@ -48,6 +114,7 @@ export const WebFetchTool = Tool.define(
           })
 
           const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
+          const networkAccess = yield* ensureNetworkAccess(ctx, params.url)
 
           // Build Accept header based on requested format with q parameters for fallbacks
           let acceptHeader = "*/*"
@@ -73,24 +140,7 @@ export const WebFetchTool = Tool.define(
             "Accept-Language": "en-US,en;q=0.9",
           }
 
-          const request = HttpClientRequest.get(params.url).pipe(HttpClientRequest.setHeaders(headers))
-
-          // Retry with honest UA if blocked by Cloudflare bot detection (TLS fingerprint mismatch)
-          const response = yield* httpOk.execute(request).pipe(
-            Effect.catchIf(
-              (err) =>
-                err.reason._tag === "StatusCodeError" &&
-                err.reason.response.status === 403 &&
-                err.reason.response.headers["cf-mitigated"] === "challenge",
-              () =>
-                httpOk.execute(
-                  HttpClientRequest.get(params.url).pipe(
-                    HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
-                  ),
-                ),
-            ),
-            Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
-          )
+          const response = yield* fetchResponse(ctx, params.url, headers, networkAccess, timeout)
 
           // Check content length
           const contentLength = response.headers["content-length"]
@@ -98,7 +148,7 @@ export const WebFetchTool = Tool.define(
             throw new Error("Response too large (exceeds 5MB limit)")
           }
 
-          const arrayBuffer = yield* response.arrayBuffer
+          const arrayBuffer = response.arrayBuffer
           if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
             throw new Error("Response too large (exceeds 5MB limit)")
           }
@@ -178,6 +228,39 @@ function extractTextFromHTML(html: string) {
 
   return text.trim()
 }
+
+const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(function* (ctx: Tool.Context, url: string) {
+  const turn = ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
+  if (!turn) return false
+  const policy = turn.network_policy ?? turn.http_context?.network_policy ?? "ask"
+  if (policy === "on") return true
+  if (policy === "ask") {
+    yield* ctx.ask({
+      permission: "network",
+      patterns: [url],
+      always: [url],
+      metadata: {
+        reason: "network_policy",
+        url,
+      },
+    })
+    return true
+  }
+  yield* AialraTurnTrace.emit({
+    phase: "tool.sandbox.denied",
+    turnID: turn.turnID,
+    sessionID: turn.sessionID,
+    messageID: ctx.messageID,
+    data: {
+      tool: "webfetch",
+      operation: "network",
+      target: url,
+      network_policy: policy,
+      active_permission_profile: turn.active_permission_profile,
+    },
+  })
+  return yield* Effect.die(new Error(`Network access is disabled for this turn: ${url}`))
+})
 
 function convertHTMLToMarkdown(html: string): string {
   const turndownService = new TurndownService({

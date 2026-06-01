@@ -9,6 +9,8 @@ import DESCRIPTION from "./grep.txt"
 import * as Tool from "./tool"
 import { Reference } from "@/reference/reference"
 import { TurnSandbox } from "./turn-sandbox"
+import { CodexFs } from "./codex-fs"
+import { AialraTurnTrace } from "@/session/turn-trace"
 
 const MAX_LINE_LENGTH = 2000
 
@@ -59,14 +61,28 @@ export const GrepTool = Tool.define(
           yield* TurnSandbox.assertFileAccess(ctx, "read", requested)
           yield* TurnSandbox.assertSearchScope(ctx, requested)
           yield* reference.ensure(requested)
-          const requestedInfo = yield* fs.stat(requested).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const requestedInfo = yield* CodexFs.stat(ctx, fs, requested).pipe(Effect.catch(() => Effect.succeed(undefined)))
           yield* assertExternalDirectoryEffect(ctx, requested, {
             bypass: yield* reference.contains(requested),
             kind: requestedInfo?.type === "Directory" ? "directory" : "file",
           })
+          yield* AialraTurnTrace.emit({
+            phase: "exec_server.fallback",
+            turnID: ctx.turn?.turnID,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            data: {
+              method: "fs/search",
+              tool: "grep",
+              reason: "Codex exec-server has no fs/grep API; using TurnContext-gated ripgrep adapter",
+              search: requested,
+              pattern: params.pattern,
+              include: params.include,
+            },
+          }).pipe(Effect.ignore)
 
           const search = AppFileSystem.resolve(requested)
-          const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const info = yield* CodexFs.stat(ctx, fs, search).pipe(Effect.catch(() => Effect.succeed(undefined)))
           const cwd = info?.type === "Directory" ? search : path.dirname(search)
           const file = info?.type === "Directory" ? undefined : [path.relative(cwd, search)]
 
@@ -90,7 +106,7 @@ export const GrepTool = Tool.define(
             (yield* Effect.forEach(
               [...new Set(rows.map((row) => row.path))],
               Effect.fnUntraced(function* (file) {
-                const info = yield* fs.stat(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                const info = yield* CodexFs.stat(ctx, fs, file).pipe(Effect.catch(() => Effect.succeed(undefined)))
                 if (!info || info.type === "Directory") return undefined
                 return [
                   file,

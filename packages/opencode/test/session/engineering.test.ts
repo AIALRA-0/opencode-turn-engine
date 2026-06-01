@@ -118,6 +118,50 @@ describe("EngineeringHarness", () => {
     )
   })
 
+  test("recognizes common verification runners before activating stop gate", () => {
+    const commands = [
+      "npm test",
+      "npm run test:unit",
+      "pytest tests/test_api.py",
+      "bun test",
+      "node --test test/tool.test.js",
+      "cargo test",
+      "go test ./...",
+      "make check",
+      "just test",
+      "nox -s tests",
+      "hatch test",
+      "pnpm run unit-test",
+      "yarn test:unit",
+      "ruff check .",
+      "eslint .",
+      "bun typecheck",
+    ]
+
+    for (const command of commands) {
+      EngineeringHarness.clearForTest()
+      PublicEventLog.clearForTest()
+      const ctx = turn()
+      ctx.engineering = EngineeringHarness.snapshot({
+        controls: EngineeringHarness.preset("balanced"),
+        prompt: `修复后运行 ${command}`,
+      })
+      EngineeringHarness.start({ turn: ctx, prompt: `修复后运行 ${command}` })
+
+      expect(EngineeringHarness.beforeTool(ctx, "bash", { command }).blocked).toBe(false)
+      EngineeringHarness.recordVerification({ turn: ctx, command, exit: 0, output: "pass" })
+
+      expect(EngineeringHarness.state(ctx.turnID)?.stopGate.active).toBe(true)
+      expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/index.ts" }).blocked).toBe(true)
+      expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "engineering.verification.finished", status: "passed" }),
+          expect.objectContaining({ type: "engineering.stop_gate.blocked_tool", status: "blocked" }),
+        ]),
+      )
+    }
+  })
+
   test("turns repeated tool churn into warning, checkpoint, and block", () => {
     const ctx = turn()
     ctx.engineering = EngineeringHarness.snapshot({
@@ -156,11 +200,16 @@ describe("EngineeringHarness", () => {
       turn: ctx,
       command: "npm test",
       exit: 1,
-      output: "AssertionError: expected fast but got safe\nFAILED test/tool.test.js::mode_override",
+      output:
+        "AssertionError: expected mode=fast\nactual mode=safe\nFAILED test/tool.test.js::mode_override",
     })
 
     expect(EngineeringHarness.reminder(ctx)).toContain("AssertionError")
-    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("verification_failed")
+    const feedback = EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)
+    expect(feedback?.kind).toBe("verification_failed")
+    expect(feedback?.failedFiles).toContain("test/tool.test.js")
+    expect(feedback?.expected).toContain("expected mode=fast")
+    expect(feedback?.actual).toContain("actual mode=safe")
     expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -169,7 +218,41 @@ describe("EngineeringHarness", () => {
           data: expect.objectContaining({
             failureSummary: expect.stringContaining("npm test"),
             failureDetail: expect.stringContaining("AssertionError"),
+            failedFiles: expect.arrayContaining(["test/tool.test.js"]),
+            expected: expect.stringContaining("expected mode=fast"),
+            actual: expect.stringContaining("actual mode=safe"),
           }),
+        }),
+      ]),
+    )
+  })
+
+  test("injects verification failure feedback when the model tries to finish too early", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "修复这个测试失败",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "修复这个测试失败" })
+    EngineeringHarness.recordVerification({
+      turn: ctx,
+      command: "npm test",
+      exit: 1,
+      output: "test/tool.test.js:10 expected mode=fast actual mode=safe",
+    })
+
+    const prompt = EngineeringHarness.verificationRepairPrompt(ctx, "我已经完成，测试还有问题")
+
+    expect(prompt).toContain("验证刚刚失败")
+    expect(prompt).toContain("npm test")
+    expect(prompt).toContain("expected mode=fast")
+    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("phase_gate")
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "engineering.artifact.updated",
+          status: "updated",
+          data: expect.objectContaining({ artifact: "repairFeedback" }),
         }),
       ]),
     )
@@ -358,5 +441,24 @@ describe("EngineeringHarness", () => {
       "empty_final",
     )
     expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.kind).toBe("terminal_anomaly")
+  })
+
+  test("terminal reconciler can preserve explicit assistant error reasons", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+
+    expect(
+      EngineeringHarness.terminalAnomaly({
+        turn: ctx,
+        lastAgentMessage: "msg_assistant",
+        finalText: "",
+        forcedReason: "model_not_started",
+      }),
+    ).toBe("model_not_started")
+    expect(EngineeringHarness.state(ctx.turnID)?.feedback.items.at(-1)?.summary).toBe("模型没有成功启动")
   })
 })

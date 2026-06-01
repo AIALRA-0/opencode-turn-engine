@@ -80,7 +80,7 @@ export const ReadTool = Tool.define(
           if (item.type === "directory") return item.name + "/"
           if (item.type !== "symlink") return item.name
 
-          const target = yield* fs.stat(path.join(filepath, item.name)).pipe(Effect.catch(() => Effect.void))
+          const target = yield* CodexFs.stat(ctx, fs, path.join(filepath, item.name)).pipe(Effect.catch(() => Effect.void))
           if (target?.type === "Directory") return item.name + "/"
           return item.name
         }),
@@ -184,12 +184,7 @@ export const ReadTool = Tool.define(
       yield* reference.ensure(filepath)
       const title = path.relative(instance.worktree, filepath)
 
-      const stat = yield* fs.stat(filepath).pipe(
-        Effect.catchIf(
-          (err) => "reason" in err && err.reason._tag === "NotFound",
-          () => Effect.succeed(undefined),
-        ),
-      )
+      const stat = yield* CodexFs.stat(ctx, fs, filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
 
       yield* assertExternalDirectoryEffect(ctx, filepath, {
         bypass: Boolean(ctx.extra?.["bypassCwdCheck"]) || (yield* reference.contains(filepath)),

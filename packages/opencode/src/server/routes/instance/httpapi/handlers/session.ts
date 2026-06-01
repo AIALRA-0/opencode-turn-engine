@@ -401,6 +401,17 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       })
     })
 
+    const environment = Effect.fn("SessionHttpApi.environment")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: { directory?: string }
+    }) {
+      const current = yield* requireSession(ctx.params.sessionID)
+      return SessionSecurity.environmentStatus({
+        sessionID: ctx.params.sessionID,
+        cwd: current.directory || ctx.query.directory || process.cwd(),
+      })
+    })
+
     const deleteMessage = Effect.fn("SessionHttpApi.deleteMessage")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
@@ -461,6 +472,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("permissionRespond", permissionRespond)
       .handle("security", security)
       .handle("securityUpdate", securityUpdate)
+      .handle("environment", environment)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)
       .handle("updatePart", updatePart)

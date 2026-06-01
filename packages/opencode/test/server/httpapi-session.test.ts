@@ -688,6 +688,44 @@ describe("session HttpApi", () => {
   )
 
   it.instance(
+    "serves explicit turn environment status",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const created = yield* requestJson<Session.Info>(SessionPaths.create, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ title: "environment status" }),
+        })
+        const status = yield* requestJson<{
+          sessionID: string
+          selectedEnvironmentID: string
+          selectedEnvironmentCwd: string
+          environments: Array<{ environmentID: string; cwd: string; kind?: string; status?: string }>
+          remoteEnvironmentSupported: boolean
+          remoteEnvironmentStatus: string
+        }>(pathFor(SessionPaths.environment, { sessionID: created.id }), {
+          headers,
+        })
+
+        expect(status.sessionID).toBe(created.id)
+        expect(status.selectedEnvironmentID).toBe("default")
+        expect(status.selectedEnvironmentCwd).toBe(test.directory)
+        expect(status.environments).toEqual([
+          expect.objectContaining({
+            environmentID: "default",
+            cwd: test.directory,
+            kind: "local",
+          }),
+        ])
+        expect(status.remoteEnvironmentSupported).toBe(false)
+        expect(status.remoteEnvironmentStatus).toContain("远程环境")
+      }),
+    { git: true, config: { formatter: false, lsp: false, share: "disabled" } },
+  )
+
+  it.instance(
     "persists selected workspace id when creating a session",
     () =>
       Effect.gen(function* () {

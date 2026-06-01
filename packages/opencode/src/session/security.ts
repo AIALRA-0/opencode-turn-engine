@@ -49,6 +49,24 @@ export const SecurityConfig = Schema.Struct({
 })
 export type SecurityConfig = typeof SecurityConfig.Type
 
+export const SecurityEnvironmentInfo = Schema.Struct({
+  environmentID: Schema.String,
+  cwd: Schema.String,
+  kind: Schema.optional(Schema.Literals(["local", "remote", "disabled"])),
+  status: Schema.optional(Schema.String),
+})
+export type SecurityEnvironmentInfo = typeof SecurityEnvironmentInfo.Type
+
+export const SecurityEnvironmentStatus = Schema.Struct({
+  sessionID: Schema.String,
+  selectedEnvironmentID: Schema.String,
+  selectedEnvironmentCwd: Schema.String,
+  environments: Schema.Array(SecurityEnvironmentInfo),
+  remoteEnvironmentSupported: Schema.Boolean,
+  remoteEnvironmentStatus: Schema.String,
+})
+export type SecurityEnvironmentStatus = typeof SecurityEnvironmentStatus.Type
+
 export const SecurityUpdatePayload = Schema.Struct({
   permissionProfileID: Schema.optional(SecurityPermissionProfileID),
   approvalPolicy: Schema.optional(SecurityApprovalPolicy),
@@ -85,7 +103,7 @@ function defaultStored(): StoredSecurityConfig {
     networkPolicy: "ask",
     commandPolicy: "ask",
     networkAccess: false,
-    executorBackend: process.env.AIALRA_EXEC_BACKEND === "codex" ? "codex" : "node-bun",
+    executorBackend: process.env.AIALRA_EXEC_BACKEND === "node-bun" ? "node-bun" : "codex",
     environmentID: "default",
     stepBudgetEnabled: false,
     stepBudgetMaxSteps: 80,
@@ -254,6 +272,19 @@ function emitControlChanged(input: {
 export namespace SessionSecurity {
   export function get(input: { sessionID: string; cwd: string }) {
     return publicConfig(input.sessionID, input.cwd)
+  }
+
+  export function environmentStatus(input: { sessionID: string; cwd: string }) {
+    const config = publicConfig(input.sessionID, input.cwd)
+    const envs = environments({ cwd: config.cwd, environmentID: config.environmentID })
+    return {
+      sessionID: input.sessionID,
+      selectedEnvironmentID: config.environmentID,
+      selectedEnvironmentCwd: envs.find((env) => env.environmentID === config.environmentID)?.cwd ?? config.cwd,
+      environments: envs,
+      remoteEnvironmentSupported: config.remoteEnvironmentSupported,
+      remoteEnvironmentStatus: config.remoteEnvironmentStatus,
+    } satisfies SecurityEnvironmentStatus
   }
 
   export function update(input: { sessionID: string; cwd: string; patch: SecurityUpdatePayload }) {

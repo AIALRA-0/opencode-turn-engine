@@ -89,7 +89,7 @@ export const EditTool = Tool.define(
           yield* lock(filePath).withPermits(1)(
             Effect.gen(function* () {
               if (params.oldString === "") {
-                const existed = yield* afs.existsSafe(filePath)
+                const existed = yield* CodexFs.existsSafe(ctx, afs, filePath)
                 const source = existed ? yield* CodexFs.readBomFile(ctx, afs, filePath) : { bom: false, text: "" }
                 const next = Bom.split(params.newString)
                 const desiredBom = source.bom || next.bom
@@ -117,7 +117,7 @@ export const EditTool = Tool.define(
                 return
               }
 
-              const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              const info = yield* CodexFs.stat(ctx, afs, filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (!info) throw new Error(`File ${filePath} not found`)
               if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
               const source = yield* CodexFs.readBomFile(ctx, afs, filePath)

@@ -3,6 +3,84 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.00003 2026-06-01 V3 hard acceptance gate
+
+The V3 rule is now explicit:
+
+```text
+Only when all 16 implementation targets are 完全完成 can regression-6 run.
+Only after regression-6 proves an improvement can full-24 run.
+```
+
+This is enforced by code in `run-real-benchmark.mjs`, which reads:
+
+```text
+aialra/turn-observability/project-plans/v3-general-engineering-harness/status.json
+```
+
+If any target is not `完全完成`, the benchmark runner exits before cloning repos or calling models. The 2026-05-31 V3 benchmark reports are still useful history, but they are now marked as premature benchmark evidence, not final V3 acceptance.
+
+Post-completion regression-6 was run on 2026-06-01 after the status file reached 16/16 `完全完成`:
+
+```text
+runID: 20260601030607
+target: AIALRA OpenCode / DeepSeek V4 Pro max
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md
+verified pass: 4/6
+zero patch: 0/6
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+patch quality average: 78
+```
+
+Baseline for the same 6 tasks from the corrected 2026-05-31 run was:
+
+```text
+verified pass: 4/6
+zero patch: 0/6
+patch quality average: 77
+```
+
+Deployment validation for this pass:
+
+```text
+version: 0.0.0-dev-202606010402
+services: aialra-opencode-web.service / aialra-opencode-login.service / aialra-codex-exec-server.service active
+deployment smoke: 11 pass
+authenticated API smoke: config/project/current/command/session/status/provider/lsp all 200
+local Playwright smoke: not passed, because default port 3000 conflicted with nginx and the retry on 3187 entered the test but did not finish stably
+```
+
+Decision:
+
+```text
+full-24 remains blocked.
+Reason: verified pass did not improve and zero patch did not decrease.
+What did improve: patch quality average moved from 77 to 78, and the run stayed clean with no timeout or approval stuck cases.
+```
+
+Current 16-item acceptance state:
+
+| # | Target | Status | What this means in plain language |
+| ---: | --- | --- | --- |
+| 1 | Turn terminal reconciler | 完全完成 | 每个 started turn 都有 completed 或 aborted，模型未启动、空 final、零工具、零补丁和 runner 等不到终态都会变成明确事件或 assistant error |
+| 2 | TurnContext and Codex UserTurn semantic parity | 完全完成 | approvals reviewer、service tier、summary、effort、final output schema、HTTP context、selected environment 都能进入 TurnContext 和执行路径 |
+| 3 | File tools fully converged to exec-server FS API | 完全完成 | read、readDirectory、write、edit、apply_patch 走 Codex FS 通道，glob/grep 先过 TurnContext 门禁并记录受控 fallback |
+| 4 | Environment-scoped cwd | 完全完成 | 工具相对路径按 selected environment cwd 解析，local default 稳定，remote 明确显示 unsupported |
+| 5 | Outside-workspace write audit | 完全完成 | write/edit/apply_patch/bash redirect/mkdir/mv/cp/hardlink/temp/protected-create 越界路径都有门禁和事件 |
+| 6 | Linux sandbox parity with Codex source | 完全完成 | bwrap、network on/off、protected-create、helper probe、Landlock probe、capability event 都已落地，不能 native enforce 的地方明确记录 |
+| 7 | Exec-server as default backend for process, FS, HTTP | 完全完成 | 默认优先连接 Codex exec-server sidecar，process/FS/HTTP 都有适配，Node/Bun executor 只作为可审计 fallback |
+| 8 | Stable public event stream protocol | 完全完成 | public event 协议有字段、中文解释、rawRef、权限、重放、Last-Event-ID 和版本规则 |
+| 9 | Productized Turn Inspector | 完全完成 | 虚拟列表、当前 turn 展开、历史折叠、中文摘要、分类过滤、raw 稳定展开、质量面板都已实现 |
+| 10 | Approval reviewer semantics | 完全完成 | 六种审批按钮服务端生效，并和 TurnContext、session policy、Sandbox Control Center、事件审计联动 |
+| 11 | EngineeringRun V3 structured artifacts | 完全完成 | intake、suspectedFiles、editPlan、verificationPlan、verificationResult、repairFeedback、finalSummary 都有结构化产物和事件 |
+| 12 | Verification feedback loop | 完全完成 | 验证失败会抽取失败文件、断言、期望值、实际值和命令，生成 FeedbackItem 注入 repair |
+| 13 | Stop gate completion | 完全完成 | 常见测试命令通过后激活 stop gate，继续读写跑命令会被挡，只允许 final 报告 |
+| 14 | Zero patch recovery | 完全完成 | 工程任务 final 前如果 git diff 为空，会阻止 final 并要求继续修改或明确 blocked，恢复次数来自 Engineering Controls |
+| 15 | Patch quality scoring in benchmark reports | 完全完成 | 报告已经按补丁质量解释，不再只看是否完成 |
+| 16 | Benchmark gate: tier-regression-6 before full-24 | 完全完成 | regression-6 已按 16/16 完成后运行；因没有 verified pass 提升或 zero patch 下降，full-24 被继续阻止 |
+
 ## 0.00002 2026-05-31 AIALRA General Engineering Harness v3 planning and first closure
 
 | 项目 | 原来是什么 | 现在是什么 | 用户怎么观察 | 真实边界 |
