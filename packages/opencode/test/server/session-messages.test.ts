@@ -75,6 +75,30 @@ const fill = Effect.fn("SessionMessagesTest.fill")(function* (
   )
 })
 
+const addAssistant = Effect.fn("SessionMessagesTest.addAssistant")(function* (
+  sessionID: SessionID,
+  parentID: MessageID,
+) {
+  const session = yield* SessionNs.Service
+  const id = MessageID.ascending()
+  yield* session.updateMessage({
+    id,
+    sessionID,
+    role: "assistant",
+    time: { created: Date.now() - 120_000 },
+    parentID,
+    modelID: ModelID.make("test"),
+    providerID: ProviderID.make("test"),
+    mode: "build",
+    agent: "build",
+    path: { cwd: "/", root: "/" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    finish: "stop",
+  } as unknown as MessageV2.Assistant)
+  return id
+})
+
 function request(path: string) {
   return Effect.promise(() => Promise.resolve(Server.Default().app.request(path)))
 }
@@ -171,6 +195,47 @@ describe("session messages endpoint", () => {
         const body = yield* json<unknown[]>(res)
         expect(Array.isArray(body)).toBe(true)
         expect(body).toHaveLength(1)
+      }),
+    ),
+    { git: true },
+  )
+
+  it.instance(
+    "reconciles stale running tool parts when session is idle",
+    withoutWatcher(
+      Effect.gen(function* () {
+        const session = yield* sessionScoped
+        const user = (yield* fill(session.id, 1))[0]!
+        const assistant = yield* addAssistant(session.id, user)
+        const svc = yield* SessionNs.Service
+        yield* svc.updatePart({
+          id: PartID.ascending(),
+          sessionID: session.id,
+          messageID: assistant,
+          type: "tool",
+          callID: "call_stale",
+          tool: "bash",
+          state: {
+            status: "running",
+            input: { command: "sleep 999", description: "stale command" },
+            time: { start: Date.now() - 120_000 },
+          },
+        } satisfies MessageV2.ToolPart)
+
+        const res = yield* request(`/session/${session.id}/message`)
+        expect(res.status).toBe(200)
+        const body = yield* json<MessageV2.WithParts[]>(res)
+        const part = body.flatMap((item) => item.parts).find((item) => item.type === "tool")
+        expect(part).toMatchObject({
+          type: "tool",
+          state: {
+            status: "error",
+            metadata: {
+              reconciled: true,
+              reason: "stale_running_tool",
+            },
+          },
+        })
       }),
     ),
     { git: true },

@@ -2,6 +2,25 @@
 
 ## 2026-06-01
 
+- Investigated session `ses_17eb92136ffeJOvXUXmSZW5yF0` for the Chesskit
+  deployment flow. The last stored tool part was a `docker compose up -d
+  --build` bash call still marked `running`, while no matching process or
+  container existed on the host. Added stale running tool reconciliation on
+  session message reads: if the session is idle and a tool part has been
+  `running` for more than 60 seconds, it is converted to a clear error and
+  emits `turn.terminal.reconciled`.
+- Improved sandbox transparency for the same flow. `webfetch` now reports
+  non-2xx HTTP responses as “network connected but target returned HTTP N”
+  instead of making a 404 look like a sandbox or approval failure. Codex
+  exec-server FS helper failures now fall back to the TurnContext-gated
+  Node/Bun file path with an audited fallback event, so readable workspace
+  paths do not fail just because the helper could not create a protected
+  metadata mount.
+- Added hover/title explanations to Sandbox Control Center selects and made
+  the live/next-turn scope text explicit: lowered permissions affect the next
+  tool gate, raised permissions are audited and affect later gates, and already
+  started model requests or long bash commands are not rewritten mid-flight.
+
 - Completed the hard V3 acceptance status pass: all 16 General Engineering
   Harness V3 implementation targets are now marked `完全完成` in
   `aialra/turn-observability/project-plans/v3-general-engineering-harness/status.json`.

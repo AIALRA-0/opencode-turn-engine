@@ -1,5 +1,48 @@
 # Assistant Output Log
 
+## 2026-06-01 输出记录：Chesskit 会话卡住和沙盒透明度修复
+
+用户反馈 `ses_17eb92136ffeJOvXUXmSZW5yF0` 在部署类似 ChessNonStop 的开源项目时卡住
+
+排查结论：
+
+- 这个会话存储在开发库 `opencode-dev.db`
+- 最后一条工具调用是 bash：`cd /srv/aialra/apps/chess && docker compose up -d --build 2>&1`
+- 数据库里这个工具仍然是 `running`
+- 主机上没有对应的 docker compose / docker build / npm build 进程
+- `docker compose ps` 也没有 chess 容器
+- 所以它不是还在认真执行，而是后端执行状态没有收回来，页面才看起来一直卡住
+
+本轮修复：
+
+- session message API，现在会在 session 已经 idle 时校准超过 60 秒仍为 `running` 的工具 part
+- 这种 stale running tool，会被改成 error，错误文案会直接告诉用户“后端已经没有对应运行进程”
+- 同时写入 `turn.terminal.reconciled` 事件，让 Turn Inspector 和事件流能解释为什么被收口
+- `webfetch` 遇到 404 这类 HTTP 非成功状态时，会明确说“网络已连通，但目标返回 HTTP 404”，避免用户误以为是沙盒禁止或审批没有弹
+- Codex exec-server FS helper 如果因为 protected metadata mount，受保护元数据挂载，失败，会走 TurnContext 门禁后的 Node/Bun fallback，并记录 `exec_server.fallback`
+- 沙盒控制中心所有下拉项增加 hover/title 说明，并把“实时生效范围”写清楚
+
+验证：
+
+```text
+bun test test/server/session-messages.test.ts test/tool/webfetch.test.ts --timeout 30000
+结果：12 pass
+
+bun typecheck
+packages/opencode 通过
+packages/app 通过
+
+bun --cwd packages/app build
+通过
+
+bun run build --single
+packages/opencode 通过，CLI smoke 版本 0.0.0-dev-202606010446
+```
+
+人话解释：
+
+这次发现的核心问题不是模型本身，也不是你没等够，而是 OpenCode 后台丢了一个长命令的最终状态。现在消息列表读取时会兜底校准这种孤儿 running 工具。沙盒控制中心不是纯假 UI，但它不是魔法遥控器：已经启动的 docker build、bash 长命令、模型请求不会被中途改写；它影响的是下一次工具门禁和后续 turn。这个生效范围已经在 UI 里写清楚
+
 ## 2026-06-01 输出记录：V3 hard gate 和 regression-6 收口
 
 用户明确要求 16 项 V3 目标只有 `未开始`、`部分完成`、`核心完成`、`完全完成` 四种状态，并且只有 16/16 全部 `完全完成` 才允许跑 regression-6，只有 regression-6 通过后才允许跑 full-24

@@ -18,6 +18,13 @@ type FetchResponse = {
   arrayBuffer: ArrayBuffer
 }
 
+class WebFetchHttpStatusError extends Error {
+  constructor(status: number, url: string) {
+    super(`网络已连通，但目标返回 HTTP ${status}：${url}。这不是沙盒拦截，也不是审批未弹出，而是目标地址本身没有返回成功页面。`)
+    this.name = "WebFetchHttpStatusError"
+  }
+}
+
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "The URL to fetch content from" }),
   format: Schema.Literals(["text", "markdown", "html"])
@@ -33,29 +40,25 @@ export const WebFetchTool = Tool.define(
   "webfetch",
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const httpOk = HttpClient.filterStatusOk(http)
     const nodeFetch = (url: string, headers: Record<string, string>, timeout: number) => {
       const request = HttpClientRequest.get(url).pipe(HttpClientRequest.setHeaders(headers))
-      return httpOk.execute(request).pipe(
-        Effect.catchIf(
-          (err) =>
-            err.reason._tag === "StatusCodeError" &&
-            err.reason.response.status === 403 &&
-            err.reason.response.headers["cf-mitigated"] === "challenge",
-          () =>
-            httpOk.execute(
-              HttpClientRequest.get(url).pipe(
-                HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
-              ),
-            ),
-        ),
-        Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
-        Effect.flatMap((response) =>
-          response.arrayBuffer.pipe(
-            Effect.map((arrayBuffer) => ({ headers: response.headers, arrayBuffer }) satisfies FetchResponse),
-          ),
-        ),
-      )
+      return Effect.gen(function* () {
+        const first = yield* http.execute(request)
+        const response =
+          first.status === 403 && first.headers["cf-mitigated"] === "challenge"
+            ? yield* http.execute(
+                HttpClientRequest.get(url).pipe(
+                  HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
+                ),
+              )
+            : first
+        if (response.status < 200 || response.status >= 300) {
+          return yield* Effect.fail(new WebFetchHttpStatusError(response.status, url))
+        }
+        return yield* response.arrayBuffer.pipe(
+          Effect.map((arrayBuffer) => ({ headers: response.headers, arrayBuffer }) satisfies FetchResponse),
+        )
+      }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }))
     }
     const fetchResponse = (
       ctx: Tool.Context,
@@ -69,7 +72,7 @@ export const WebFetchTool = Tool.define(
       return Effect.tryPromise({
         try: async () => {
           const response = await CodexExecServer.httpRequest({ url, headers, networkAccess, ctx })
-          if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`)
+          if (response.status < 200 || response.status >= 300) throw new WebFetchHttpStatusError(response.status, url)
           const body = Buffer.from(response.bodyBase64, "base64")
           return {
             headers: Object.fromEntries(response.headers.map((item) => [item.name.toLowerCase(), item.value])),
@@ -79,16 +82,18 @@ export const WebFetchTool = Tool.define(
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       }).pipe(
         Effect.catch((error) =>
-          AialraTurnTrace.emit({
-            phase: "exec_server.fallback",
-            turnID: ctx.turn?.turnID,
-            sessionID: ctx.sessionID,
-            messageID: ctx.messageID,
-            data: {
-              method: "http/request",
-              reason: error.message,
-            },
-          }).pipe(Effect.ignore, Effect.andThen(viaNode)),
+          error instanceof WebFetchHttpStatusError
+            ? Effect.fail(error)
+            : AialraTurnTrace.emit({
+                phase: "exec_server.fallback",
+                turnID: ctx.turn?.turnID,
+                sessionID: ctx.sessionID,
+                messageID: ctx.messageID,
+                data: {
+                  method: "http/request",
+                  reason: error.message,
+                },
+              }).pipe(Effect.ignore, Effect.andThen(viaNode)),
         ),
       )
     }

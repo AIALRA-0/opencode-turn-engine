@@ -23,6 +23,20 @@ function fallback(ctx: Tool.Context, method: string, error: unknown): Effect.Eff
   }).pipe(Effect.ignore) as Effect.Effect<void>
 }
 
+function canFallbackRpc(method: string, error: unknown) {
+  if (!CodexExecServer.isRpcError(error)) return true
+  if (!error.message.includes("fs sandbox helper failed")) return false
+  return [
+    "fs/getMetadata",
+    "fs/readDirectory",
+    "fs/readFile",
+    "fs/writeFile",
+    "fs/createDirectory",
+    "fs/remove",
+    "fs/copy",
+  ].includes(method)
+}
+
 function withFallback<A>(
   ctx: Tool.Context,
   method: string,
@@ -32,7 +46,7 @@ function withFallback<A>(
   if (!shouldUseExecServer(ctx)) return node as Effect.Effect<A>
   return execServer.pipe(
     Effect.catch((error) => {
-      if (CodexExecServer.isRpcError(error)) return Effect.fail(error)
+      if (!canFallbackRpc(method, error)) return Effect.fail(error)
       return fallback(ctx, method, error).pipe(Effect.andThen(node as Effect.Effect<A>))
     }),
   ) as Effect.Effect<A>

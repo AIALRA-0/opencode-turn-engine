@@ -13,6 +13,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionSecurity, SecurityUpdatePayload } from "@/session/security"
+import { AialraTurnTrace } from "@/session/turn-trace"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -80,6 +81,61 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* SessionError.mapStorageNotFound(session.get(sessionID))
     })
 
+    const reconcileStaleRunningTools = Effect.fn("SessionHttpApi.reconcileStaleRunningTools")(function* (
+      sessionID: SessionID,
+      messages: MessageV2.WithParts[],
+    ) {
+      if ((yield* statusSvc.get(sessionID)).type !== "idle") return messages
+      const now = Date.now()
+      return yield* Effect.forEach(
+        messages,
+        Effect.fnUntraced(function* (message) {
+          const parts = yield* Effect.forEach(
+            message.parts,
+            Effect.fnUntraced(function* (part) {
+              if (part.type !== "tool" || part.state.status !== "running") return part
+              if (now - part.state.time.start < 60_000) return part
+              const updated: MessageV2.ToolPart = {
+                ...part,
+                state: {
+                  status: "error",
+                  input: part.state.input,
+                  error:
+                    "这个工具调用已经没有对应的后端运行进程，系统已把它收口为中断。常见原因是服务重启、执行器断开，或长命令进程已经退出但状态没有写回。",
+                  metadata: {
+                    ...part.state.metadata,
+                    reconciled: true,
+                    reason: "stale_running_tool",
+                  },
+                  time: {
+                    start: part.state.time.start,
+                    end: now,
+                  },
+                },
+              }
+              yield* session.updatePart(updated)
+              yield* AialraTurnTrace.emit({
+                phase: "turn.terminal.reconciled",
+                turnID: message.info.role === "assistant" ? message.info.parentID : undefined,
+                sessionID,
+                messageID: message.info.id,
+                data: {
+                  outcome: "stale_running_tool_marked_error",
+                  tool: part.tool,
+                  callID: part.callID,
+                  elapsedMs: Math.max(0, now - part.state.time.start),
+                },
+              })
+              return updated
+            }),
+            { concurrency: "unbounded" },
+          )
+          return { ...message, parts }
+        }),
+        { concurrency: "unbounded" },
+      )
+    })
+
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
       return yield* requireSession(ctx.params.sessionID)
     })
@@ -115,7 +171,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       }
       yield* requireSession(ctx.params.sessionID)
       if (ctx.query.limit === undefined || ctx.query.limit === 0) {
-        return yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+        const items = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+        return yield* reconcileStaleRunningTools(ctx.params.sessionID, items)
       }
 
       const page = yield* SessionError.mapStorageNotFound(
@@ -125,7 +182,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           before: ctx.query.before,
         }),
       )
-      if (!page.cursor) return page.items
+      const items = yield* reconcileStaleRunningTools(ctx.params.sessionID, page.items)
+      if (!page.cursor) return items
 
       const request = yield* HttpServerRequest.HttpServerRequest
       // toURL() honors the Host + x-forwarded-proto headers, so the Link
@@ -133,7 +191,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const url = Option.getOrElse(HttpServerRequest.toURL(request), () => new URL(request.url, "http://localhost"))
       url.searchParams.set("limit", ctx.query.limit.toString())
       url.searchParams.set("before", page.cursor)
-      return HttpServerResponse.jsonUnsafe(page.items, {
+      return HttpServerResponse.jsonUnsafe(items, {
         headers: {
           "Access-Control-Expose-Headers": "Link, X-Next-Cursor",
           Link: `<${url.toString()}>; rel="next"`,
@@ -145,9 +203,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const message = Effect.fn("SessionHttpApi.message")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
-      return yield* SessionError.mapStorageNotFound(
+      const item = yield* SessionError.mapStorageNotFound(
         MessageV2.get({ sessionID: ctx.params.sessionID, messageID: ctx.params.messageID }),
       )
+      const items = yield* reconcileStaleRunningTools(ctx.params.sessionID, [item])
+      return items[0] ?? item
     })
 
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {

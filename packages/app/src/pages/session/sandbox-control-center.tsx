@@ -166,7 +166,7 @@ function SelectField<T extends string>(props: {
   label: string
   detail?: string
   value: T | undefined
-  options: ReadonlyArray<{ value: T; label: string }>
+  options: ReadonlyArray<{ value: T; label: string; description?: string }>
   disabled?: boolean
   onChange: (value: T) => void
 }) {
@@ -179,9 +179,16 @@ function SelectField<T extends string>(props: {
         class="h-8 w-full rounded-md border border-border-weaker-base bg-surface-panel px-2 text-12-regular text-text-base outline-none focus:border-border-strong"
         value={props.value}
         disabled={props.disabled}
+        title={props.detail ?? `${props.label}，选择后会写入沙盒控制中心配置`}
         onInput={(event) => props.onChange(event.currentTarget.value as T)}
       >
-        <For each={props.options}>{(item) => <option value={item.value}>{item.label}</option>}</For>
+        <For each={props.options}>
+          {(item) => (
+            <option value={item.value} title={item.description}>
+              {item.label}
+            </option>
+          )}
+        </For>
       </select>
       <Show when={props.detail}>
         {(detail) => <div class="mt-1 text-11-regular text-text-weak leading-4">{detail()}</div>}
@@ -354,7 +361,8 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
               onChange={(value) => void updateEngineering({ mode: value })}
             />
             <div class="mt-2 rounded-md border border-border-weaker-base bg-background-base px-2 py-2 text-11-regular text-text-weak leading-4">
-              当前模式会写进下一轮 TurnContext，回合上下文 它控制定位预算、验证轮数、重复工具干预和单条命令最长时间
+              当前模式会写进下一轮 TurnContext，回合上下文，也会影响正在运行回合的下一次工具门禁
+              已经发出去的模型请求和已经启动的长命令不会被中途改写
             </div>
             <label class="mt-2 flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
               <span>
@@ -365,7 +373,8 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
                 type="checkbox"
                 checked={engineering()?.advancedEnabled ?? false}
                 disabled={busy()}
-                onInput={(event) => void updateEngineering({ advancedEnabled: event.currentTarget.checked })}
+                title={engineering()?.advancedEnabled ? "关闭高级工程参数" : "打开高级工程参数"}
+                onChange={(event) => void updateEngineering({ advancedEnabled: event.currentTarget.checked })}
               />
             </label>
             <Show when={engineering()?.advancedEnabled}>
@@ -491,7 +500,9 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
             <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
               <div class="text-12-medium text-text-strong">实时生效范围</div>
               <div class="mt-1 text-11-regular text-text-weak leading-4">
-                降低权限会影响正在运行回合的下一次工具门禁，提高权限会记录审计并影响后续工具门禁，已经发出去的模型请求不会被中途改写
+                降低权限会影响正在运行回合的下一次工具门禁
+                提高权限会记录审计，并从下一次工具门禁开始生效
+                已经启动的 bash 命令、docker build、模型请求不会被这个开关中途改写
               </div>
             </div>
             <label class="mt-2 flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
