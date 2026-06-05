@@ -21,6 +21,7 @@ import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { ToolRegistry } from "@/tool/registry"
 import { ToolJsonSchema } from "@/tool/json-schema"
+import { Skill } from "@/skill"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
@@ -65,10 +66,17 @@ import * as Database from "@/storage/db"
 import { SessionTable } from "./session.sql"
 import { AialraTurnTrace } from "./turn-trace"
 import { TurnFrame, type TurnFrameRoute } from "./turn-frame"
-import { CodexTurn, type TurnAbortReason, type TurnContext } from "./turn-context"
-import { SessionSecurity } from "./security"
+import { CodexTurn, type DynamicToolStatus, type TurnAbortReason, type TurnContext } from "./turn-context"
+import { SecurityTurnSettingsOverride, SessionSecurity } from "./security"
 import { EngineeringHarness } from "./engineering"
 import { AbortAudit, abortSourceLabel } from "./abort-audit"
+import { PublicEventLog } from "./public-event"
+import { ToolFoundation } from "./tool-foundation"
+import { ToolOutputStore } from "./tool-output-store"
+import { ToolResultProtocol } from "./tool-result-settlement"
+import { TurnDiffStore } from "./turn-diff"
+import { ExecCommand } from "./exec-command"
+import { errorMessage } from "@/util/error"
 import type { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
@@ -316,6 +324,8 @@ export const layer = Layer.effect(
     const references = yield* Reference.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const skillService = yield* Skill.Service
+    const foundation = yield* ToolFoundation.Service
     const activeTurns = new Map<SessionID, TurnContext>()
     const closedTurns = new Set<string>()
     const terminalErrorReasons = new Map<string, string>()
@@ -338,6 +348,8 @@ export const layer = Layer.effect(
           AbortAudit.recordRequested({ sessionID, turnID: activeTurn.turnID, source: "unknown", actor: "unknown" })
         }
         yield* emitTurnAborted(activeTurn, "interrupted")
+      } else if (!AbortAudit.latest(sessionID)) {
+        AbortAudit.recordRequested({ sessionID, source: "unknown", actor: "unknown" })
       }
       yield* state.cancel(sessionID)
       AbortAudit.recordResolved({
@@ -703,8 +715,42 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     }) {
       using _ = log.time("resolveTools")
       const tools: Record<string, AITool> = {}
+      const dynamicCandidates: Array<Pick<DynamicToolStatus, "id" | "source" | "schema_projected">> = []
       const run = yield* runner()
       const promptOps = yield* ops()
+      if (input.turn?.model_info.supports.tools === false) {
+        input.turn.dynamic_tools = CodexTurn.defaultDynamicTools({
+          requested: input.tools ?? {},
+          activePermissionProfile: input.turn.active_permission_profile,
+          approvalPolicy: input.turn.approval_policy,
+          modelSupportsTools: false,
+          selectedEnvironmentID: input.turn.selected_environment_id,
+        })
+        yield* AialraTurnTrace.emit({
+          phase: "tools.dynamic.resolved",
+          turnID: input.turn.turnID,
+          sessionID: input.session.id,
+          messageID: input.processor.message.id,
+          data: {
+            ...input.turn.dynamic_tools,
+            availableCount: 0,
+            disabledCount: 0,
+            model_supports_tools: false,
+          },
+        })
+        yield* AialraTurnTrace.emit({
+          phase: "model.capability.degraded",
+          turnID: input.turn.turnID,
+          sessionID: input.session.id,
+          messageID: input.processor.message.id,
+          data: {
+            model_info: input.turn.model_info,
+            reason: "当前模型的 ModelInfo 未声明支持工具调用，本轮工具选择被关闭",
+            requested: { tools: true },
+          },
+        })
+        return tools
+      }
 
       const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
         sessionID: input.session.id,
@@ -736,6 +782,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               sessionID: input.session.id,
               turnID: input.turn?.turnID,
               approvalPolicy: input.turn?.approval_policy,
+              approval_reviewer: input.turn?.approvals_reviewer,
+              requested_by: "assistant_tool",
+              requested_at: new Date().toISOString(),
+              overridden_by_constraints: false,
               permissionProfile: input.turn?.active_permission_profile ?? input.turn?.permission_profile,
               sandboxPolicy: input.turn?.sandbox_policy,
               tool: { messageID: input.processor.message.id, callID: options.toolCallId },
@@ -744,12 +794,79 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             .pipe(Effect.orDie),
       })
 
+      const selectedEnvironment = input.turn?.environments.find(
+        (environment) => environment.environmentID === input.turn?.selected_environment_id,
+      )
+      const toolDisabledReasons = (id: string) => {
+        const reasons: string[] = []
+        if (input.tools?.[id] === false) reasons.push("用户或上文显式关闭该工具")
+        const permissionRules = input.turn
+          ? CodexTurn.permissionRules({
+              profile: input.turn.permission_profile,
+              approvalPolicy: input.turn.approval_policy,
+              base: input.session.permission,
+            })
+          : input.session.permission
+        if (Permission.disabled([id], Permission.merge(input.agent.permission, permissionRules ?? [])).has(id)) {
+          reasons.push("权限规则或当前 permission profile 禁用该工具")
+        }
+        if (["bash", "shell"].includes(id) && selectedEnvironment?.shell?.status === "unsupported") {
+          reasons.push("当前 environment 不支持 shell 执行")
+        }
+        if (
+          ["read", "write", "edit", "apply_patch", "glob", "grep"].includes(id) &&
+          selectedEnvironment?.fileSystem?.status === "unsupported"
+        ) {
+          reasons.push("当前 environment 不支持文件系统工具")
+        }
+        return reasons
+      }
+
+      const publishDynamicTools = Effect.fn("SessionPrompt.publishDynamicTools")(function* () {
+        if (!input.turn) return
+        const available: DynamicToolStatus[] = []
+        const disabled: DynamicToolStatus[] = []
+        const candidateByID = new Map(dynamicCandidates.map((candidate) => [candidate.id, candidate]))
+        for (const id of Object.keys(tools).toSorted((a, b) => a.localeCompare(b))) {
+          const candidate = candidateByID.get(id) ?? { id, source: "plugin" as const, schema_projected: false }
+          const reasons = toolDisabledReasons(id)
+          if (reasons.length) {
+            delete tools[id]
+            disabled.push({ ...candidate, status: "disabled", reasons })
+            continue
+          }
+          available.push({ ...candidate, status: "available", reasons: [] })
+        }
+        input.turn.dynamic_tools = CodexTurn.defaultDynamicTools({
+          requested: input.tools ?? {},
+          activePermissionProfile: input.turn.active_permission_profile,
+          approvalPolicy: input.turn.approval_policy,
+          modelSupportsTools: input.turn.model_info.supports.tools,
+          selectedEnvironmentID: input.turn.selected_environment_id,
+          available,
+          disabled,
+        })
+        yield* AialraTurnTrace.emit({
+          phase: "tools.dynamic.resolved",
+          turnID: input.turn.turnID,
+          sessionID: input.session.id,
+          messageID: input.processor.message.id,
+          data: {
+            ...input.turn.dynamic_tools,
+            availableCount: available.length,
+            disabledCount: disabled.length,
+            model_supports_tools: input.turn.model_info.supports.tools,
+          },
+        })
+      })
+
       for (const item of yield* registry.tools({
         modelID: ModelID.make(input.model.api.id),
         providerID: input.model.providerID,
         agent: input.agent,
       })) {
         const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
+        dynamicCandidates.push({ id: item.id, source: "registry", schema_projected: true })
         tools[item.id] = tool({
           description: item.description,
           inputSchema: jsonSchema(schema),
@@ -774,7 +891,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
                   { args },
                 )
-                const result = yield* item.execute(args, ctx)
+                const result = yield* foundation.execute({
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.messageID,
+                  turn: ctx.turn,
+                  tool: item.id,
+                  callID: ctx.callID,
+                  source: "opencode_registry",
+                  input: args,
+                  run: item.execute(args, ctx),
+                })
                 const output = {
                   ...result,
                   attachments: result.attachments?.map((attachment) => ({
@@ -806,6 +932,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
         const transformed = ProviderTransform.schema(input.model, schema)
         item.inputSchema = jsonSchema(transformed)
+        dynamicCandidates.push({ id: key, source: "mcp", schema_projected: true })
         item.execute = (args, opts) =>
           run.promise(
             Effect.gen(function* () {
@@ -827,19 +954,28 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
                 { args },
               )
-              const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.gen(function* () {
-                yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
-                return yield* Effect.promise(() => execute(args, opts))
-              }).pipe(
-                Effect.withSpan("Tool.execute", {
-                  attributes: {
-                    "tool.name": key,
-                    "tool.call_id": opts.toolCallId,
-                    "session.id": ctx.sessionID,
-                    "message.id": input.processor.message.id,
-                  },
-                }),
-              )
+              const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* foundation.execute({
+                sessionID: ctx.sessionID,
+                messageID: ctx.messageID,
+                turn: ctx.turn,
+                tool: key,
+                callID: ctx.callID,
+                source: "mcp_registry",
+                input: args,
+                run: Effect.gen(function* () {
+                  yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
+                  return yield* Effect.promise(() => execute(args, opts))
+                }).pipe(
+                  Effect.withSpan("Tool.execute", {
+                    attributes: {
+                      "tool.name": key,
+                      "tool.call_id": opts.toolCallId,
+                      "session.id": ctx.sessionID,
+                      "message.id": input.processor.message.id,
+                    },
+                  }),
+                ),
+              })
               yield* plugin.trigger(
                 "tool.execute.after",
                 { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
@@ -898,6 +1034,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         tools[key] = item
       }
 
+      yield* publishDynamicTools()
+      yield* foundation.resolve({
+        sessionID: input.session.id,
+        turn: input.turn,
+        toolCount: Object.keys(tools).length,
+      })
       return tools
     })
 
@@ -1099,7 +1241,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const markReady = ready ? ready.open.pipe(Effect.asVoid) : Effect.void
-          const { msg, part, cwd } = yield* Effect.gen(function* () {
+          const { msg, part, cwd, started, userMessageID } = yield* Effect.gen(function* () {
             const ctx = yield* InstanceState.context
             const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
             if (session.revert) {
@@ -1171,19 +1313,92 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 command: input.command,
               })
             }
-            return { msg, part, cwd: ctx.directory }
+            yield* AialraTurnTrace.emit({
+              phase: "tool.lifecycle.requested",
+              turnID: userMsg.id,
+              sessionID: input.sessionID,
+              messageID: msg.id,
+              data: {
+                schema: "aialra.tool_lifecycle.v1",
+                hook: "pre",
+                status: "requested",
+                tool: ShellID.ToolID,
+                callID: part.callID,
+                source: "shell_route",
+                inputKeys: ["command"],
+                cwd: ctx.directory,
+              },
+            })
+            yield* AialraTurnTrace.emit({
+              phase: "tool.lifecycle.started",
+              turnID: userMsg.id,
+              sessionID: input.sessionID,
+              messageID: msg.id,
+              data: {
+                schema: "aialra.tool_lifecycle.v1",
+                hook: "pre",
+                status: "started",
+                tool: ShellID.ToolID,
+                callID: part.callID,
+                source: "shell_route",
+                inputKeys: ["command"],
+                cwd: ctx.directory,
+                startedAt: started,
+              },
+            })
+            return { msg, part, cwd: ctx.directory, started, userMessageID: userMsg.id }
           }).pipe(Effect.ensuring(markReady))
 
           const cfg = yield* config.get()
+          const shellSecurity = SessionSecurity.overrides({ sessionID: input.sessionID, cwd })
           const sh = Shell.preferred(cfg.shell)
           const args = Shell.args(sh, input.command, cwd)
+          const execCtx = { sessionID: input.sessionID, messageID: msg.id, callID: part.callID }
+          const execCommandID = ExecCommand.id(execCtx)
+          const execProcessID = `proc_${execCommandID}`
+          const networkProxy = shellSecurity.networkProxy ?? CodexTurn.networkProxy({
+            networkPermissions: shellSecurity.networkPermissions,
+            selectedEnvironmentID: shellSecurity.selectedEnvironmentID,
+          })
+          const execCommon = {
+            commandID: execCommandID,
+            backend: "node_bun" as const,
+            command: input.command,
+            shell: sh,
+            argv: [sh, ...args],
+            cwd,
+            timeoutMs: 0,
+            processID: execProcessID,
+            turnID: userMessageID,
+            environmentID: shellSecurity.selectedEnvironmentID,
+            environmentCwd: cwd,
+            permissionProfileID: shellSecurity.activePermissionProfile.id,
+            permissionProfile: shellSecurity.permissionProfile,
+            approvalPolicy: shellSecurity.approvalPolicy,
+            approvalsReviewer: shellSecurity.approvalsReviewer,
+            networkPolicy: shellSecurity.networkPolicy,
+            networkPermissions: shellSecurity.networkPermissions,
+            networkProxy,
+            sandboxPolicy: shellSecurity.sandboxPolicy,
+            shellEnvPolicy: shellSecurity.shellEnvironmentPolicy,
+            approvalDecision: "not_requested",
+          }
+          let execOutputSeq = 0
           let output = ""
+          let exitCode: number | null = null
           let aborted = false
+          let failed = false
+          let failureMessage: string | undefined
+          let settled = false
 
           const finish = Effect.uninterruptible(
             Effect.gen(function* () {
-              if (aborted) {
-                const abortMetadata = AbortAudit.shellMetadata(activeTurns.get(input.sessionID))
+              if (settled) return
+              settled = true
+              const abortMetadata = aborted
+                ? AbortAudit.shellMetadataForSession({ sessionID: input.sessionID, turnID: msg.parentID })
+                : undefined
+              if (abortMetadata) {
                 output +=
                   "\n\n" +
                   [
@@ -1198,6 +1413,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   ].join("\n")
               }
               const completed = Date.now()
+              yield* ExecCommand.finished(execCtx, {
+                ...execCommon,
+                exitCode,
+                timedOut: false,
+                aborted,
+                outputChars: output.length,
+                truncated: false,
+                durationMs: completed - started,
+                failure: failureMessage,
+              })
               if (flags.experimentalEventSystem) {
                 yield* events.publish(SessionEvent.Shell.Ended, {
                   sessionID: input.sessionID,
@@ -1206,20 +1431,71 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   output,
                 })
               }
+              const metadata = {
+                output,
+                description: "",
+                ...(abortMetadata ? { abort: abortMetadata } : {}),
+              }
+              const result = ToolResultProtocol.ToolResultSettlement.build({
+                sessionID: input.sessionID,
+                turnID: msg.parentID,
+                messageID: msg.id,
+                environmentID: "default",
+                executorType: "local",
+                toolCallID: part.callID,
+                tool: ShellID.ToolID,
+                status: aborted ? "aborted" : failed ? "failed" : "completed",
+                startedAt: started,
+                completedAt: completed,
+                output,
+                error: failureMessage,
+                metadata,
+                source: "shell_route",
+              })
               if (!msg.time.completed) {
                 msg.time.completed = completed
                 yield* sessions.updateMessage(msg)
               }
               if (part.state.status === "running") {
-                part.state = {
-                  status: "completed",
-                  time: { ...part.state.time, end: completed },
-                  input: part.state.input,
-                  title: "",
-                  metadata: { output, description: "" },
-                  output,
-                }
+                part.state = failed
+                  ? {
+                      status: "error",
+                      time: { ...part.state.time, end: completed },
+                      input: part.state.input,
+                      metadata: ToolResultProtocol.ToolResultSettlement.attach(metadata, result),
+                      error: failureMessage ?? "Shell command failed",
+                    }
+                  : {
+                      status: "completed",
+                      time: { ...part.state.time, end: completed },
+                      input: part.state.input,
+                      title: "",
+                      metadata: ToolResultProtocol.ToolResultSettlement.attach(metadata, result),
+                      output,
+                    }
                 yield* sessions.updatePart(part)
+              }
+              yield* ToolResultProtocol.ToolResultSettlement.emit(result)
+              if (!failed) {
+                yield* AialraTurnTrace.emit({
+                  phase: aborted ? "tool.lifecycle.aborted" : "tool.lifecycle.completed",
+                  turnID: msg.parentID,
+                  sessionID: input.sessionID,
+                  messageID: msg.id,
+                  data: {
+                    schema: "aialra.tool_lifecycle.v1",
+                    hook: "post",
+                    status: aborted ? "aborted" : "completed",
+                    tool: ShellID.ToolID,
+                    callID: part.callID,
+                    source: "shell_route",
+                    inputKeys: ["command"],
+                    cwd,
+                    durationMs: completed - started,
+                    outputChars: output.length,
+                    abort: abortMetadata,
+                  },
+                })
               }
             }),
           )
@@ -1231,33 +1507,91 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 { cwd, sessionID: input.sessionID, callID: part.callID },
                 { env: {} },
               )
+              const proxyEnv =
+                networkProxy.enforcement === "environment" && networkProxy.url
+                  ? {
+                      HTTP_PROXY: networkProxy.url,
+                      HTTPS_PROXY: networkProxy.url,
+                      ALL_PROXY: networkProxy.url,
+                      http_proxy: networkProxy.url,
+                      https_proxy: networkProxy.url,
+                      all_proxy: networkProxy.url,
+                    }
+                  : {}
+              if (networkProxy.enforcement === "environment" && networkProxy.url) {
+                yield* AialraTurnTrace.emit({
+                  phase: "network.proxy.applied",
+                  turnID: userMessageID,
+                  sessionID: input.sessionID,
+                  messageID: msg.id,
+                  data: {
+                    tool: ShellID.ToolID,
+                    target: input.command.slice(0, 240),
+                    status: networkProxy.enforcement,
+                    reason: "用户 shell route 已注入标准代理环境变量",
+                    network_proxy: {
+                      ...networkProxy,
+                      url: "redacted",
+                    },
+                  },
+                })
+              }
               const cmd = ChildProcess.make(sh, args, {
                 cwd,
                 extendEnv: true,
-                env: { ...shellEnv.env, TERM: "dumb" },
+                env: { ...shellEnv.env, ...proxyEnv, TERM: "dumb" },
                 stdin: "ignore",
                 forceKillAfter: "3 seconds",
               })
+              yield* ExecCommand.started(execCtx, execCommon)
               const handle = yield* spawner.spawn(cmd)
               yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
                 Effect.gen(function* () {
                   output += chunk
+                  yield* ExecCommand.output(execCtx, {
+                    ...execCommon,
+                    stream: "combined",
+                    seq: execOutputSeq++,
+                    text: chunk,
+                    preview: chunk.slice(0, 240),
+                  })
                   if (part.state.status === "running") {
                     part.state.metadata = { output, description: "" }
                     yield* sessions.updatePart(part)
                   }
                 }),
               )
-              yield* handle.exitCode
+              exitCode = yield* handle.exitCode
             }).pipe(Effect.scoped, Effect.orDie),
           ).pipe(Effect.exit)
 
           if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause) && !Cause.hasDies(exit.cause)) {
             aborted = true
           }
+          failed = Exit.isFailure(exit) && !aborted && !Cause.hasInterruptsOnly(exit.cause)
+          failureMessage = failed && Exit.isFailure(exit) ? errorMessage(Cause.squash(exit.cause)) : undefined
           yield* finish
 
-          if (Exit.isFailure(exit) && !aborted && !Cause.hasInterruptsOnly(exit.cause)) {
+          if (failed && Exit.isFailure(exit)) {
+            const error = Cause.squash(exit.cause)
+            yield* AialraTurnTrace.emit({
+              phase: "tool.lifecycle.failed",
+              turnID: msg.parentID,
+              sessionID: input.sessionID,
+              messageID: msg.id,
+              data: {
+                schema: "aialra.tool_lifecycle.v1",
+                hook: "post",
+                status: "failed",
+                tool: ShellID.ToolID,
+                callID: part.callID,
+                source: "shell_route",
+                inputKeys: ["command"],
+                cwd,
+                errorType: error instanceof Error ? error.name : typeof error,
+                errorMessage: error instanceof Error ? error.message : String(error),
+              },
+            })
             return yield* Effect.failCause(exit.cause)
           }
 
@@ -1831,13 +2165,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       model?: Provider.Model,
     ) {
       const modelContextWindow = model ? CodexTurn.modelContextWindow(model) : undefined
+      const selectedCwd = CodexTurn.environmentCwd(turn)
       yield* bus.publish(Session.Event.TurnStarted, {
         turnID: turn.turnID,
         sessionID: turn.sessionID,
         startedAt: turn.startedAt,
         modelContextWindow,
         collaborationModeKind: turn.collaboration_mode.kind,
-        cwd: turn.cwd,
+        cwd: selectedCwd,
       })
       yield* AialraTurnTrace.emit({
         phase: "turn.started",
@@ -1848,7 +2183,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           startedAt: turn.startedAt,
           modelContextWindow,
           collaborationModeKind: turn.collaboration_mode.kind,
-          cwd: turn.cwd,
+          cwd: selectedCwd,
+          legacyCwd: turn.cwd === selectedCwd ? undefined : turn.cwd,
+          selectedEnvironmentID: turn.selected_environment_id,
         },
       })
     })
@@ -1865,12 +2202,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         lastAgentMessage && !turn.noReply ? assistantText(lastAgentMessage).trim() : undefined
       const forcedReason = terminalErrorReasons.get(turn.turnID)
       terminalErrorReasons.delete(turn.turnID)
+      const relatedEventCount = PublicEventLog.list({ sessionID: turn.sessionID }).filter(
+        (event) => event.turnID === turn.turnID,
+      ).length
       const terminalAnomaly = EngineeringHarness.terminalAnomaly({
         turn,
         lastAgentMessage,
         finalText,
         forcedReason,
       })
+      yield* TurnDiffStore.emit(
+        TurnDiffStore.finalize({
+          sessionID: turn.sessionID,
+          turnID: turn.turnID,
+          messageID: lastAgentMessage,
+          outcome: "completed",
+        }),
+      )
       if (terminalAnomaly) {
         yield* AialraTurnTrace.emit({
           phase: "turn.terminal.anomaly",
@@ -1902,6 +2250,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           durationMs: Math.max(0, completedAt - turn.startedAt),
           timeToFirstTokenMs: turn.timeToFirstTokenMs,
           terminalAnomaly,
+          relatedEventCount,
         },
       })
       yield* AialraTurnTrace.emit({
@@ -1913,6 +2262,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           outcome: "completed",
           terminalAnomaly,
           completedAt,
+          relatedEventCount: relatedEventCount + 1,
         },
       })
       EngineeringHarness.finish(turn, "completed", finalText)
@@ -1928,6 +2278,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       activeTurns.delete(turn.sessionID)
       const completedAt = Date.now()
       const abortRequest = AbortAudit.latestForTurn(turn)
+      const relatedEventCount = PublicEventLog.list({ sessionID: turn.sessionID }).filter(
+        (event) => event.turnID === turn.turnID,
+      ).length
+      yield* TurnDiffStore.emit(
+        TurnDiffStore.finalize({
+          sessionID: turn.sessionID,
+          turnID: turn.turnID,
+          messageID: turn.messageID,
+          outcome: "aborted",
+        }),
+      )
       yield* bus.publish(Session.Event.TurnAborted, {
         turnID: turn.turnID,
         sessionID: turn.sessionID,
@@ -1948,6 +2309,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           abortActor: abortRequest?.actor ?? "unknown",
           completedAt,
           durationMs: Math.max(0, completedAt - turn.startedAt),
+          relatedEventCount,
         },
       })
       yield* AialraTurnTrace.emit({
@@ -1962,6 +2324,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           abortRequestID: abortRequest?.id,
           abortActor: abortRequest?.actor ?? "unknown",
           completedAt,
+          relatedEventCount: relatedEventCount + 1,
         },
       })
       EngineeringHarness.finish(turn, "aborted")
@@ -2012,6 +2375,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const session = yield* sessions.get(normalizedInput.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(normalizedInput)
+      const messageAgent = yield* agents.get(message.info.agent)
       yield* sessions.touch(normalizedInput.sessionID)
       const frame = TurnFrame.fromUserMessage({
         route,
@@ -2033,10 +2397,63 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         .pipe(Effect.exit)
       const activeModel = Exit.isSuccess(activeModelExit) ? activeModelExit.value : undefined
       const activeProvider = activeModel ? yield* provider.getProvider(activeModel.providerID) : undefined
-      const cwd = path.resolve(session.directory || instance.worktree)
+      const sessionCwd = path.resolve(session.directory || instance.worktree)
+      const turnSettings =
+        normalizedInput.settings?.cwd === undefined
+          ? normalizedInput.settings
+          : {
+              ...normalizedInput.settings,
+              cwd: path.resolve(sessionCwd, normalizedInput.settings.cwd),
+            }
+      const modelInfo = CodexTurn.modelInfo({
+        providerID: message.info.model.providerID,
+        modelID: message.info.model.modelID,
+        variant: message.info.model.variant,
+        provider: activeProvider,
+        model: activeModel,
+      })
+      const selectedVariantOptions = message.info.model.variant ? activeModel?.variants?.[message.info.model.variant] : undefined
+      const requestedVariantEffort = message.info.model.variant
+        ? (stringOption(selectedVariantOptions, ["reasoningEffort", "reasoning_effort", "effort", "thinkingLevel"]) ??
+          message.info.model.variant)
+        : undefined
+      const modelOptionEffort = stringOption(activeModel?.options, [
+        "reasoningEffort",
+        "reasoning_effort",
+        "effort",
+        "thinkingLevel",
+      ])
+      const requestedEffort = turnSettings?.effort ?? requestedVariantEffort ?? modelOptionEffort
+      const effortSource = turnSettings?.effort
+        ? ("turn_settings" as const)
+        : requestedVariantEffort
+          ? ("variant" as const)
+          : modelOptionEffort
+            ? ("model_options" as const)
+            : ("none" as const)
+      const effortResolution = CodexTurn.reasoningEffortResolution({
+        requested: requestedEffort,
+        source: effortSource,
+        modelInfo,
+        model: activeModel,
+      })
+      const requestedServiceTier =
+        turnSettings?.serviceTier ?? stringOption(activeModel?.options, ["serviceTier", "service_tier"])
+      const serviceTierSource = turnSettings?.serviceTier
+        ? ("turn_settings" as const)
+        : requestedServiceTier
+          ? ("model_options" as const)
+          : ("none" as const)
+      const serviceTierResolution = CodexTurn.serviceTierResolution({
+        requested: requestedServiceTier,
+        source: serviceTierSource,
+        modelInfo,
+      })
+      const cwd = path.resolve(turnSettings?.cwd ?? sessionCwd)
       const security = SessionSecurity.overrides({
         sessionID: frame.sessionID,
-        cwd,
+        cwd: sessionCwd,
+        turnSettings,
       })
       const userPromptText = promptText(message.parts)
       const engineering = EngineeringHarness.snapshot({
@@ -2056,20 +2473,127 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         approvalsReviewer: security.approvalsReviewer,
         sandboxPolicy: security.sandboxPolicy,
         permissionProfile: security.permissionProfile,
+        requestedPermissionProfile: security.requestedPermissionProfile,
+        resolvedPermissionProfile: security.resolvedPermissionProfile,
         activePermissionProfile: security.activePermissionProfile,
         environments: security.environments,
         selectedEnvironmentID: security.selectedEnvironmentID,
-        effort: stringOption(activeModel?.options, ["reasoningEffort", "reasoning_effort", "effort", "thinkingLevel"]),
-        summary: stringOption(activeModel?.options, ["reasoningSummary", "reasoning_summary", "summary"]),
-        serviceTier: stringOption(activeModel?.options, ["serviceTier", "service_tier"]),
+        modelInfo,
+        requestedEffort: effortResolution.requested,
+        effectiveEffort: effortResolution.effective,
+        effortResolution,
+        effort: effortSource === "variant" ? undefined : effortResolution.effective,
+        summary: turnSettings?.summary ?? stringOption(activeModel?.options, ["reasoningSummary", "reasoning_summary", "summary"]),
+        requestedServiceTier,
+        effectiveServiceTier: serviceTierResolution.effective,
+        serviceTierResolution,
+        serviceTier: serviceTierResolution.effective,
         httpContext: security.httpContext,
         networkPolicy: security.networkPolicy,
+        networkPermissions: security.networkPermissions,
+        shellEnvironmentPolicy: security.shellEnvironmentPolicy,
         commandPolicy: security.commandPolicy,
+        securityConstraints: security.securityConstraints,
         stepBudget: security.stepBudget,
+        threadSettings: security.threadSettings,
+        extensionData: CodexTurn.extensionData(turnSettings?.extensionData),
+        metadata: {
+          turnSettingsOverride: turnSettings !== undefined,
+        },
         engineering,
       })
       if (message.info.format?.type === "json_schema") {
         turn.final_output_json_schema = message.info.format.schema
+      }
+      if (Object.keys(turn.extension_data).length) {
+        yield* AialraTurnTrace.emit({
+          phase: "extension.data.attached",
+          turnID: turn.turnID,
+          sessionID: turn.sessionID,
+          messageID: turn.messageID,
+          extension_data: turn.extension_data,
+          data: {
+            namespaces: Object.keys(turn.extension_data).sort(),
+            namespaceCount: Object.keys(turn.extension_data).length,
+          },
+        })
+      }
+      const allSkillList = yield* skillService.all()
+      const skillList = yield* skillService.available(messageAgent)
+      const availableSkillNames = new Set(skillList.map((skill) => skill.name))
+      turn.skill_catalog = CodexTurn.defaultSkillCatalog({
+        skills: skillList,
+        disabled: allSkillList
+          .filter((skill) => !availableSkillNames.has(skill.name))
+          .map((skill) => ({
+            ...skill,
+            reasons: [`skill ${skill.name} denied by agent permission rules`],
+          })),
+        agent: messageAgent.name,
+        cwd: CodexTurn.environmentCwd(turn),
+        activePermissionProfile: turn.active_permission_profile,
+        approvalPolicy: turn.approval_policy,
+        selectedEnvironmentID: turn.selected_environment_id,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "skill.catalog.resolved",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          ...turn.skill_catalog,
+          availableCount: turn.skill_catalog.available.length,
+          disabledCount: turn.skill_catalog.disabled.length,
+        },
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "model.effort.resolved",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          model_info: turn.model_info,
+          requested_effort: turn.requested_effort,
+          effective_effort: turn.effective_effort,
+          effort_resolution: turn.effort_resolution,
+        },
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "model.service_tier.resolved",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          model_info: turn.model_info,
+          requested_service_tier: turn.requested_service_tier,
+          effective_service_tier: turn.effective_service_tier,
+          service_tier_resolution: turn.service_tier_resolution,
+        },
+      })
+      const capabilityDecisions = CodexTurn.modelCapabilityDecisions(turn)
+      turn.metadata.modelCapabilityDecisions = capabilityDecisions
+      yield* AialraTurnTrace.emit({
+        phase: "model.capability.evaluated",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: turn.messageID,
+        data: {
+          model_info: turn.model_info,
+          decisions: capabilityDecisions,
+        },
+      })
+      if (Object.values(capabilityDecisions.ignored).some(Boolean)) {
+        yield* AialraTurnTrace.emit({
+          phase: "model.capability.degraded",
+          turnID: turn.turnID,
+          sessionID: turn.sessionID,
+          messageID: turn.messageID,
+          data: {
+            model_info: turn.model_info,
+            decisions: capabilityDecisions,
+            reason: "本轮请求包含模型能力未声明支持的参数，运行时会按 ModelInfo 跳过对应参数",
+          },
+        })
       }
       activeTurns.set(turn.sessionID, turn)
       yield* AialraTurnTrace.emit({
@@ -2141,7 +2665,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           mode: message.info.agent,
           agent: message.info.agent,
           variant: message.info.model.variant,
-          path: { cwd: turn.cwd, root: instance.worktree },
+          path: { cwd: CodexTurn.environmentCwd(turn), root: instance.worktree },
           cost: 0,
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
           modelID: message.info.model.modelID,
@@ -2522,19 +3046,70 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               },
             })
 
-            if (lastUser.format?.type === "json_schema") {
+            const structuredToolSupported =
+              lastUser.format?.type !== "json_schema" ||
+              (activeTurnForStep?.model_info.supports.structured_output ?? model.capabilities.toolcall)
+            if (lastUser.format?.type === "json_schema" && structuredToolSupported) {
               tools["StructuredOutput"] = createStructuredOutputTool({
                 schema: lastUser.format.schema,
                 onSuccess(output) {
                   structured = output
                 },
               })
+              if (activeTurnForStep) {
+                const structuredStatus: DynamicToolStatus = {
+                  id: "StructuredOutput",
+                  source: "structured_output",
+                  status: "available",
+                  reasons: ["本轮请求了 JSON schema 结构化输出"],
+                  schema_projected: true,
+                }
+                activeTurnForStep.dynamic_tools = {
+                  ...activeTurnForStep.dynamic_tools,
+                  available: [
+                    ...activeTurnForStep.dynamic_tools.available.filter((item) => item.id !== "StructuredOutput"),
+                    structuredStatus,
+                  ],
+                  available_ids: [
+                    ...activeTurnForStep.dynamic_tools.available_ids.filter((id) => id !== "StructuredOutput"),
+                    "StructuredOutput",
+                  ].toSorted((a, b) => a.localeCompare(b)),
+                }
+                yield* AialraTurnTrace.emit({
+                  phase: "tools.dynamic.resolved",
+                  turnID: activeTurnForStep.turnID,
+                  sessionID,
+                  messageID: handle.message.id,
+                  step,
+                  data: {
+                    ...activeTurnForStep.dynamic_tools,
+                    availableCount: activeTurnForStep.dynamic_tools.available.length,
+                    disabledCount: activeTurnForStep.dynamic_tools.disabled.length,
+                    model_supports_tools: activeTurnForStep.model_info.supports.tools,
+                    reason: "structured output tool dynamically injected for this turn",
+                  },
+                })
+              }
               yield* AialraTurnTrace.emit({
                 phase: "tools.structured_output_added",
                 turnID: lastUser.id,
                 sessionID,
                 messageID: handle.message.id,
                 step,
+              })
+            }
+            if (lastUser.format?.type === "json_schema" && !structuredToolSupported) {
+              yield* AialraTurnTrace.emit({
+                phase: "model.capability.degraded",
+                turnID: lastUser.id,
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                data: {
+                  model_info: activeTurnForStep?.model_info,
+                  reason: "当前模型的 ModelInfo 未声明支持结构化输出工具，本轮不强制 StructuredOutput tool",
+                  requested: { structured_output: true },
+                },
               })
             }
 
@@ -2561,15 +3136,32 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, modelMsgs] = yield* Effect.all([
+            const [skillPrompt, env, instructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
-            const system = [...env, ...instructions, ...(skills ? [skills] : [])]
+            if (skillPrompt && activeTurnForStep && activeTurnForStep.skill_catalog.injected_ids.length === 0) {
+              activeTurnForStep.skill_catalog = CodexTurn.markSkillCatalogInjected(activeTurnForStep.skill_catalog)
+              yield* AialraTurnTrace.emit({
+                phase: "skill.catalog.injected",
+                turnID: lastUser.id,
+                sessionID,
+                messageID: handle.message.id,
+                data: {
+                  ...activeTurnForStep.skill_catalog,
+                  injectedCount: activeTurnForStep.skill_catalog.injected_ids.length,
+                },
+              })
+            }
+            const system = [...env, ...instructions, ...(skillPrompt ? [skillPrompt] : [])]
             const format = lastUser.format ?? { type: "text" as const }
-            if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            const structuredOutputSupported =
+              format.type === "json_schema"
+                ? (activeTurnForStep?.model_info.supports.structured_output ?? model.capabilities.toolcall)
+                : false
+            if (format.type === "json_schema" && structuredOutputSupported) system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             yield* AialraTurnTrace.emit({
               phase: "model.context_built",
               turnID: lastUser.id,
@@ -2585,6 +3177,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 cwd: turn?.cwd,
                 approval_policy: turn?.approval_policy,
                 active_permission_profile: turn?.active_permission_profile,
+                model_info: turn?.model_info,
+                structuredOutputSupported,
               },
             })
             yield* AialraTurnTrace.emit({
@@ -2596,7 +3190,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               data: {
                 providerID: model.providerID,
                 modelID: model.id,
-                toolChoice: format.type === "json_schema" ? "required" : undefined,
+                toolChoice: format.type === "json_schema" && structuredOutputSupported ? "required" : undefined,
+                model_info: activeTurnForStep?.model_info,
               },
             })
             const activeProvider = yield* provider.getProvider(model.providerID)
@@ -2624,7 +3219,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   providerOptions: activeProvider.options,
                   modelOptions: model.options,
                 }),
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
+              toolChoice: format.type === "json_schema" && structuredOutputSupported ? "required" : undefined,
             })
             yield* AialraTurnTrace.emit({
               phase: "model.process.finished",
@@ -2680,6 +3275,83 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             }
 
             const workspaceChanged = activeTurn ? yield* workspaceHasGitChange(activeTurn) : undefined
+            const stopGatePrompt = EngineeringHarness.stopGatePrompt(activeTurn, assistantText(handle.message.id), {
+              workspaceChanged,
+            })
+            if (stopGatePrompt) {
+              const continuation: MessageV2.User = {
+                id: MessageID.ascending(),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+                tools: lastUser.tools,
+                system: lastUser.system,
+                format: lastUser.format,
+              }
+              yield* sessions.updateMessage(continuation)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continuation.id,
+                sessionID,
+                type: "text",
+                text: stopGatePrompt,
+                synthetic: true,
+              } satisfies MessageV2.TextPart)
+              yield* AialraTurnTrace.emit({
+                phase: "engineering.stop_gate.checked",
+                turnID: activeTurn?.turnID,
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                data: {
+                  continuationID: continuation.id,
+                  status: "blocked",
+                },
+              })
+              return "continue" as const
+            }
+
+            const verificationPrompt = EngineeringHarness.verificationPrompt(
+              activeTurn,
+              assistantText(handle.message.id),
+            )
+            if (verificationPrompt) {
+              const continuation: MessageV2.User = {
+                id: MessageID.ascending(),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+                tools: lastUser.tools,
+                system: lastUser.system,
+                format: lastUser.format,
+              }
+              yield* sessions.updateMessage(continuation)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continuation.id,
+                sessionID,
+                type: "text",
+                text: verificationPrompt,
+                synthetic: true,
+              } satisfies MessageV2.TextPart)
+              yield* AialraTurnTrace.emit({
+                phase: "engineering.verification.repair_requested",
+                turnID: activeTurn?.turnID,
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                data: {
+                  continuationID: continuation.id,
+                  reason: "final_without_verification",
+                },
+              })
+              return "continue" as const
+            }
+
             const zeroPatchPrompt = EngineeringHarness.zeroPatchPrompt(activeTurn, assistantText(handle.message.id), {
               workspaceChanged,
             })
@@ -2994,9 +3666,12 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.mergeAll(
         EventV2Bridge.defaultLayer,
         Agent.defaultLayer,
+        Skill.defaultLayer,
         SystemPrompt.defaultLayer,
         LLM.defaultLayer,
         Reference.defaultLayer,
+        ToolFoundation.defaultLayer,
+        ToolOutputStore.defaultLayer,
         Bus.layer,
         CrossSpawnSpawner.defaultLayer,
         RuntimeFlags.defaultLayer,
@@ -3022,6 +3697,7 @@ export const PromptInput = Schema.Struct({
   format: Schema.optional(MessageV2.Format),
   system: Schema.optional(Schema.String),
   variant: Schema.optional(Schema.String),
+  settings: Schema.optional(SecurityTurnSettingsOverride),
   parts: Schema.Array(
     Schema.Union([
       MessageV2.TextPartInput,

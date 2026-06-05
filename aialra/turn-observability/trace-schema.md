@@ -70,15 +70,21 @@ events such as `turn.started`, `model.retrying`, `tool.call.started`,
 `turn.step_budget.changed`, `security.override.requested`, and
 `security.override.resolved`. Engineering harness events are public as well:
 `engineering.controls.changed`, `engineering.mode.changed`,
-`engineering.budget.changed`, `engineering.run.started`,
+`engineering.budget.changed`, `engineering.benchmark.tier.selected`,
+`engineering.benchmark.started`, `engineering.benchmark.finished`,
+`multi_agent.task.assigned`, `multi_agent.task.settled`,
+`multi_agent.conflict.detected`, `engineering.run.started`,
 `engineering.phase.changed`, `engineering.artifact.updated`,
-`engineering.verification.finished`,
+`engineering.verification.planned`, `engineering.verification.started`,
+`engineering.verification.finished`, `engineering.verification.repair_requested`,
 `engineering.phase_gate.blocked_tool`, `engineering.phase_gate.premature_final`,
 `engineering.zero_patch.detected`, `engineering.zero_patch.recovery_requested`,
-`engineering.zero_patch.exhausted`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
+`engineering.zero_patch.recovered`, `engineering.zero_patch.exhausted`,
+`engineering.stop_gate.checked`, `engineering.stop_gate.activated`, `engineering.stop_gate.blocked_tool`,
 `engineering.loop.warning`, `engineering.loop.checkpoint`,
 `engineering.loop.blocked`, `engineering.reasoning.recorded`, and
-`engineering.run.finished`. Terminal reconciliation events are public as well:
+`engineering.run.finished`. Patch quality scoring is public as
+`patch.quality.scored`. Terminal reconciliation events are public as well:
 `turn.terminal.anomaly` and `turn.terminal.reconciled`. The public
 stream keeps the same redaction rule: show structure,
 state, IDs, policy, paths, and summaries; do not show raw prompt text, complete
@@ -115,15 +121,27 @@ via `AIALRA_EVENT_MEMORY_RAW_LIMIT_BYTES`.
 - `turn.terminal.reconciled`
 - `turn.budget_limited`
 - `turn.repeated_tool.warning`
+- `patch.quality.scored`
+- `engineering.benchmark.tier.selected`
+- `engineering.benchmark.started`
+- `engineering.benchmark.finished`
+- `multi_agent.task.assigned`
+- `multi_agent.task.settled`
+- `multi_agent.conflict.detected`
 - `engineering.run.started`
 - `engineering.phase.changed`
 - `engineering.artifact.updated`
+- `engineering.verification.planned`
+- `engineering.verification.started`
 - `engineering.verification.finished`
+- `engineering.verification.repair_requested`
 - `engineering.phase_gate.blocked_tool`
 - `engineering.phase_gate.premature_final`
 - `engineering.zero_patch.detected`
 - `engineering.zero_patch.recovery_requested`
+- `engineering.zero_patch.recovered`
 - `engineering.zero_patch.exhausted`
+- `engineering.stop_gate.checked`
 - `engineering.stop_gate.activated`
 - `engineering.stop_gate.blocked_tool`
 - `engineering.loop.warning`

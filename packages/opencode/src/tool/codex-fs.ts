@@ -106,7 +106,7 @@ export namespace CodexFs {
           const result = await CodexExecServer.readDirectory({ path: filePath, ctx })
           return result.entries.map((entry) => ({
             name: entry.fileName,
-            type: entry.isDirectory ? "directory" : entry.isFile ? "file" : "other",
+            type: entry.isDirectory ? "directory" : entry.isSymlink ? "symlink" : entry.isFile ? "file" : "other",
           }) satisfies AppFileSystem.DirEntry)
         },
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),

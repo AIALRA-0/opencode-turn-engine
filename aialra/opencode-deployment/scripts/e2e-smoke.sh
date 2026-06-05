@@ -40,6 +40,26 @@ AUTH_PASS="${OPENCODE_SERVER_PASSWORD:?OPENCODE_SERVER_PASSWORD is required}"
 mkdir -p "$TMP_DIR"
 printf 'OpenCode smoke workspace.\n' > "$TMP_DIR/README.md"
 
+search_quiet() {
+  local pattern="$1"
+  local file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg --quiet "$pattern" "$file"
+    return
+  fi
+  grep -E --quiet "$pattern" "$file"
+}
+
+search_quiet_ignore_case() {
+  local pattern="$1"
+  local file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg --quiet --ignore-case "$pattern" "$file"
+    return
+  fi
+  grep -E --quiet --ignore-case "$pattern" "$file"
+}
+
 "$BIN" --version
 node --test "$DEPLOYMENT_DIR/tests"/*.test.js
 
@@ -55,8 +75,8 @@ LOGOUT_HEADERS="$(mktemp)"
 trap 'rm -f "$LOGIN_HTML" "$LOGIN_HEADERS" "$COOKIE_JAR" "$APP_HTML" "$BOOTSTRAP_JS" "$LOGOUT_HEADERS"; cleanup' EXIT
 
 curl --silent --show-error --dump-header "$LOGIN_HEADERS" --output "$LOGIN_HTML" "$PUBLIC_SERVER/"
-rg --quiet '<form method="post" action="/login">' "$LOGIN_HTML"
-if rg --quiet --ignore-case '^www-authenticate:' "$LOGIN_HEADERS"; then
+search_quiet '<form method="post" action="/login">' "$LOGIN_HTML"
+if search_quiet_ignore_case '^www-authenticate:' "$LOGIN_HEADERS"; then
   echo "Public OpenCode login must not use browser Basic Auth prompts" >&2
   exit 1
 fi
@@ -69,10 +89,10 @@ curl --fail --silent --show-error \
   "$PUBLIC_SERVER/login" >/dev/null
 curl --fail --silent --show-error --cookie "$COOKIE_JAR" "$PUBLIC_SERVER/global/health" >/dev/null
 curl --fail --silent --show-error --cookie "$COOKIE_JAR" --output "$APP_HTML" "$PUBLIC_SERVER/"
-rg --quiet '/__aialra/opencode-bootstrap.js' "$APP_HTML"
+search_quiet '/__aialra/opencode-bootstrap.js' "$APP_HTML"
 curl --fail --silent --show-error --cookie "$COOKIE_JAR" --output "$BOOTSTRAP_JS" "$PUBLIC_SERVER/__aialra/opencode-bootstrap.js"
-rg --quiet 'opencode.global.dat:server' "$BOOTSTRAP_JS"
-rg --quiet '账号设置' "$BOOTSTRAP_JS"
+search_quiet 'opencode.global.dat:server' "$BOOTSTRAP_JS"
+search_quiet '账号设置' "$BOOTSTRAP_JS"
 curl --silent --show-error \
   --cookie "$COOKIE_JAR" \
   --cookie-jar "$COOKIE_JAR" \
@@ -80,13 +100,13 @@ curl --silent --show-error \
   --dump-header "$LOGOUT_HEADERS" \
   --output /dev/null \
   "$PUBLIC_SERVER/logout"
-rg --quiet '^location: /login' "$LOGOUT_HEADERS"
+search_quiet '^location: /login' "$LOGOUT_HEADERS"
 if curl --silent --show-error \
   --cookie "$COOKIE_JAR" \
   --header 'accept: application/json' \
   --output /dev/null \
   --write-out '%{http_code}' \
-  "$PUBLIC_SERVER/global/health" | rg --quiet '^200$'; then
+  "$PUBLIC_SERVER/global/health" | grep -E --quiet '^200$'; then
   echo "Public OpenCode logout must clear the login session" >&2
   exit 1
 fi

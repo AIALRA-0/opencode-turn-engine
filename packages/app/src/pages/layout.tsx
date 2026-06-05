@@ -77,6 +77,7 @@ import {
 import {
   collectNewSessionDeepLinks,
   collectOpenProjectDeepLinks,
+  collectSessionHandoffDeepLinks,
   deepLinkEvent,
   drainPendingDeepLinks,
 } from "./layout/deep-links"
@@ -1483,6 +1484,18 @@ export default function Layout(props: ParentProps) {
       }
       const href = link.prompt ? `/${slug}/session?prompt=${encodeURIComponent(link.prompt)}` : `/${slug}/session`
       navigateWithSidebarReset(href)
+    }
+
+    for (const link of collectSessionHandoffDeepLinks(urls)) {
+      void openProject(link.directory, false)
+      const slug = base64Encode(link.directory)
+      layout.handoff.setTabs(slug, link.sessionID)
+      const params = new URLSearchParams()
+      if (link.lastEventID) params.set("lastEventID", link.lastEventID)
+      if (link.threadID) params.set("threadID", link.threadID)
+      if (link.environmentID) params.set("environmentID", link.environmentID)
+      const query = params.size ? `?${params.toString()}` : ""
+      navigateWithSidebarReset(`/${slug}/session/${link.sessionID}${query}`)
     }
   }
 

@@ -24,9 +24,53 @@ type SecurityConfig = {
   cwd: string
   remoteEnvironmentSupported: boolean
   remoteEnvironmentStatus: string
+  runtimeProof?: RuntimeProof
   stepBudgetEnabled: boolean
   stepBudgetMaxSteps: number
   engineering: EngineeringControls
+}
+
+type RuntimeProof = {
+  version: "aialra.sandbox_control_runtime_proof.v1"
+  active_permission_profile_id: string
+  active_permission_profile_kind?: string
+  cwd: string
+  environment_id: string
+  environment_cwd: string
+  approval_policy: string
+  approvals_reviewer: string
+  command_policy: string
+  executor_backend: string
+  file_system?: {
+    enforced?: boolean
+    mode?: string
+    writable_roots?: string[]
+    readable_roots?: string[]
+    protected_paths?: string[]
+    symlink_escape_protected?: boolean
+  }
+  network?: {
+    policy?: string
+    access?: string
+    sandbox_mode?: string
+    disabled?: boolean
+    private_ip_policy?: string
+    localhost_policy?: string
+    proxy_required?: boolean
+    proxy_enabled?: boolean
+  }
+  shell_environment?: {
+    mode?: string
+    sensitive_env_redacted?: string[]
+    allowlist?: string[]
+    denylist?: string[]
+  }
+  live_effect?: {
+    applies_to_next_turn?: boolean
+    applies_to_next_tool_gate?: boolean
+    in_flight_model_requests_not_rewritten?: boolean
+    in_flight_processes_not_rewritten?: boolean
+  }
 }
 
 type EngineeringControls = {
@@ -304,6 +348,7 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
   const network = createMemo(() => currentNetworkValue(config()))
   const command = createMemo(() => currentCommandValue(config()))
   const engineering = createMemo(() => config()?.engineering)
+  const proof = createMemo(() => config()?.runtimeProof)
   const busy = () => store.loading || store.saving !== undefined
 
   return (
@@ -404,6 +449,22 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
                   onChange={(value) => void updateEngineering({ localizeToolMax: value })}
                 />
                 <NumberField
+                  label="重复工具预警阈值"
+                  value={engineering()?.repeatedToolWarning}
+                  min={1}
+                  max={1000}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ repeatedToolWarning: value })}
+                />
+                <NumberField
+                  label="重复工具检查点阈值"
+                  value={engineering()?.repeatedToolCheckpoint}
+                  min={1}
+                  max={1000}
+                  disabled={busy()}
+                  onChange={(value) => void updateEngineering({ repeatedToolCheckpoint: value })}
+                />
+                <NumberField
                   label="重复工具阻止阈值"
                   value={engineering()?.repeatedToolStop}
                   min={0}
@@ -471,6 +532,72 @@ export function SandboxControlPanel(props: { sessionID: string | undefined; acti
                 .git / .agents / .codex
               </div>
             </div>
+          </Section>
+
+          <Section title="实际生效证明">
+            <Show
+              when={proof()}
+              fallback={
+                <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2 text-11-regular text-text-weak">
+                  后端暂未返回生效证明，请刷新安全配置
+                </div>
+              }
+            >
+              {(runtimeProof) => (
+                <div class="grid gap-2 text-11-regular text-text-weak leading-4">
+                  <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
+                    <div class="text-12-medium text-text-strong">当前后端 active 值</div>
+                    <div class="mt-1">
+                      权限：{runtimeProof().active_permission_profile_id}
+                      <Show when={runtimeProof().active_permission_profile_kind}>
+                        {(kind) => <>，类型：{kind()}</>}
+                      </Show>
+                    </div>
+                    <div>环境：{runtimeProof().environment_id}，目录：{runtimeProof().environment_cwd}</div>
+                    <div>审批：{runtimeProof().approval_policy}，审批者：{runtimeProof().approvals_reviewer}</div>
+                    <div>命令：{runtimeProof().command_policy}，执行器：{runtimeProof().executor_backend}</div>
+                  </div>
+                  <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
+                    <div class="text-12-medium text-text-strong">文件和网络门禁</div>
+                    <div>
+                      文件门禁：
+                      {runtimeProof().file_system?.enforced ? "已启用" : "未启用"}，模式：
+                      {runtimeProof().file_system?.mode ?? "未知"}
+                    </div>
+                    <div>
+                      可写根目录：
+                      {(runtimeProof().file_system?.writable_roots ?? []).length > 0
+                        ? runtimeProof().file_system?.writable_roots?.join("、")
+                        : "无"}
+                    </div>
+                    <div>
+                      受保护路径：
+                      {(runtimeProof().file_system?.protected_paths ?? []).length > 0
+                        ? runtimeProof().file_system?.protected_paths?.join("、")
+                        : "无"}
+                    </div>
+                    <div>
+                      网络：{runtimeProof().network?.access ?? "未知"}，沙箱模式：
+                      {runtimeProof().network?.sandbox_mode ?? "未知"}，代理：
+                      {runtimeProof().network?.proxy_enabled ? "已启用" : "未启用"}
+                    </div>
+                  </div>
+                  <div class="rounded-md border border-border-weaker-base bg-background-base px-2 py-2">
+                    <div class="text-12-medium text-text-strong">实时生效边界</div>
+                    <div>下一轮对话：{runtimeProof().live_effect?.applies_to_next_turn ? "会生效" : "未确认"}</div>
+                    <div>下一次工具门禁：{runtimeProof().live_effect?.applies_to_next_tool_gate ? "会生效" : "未确认"}</div>
+                    <div>
+                      已发出的模型请求：
+                      {runtimeProof().live_effect?.in_flight_model_requests_not_rewritten ? "不会被中途改写" : "未确认"}
+                    </div>
+                    <div>
+                      已启动的长命令：
+                      {runtimeProof().live_effect?.in_flight_processes_not_rewritten ? "不会被中途改写" : "未确认"}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </Show>
           </Section>
 
           <Section title="网络与命令">

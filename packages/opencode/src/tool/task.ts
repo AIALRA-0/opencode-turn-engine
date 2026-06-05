@@ -8,6 +8,7 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
+import { EngineeringHarness } from "../session/engineering"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
@@ -171,6 +172,21 @@ export const TaskTool = Tool.define(
         model,
         ...(runInBackground ? { background: true } : {}),
       }
+      const multiAgentAssignment = EngineeringHarness.multiAgentAssigned({
+        turn: ctx.turn,
+        role: EngineeringHarness.multiAgentRole({
+          subagentType: params.subagent_type,
+          description: params.description,
+          prompt: params.prompt,
+        }),
+        agent: next.name,
+        parentSessionID: ctx.sessionID,
+        subagentSessionID: nextSession.id,
+        description: params.description,
+        background: runInBackground,
+        model,
+        permissionSummary: next.permission.map((rule) => `${rule.permission}:${rule.action}`),
+      })
 
       yield* ctx.metadata({
         title: params.description,
@@ -237,11 +253,37 @@ export const TaskTool = Tool.define(
           title: params.description,
           metadata,
           run: runTask().pipe(
-            Effect.tap((text) => inject("completed", text).pipe(Effect.ignore)),
+            Effect.tap((text) =>
+              Effect.sync(() => {
+                EngineeringHarness.multiAgentSettled({
+                  turn: ctx.turn,
+                  assignmentID: multiAgentAssignment?.id,
+                  subagentSessionID: nextSession.id,
+                  status: "completed",
+                  result: text,
+                })
+              }).pipe(Effect.andThen(inject("completed", text).pipe(Effect.ignore))),
+            ),
             Effect.catchCause((cause) =>
               (Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : inject("error", errorText(Cause.squash(cause))).pipe(Effect.ignore)
+                ? Effect.sync(() => {
+                    EngineeringHarness.multiAgentSettled({
+                      turn: ctx.turn,
+                      assignmentID: multiAgentAssignment?.id,
+                      subagentSessionID: nextSession.id,
+                      status: "cancelled",
+                      failureReason: "interrupted",
+                    })
+                  })
+                : Effect.sync(() => {
+                    EngineeringHarness.multiAgentSettled({
+                      turn: ctx.turn,
+                      assignmentID: multiAgentAssignment?.id,
+                      subagentSessionID: nextSession.id,
+                      status: "failed",
+                      failureReason: errorText(Cause.squash(cause)),
+                    })
+                  }).pipe(Effect.andThen(inject("error", errorText(Cause.squash(cause))).pipe(Effect.ignore)))
               ).pipe(Effect.andThen(Effect.failCause(cause))),
             ),
           ),
@@ -270,7 +312,26 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const text = yield* runTask()
+            const text = yield* runTask().pipe(
+              Effect.catchCause((cause) =>
+                Effect.sync(() => {
+                  EngineeringHarness.multiAgentSettled({
+                    turn: ctx.turn,
+                    assignmentID: multiAgentAssignment?.id,
+                    subagentSessionID: nextSession.id,
+                    status: Cause.hasInterruptsOnly(cause) ? "cancelled" : "failed",
+                    failureReason: Cause.hasInterruptsOnly(cause) ? "interrupted" : errorText(Cause.squash(cause)),
+                  })
+                }).pipe(Effect.andThen(Effect.failCause(cause))),
+              ),
+            )
+            EngineeringHarness.multiAgentSettled({
+              turn: ctx.turn,
+              assignmentID: multiAgentAssignment?.id,
+              subagentSessionID: nextSession.id,
+              status: "completed",
+              result: text,
+            })
             return {
               title: params.description,
               metadata,

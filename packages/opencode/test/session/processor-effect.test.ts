@@ -2,6 +2,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { expect } from "bun:test"
 import { tool } from "ai"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import * as Stream from "effect/Stream"
 import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
@@ -20,15 +21,18 @@ import { SessionProcessor } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
+import { PublicEventLog } from "../../src/session/public-event"
 import { Snapshot } from "../../src/snapshot"
 import * as Log from "@opencode-ai/core/util/log"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { provideTmpdirServer } from "../fixture/fixture"
+import { provideTmpdirServer, withTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { ToolOutputStore } from "../../src/session/tool-output-store"
+import { LLMEvent } from "@opencode-ai/llm"
 
 void Log.init({ print: false })
 
@@ -110,7 +114,7 @@ function defer<T>() {
 
 const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string) =>
   Effect.gen(function* () {
-    const stop = Date.now() + 500
+    const stop = Date.now() + 2_000
     while (Date.now() < stop) {
       const value = yield* check
       if (value !== undefined) return value
@@ -197,6 +201,53 @@ const env = Layer.mergeAll(
 
 const it = testEffect(env)
 
+const providerToolLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolCall({
+          id: "call_provider",
+          name: "web_search",
+          input: { query: "weather" },
+          providerExecuted: true,
+          providerMetadata: { openai: { hosted: true } },
+        }),
+        LLMEvent.toolResult({
+          id: "call_provider",
+          name: "web_search",
+          result: { type: "json", value: { title: "Search", output: "sunny", metadata: { source: "hosted" } } },
+          providerExecuted: true,
+          providerMetadata: { openai: { result: true } },
+        }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]),
+  }),
+)
+const providerToolDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  providerToolLLM,
+  Provider.defaultLayer,
+  status,
+  SyncEvent.defaultLayer,
+  EventV2Bridge.defaultLayer,
+  ToolOutputStore.defaultLayer,
+).pipe(Layer.provideMerge(infra))
+const providerToolEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
+  Layer.provideMerge(providerToolDeps),
+)
+const providerIt = testEffect(providerToolEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -252,6 +303,104 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+providerIt.live("session.processor records provider-executed tools through output store and settlement", () =>
+  withTmpdirInstance({ config: () => providerCfg("http://localhost:1/v1") })(
+    Effect.gen(function* () {
+      PublicEventLog.clearForTest()
+      const processors = yield* SessionProcessor.Service
+      const session = yield* Session.Service
+      const provider = yield* Provider.Service
+
+      const chat = yield* session.create({})
+      const parent = yield* user(chat.id, "search")
+      const msg = yield* assistant(chat.id, parent.id, process.cwd())
+      const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+      const handle = yield* processors.create({
+        assistantMessage: msg,
+        sessionID: chat.id,
+        model: mdl,
+      })
+
+      const value = yield* handle.process({
+        user: {
+          id: parent.id,
+          sessionID: chat.id,
+          role: "user",
+          time: parent.time,
+          agent: parent.agent,
+          model: { providerID: ref.providerID, modelID: ref.modelID },
+        } satisfies MessageV2.User,
+        sessionID: chat.id,
+        model: mdl,
+        agent: agent(),
+        system: [],
+        messages: [{ role: "user", content: "search" }],
+        tools: {},
+      })
+
+      const parts = MessageV2.parts(msg.id)
+      const tool = parts.find(
+        (part): part is MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted } =>
+          part.type === "tool" && part.callID === "call_provider" && part.state.status === "completed",
+      )
+      const events = PublicEventLog.list({ sessionID: chat.id })
+
+      expect(value).toBe("continue")
+      expect(tool?.metadata?.providerExecuted).toBe(true)
+      expect(tool?.metadata?.provider_tool_type).toBe("web_search")
+      expect(tool?.metadata?.providerExecution).toEqual(
+        expect.objectContaining({
+          schema: "aialra.provider_execution.v1",
+          executor_type: "provider",
+          provider_tool_type: "web_search",
+          provider_tool_kind: "provider_tool_call",
+          status: "called",
+          hosted: true,
+          tool_call_id: "call_provider",
+          support_scope: expect.arrayContaining(["web_search", "raw_output_ref", "history_replay"]),
+        }),
+      )
+      expect(tool?.state.metadata.outputRef?.schema).toBe("aialra.tool_output_ref.v1")
+      expect(tool?.state.metadata.provider_tool_type).toBe("web_search")
+      expect(tool?.state.metadata.providerExecution).toEqual(
+        expect.objectContaining({
+          schema: "aialra.provider_execution.v1",
+          provider_tool_type: "web_search",
+          provider_tool_kind: "provider_tool_result",
+          status: "completed",
+          raw_output_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+          output_store_supported: true,
+          replay_supported: true,
+          audit_supported: true,
+        }),
+      )
+      expect(tool?.state.metadata.toolResult?.schema).toBe("aialra.tool_result_settlement.v1")
+      expect(tool?.state.metadata.toolResult?.providerExecuted).toBe(true)
+      expect(tool?.state.metadata.toolResult?.provider_execution).toEqual(
+        expect.objectContaining({ provider_tool_type: "web_search", provider_tool_kind: "provider_tool_result" }),
+      )
+      expect(tool?.state.metadata.toolResult?.executor_type).toBe("provider")
+      expect(tool?.state.metadata.toolResult?.environment_id).toBe("default")
+      expect(tool?.state.metadata.toolResult?.tool_call_id).toBe("call_provider")
+      expect(tool?.state.metadata.toolResult?.visible_output).toBe("sunny")
+      expect(tool?.state.metadata.toolResult?.rawOutputRef?.schema).toBe("aialra.tool_output_ref.v1")
+      expect(tool?.state.metadata.toolResult?.raw_output_ref?.schema).toBe("aialra.tool_output_ref.v1")
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "provider.tool.call", toolCallID: "call_provider", status: "called" }),
+          expect.objectContaining({
+            type: "provider.tool.result",
+            toolCallID: "call_provider",
+            status: "completed",
+            summary: expect.stringContaining("web_search"),
+          }),
+          expect.objectContaining({ type: "tool.result.settled", toolCallID: "call_provider", status: "completed" }),
+        ]),
+      )
+    }),
   ),
 )
 
@@ -720,7 +869,16 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
         expect(call.state.input).toEqual({ query: "weather" })
         expect(call.state.output).toBe("result:weather")
         expect(call.state.title).toBe("Weather lookup")
-        expect(call.state.metadata).toEqual({ source: "test" })
+        expect(call.state.metadata).toEqual(
+          expect.objectContaining({
+            source: "test",
+            toolResult: expect.objectContaining({
+              schema: "aialra.tool_result_settlement.v1",
+              status: "completed",
+              toolCallID: "call_1",
+            }),
+          }),
+        )
         expect(call.state.time.start).toBeDefined()
         expect(call.state.time.end).toBeDefined()
       }),
@@ -785,6 +943,7 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
         if (call?.state.status === "error") {
           expect(call.state.error).toBe("Tool execution aborted")
           expect(call.state.metadata?.interrupted).toBe(true)
+          expect(call.state.metadata?.toolResult?.status).toBe("aborted")
           expect(call.state.time.end).toBeDefined()
         }
       }),

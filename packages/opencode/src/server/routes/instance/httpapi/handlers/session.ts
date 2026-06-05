@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
 import { Command } from "@/command"
@@ -13,6 +14,8 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionSecurity, SecurityUpdatePayload } from "@/session/security"
+import { ExecProcessRegistry } from "@/session/exec-process-registry"
+import { PublicEventLog } from "@/session/public-event"
 import { AialraTurnTrace } from "@/session/turn-trace"
 import { AbortAudit } from "@/session/abort-audit"
 import { Todo } from "@/session/todo"
@@ -25,9 +28,11 @@ import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/htt
 import { InstanceHttpApi } from "../api"
 import {
   CommandPayload,
+  CleanupProcessesPayload,
   AbortQuery,
   DiffQuery,
   ForkPayload,
+  HandoffQuery,
   InitPayload,
   ListQuery,
   MessagesQuery,
@@ -415,6 +420,24 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* SessionError.mapBusy(promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }))
     })
 
+    const cleanupProcesses = Effect.fn("SessionHttpApi.cleanupProcesses")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof CleanupProcessesPayload.Type
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* ExecProcessRegistry.cleanup({
+        sessionID: ctx.params.sessionID,
+        processID: ctx.payload.process_id,
+        processIDs: ctx.payload.process_ids ? [...ctx.payload.process_ids] : undefined,
+        turnID: ctx.payload.turn_id,
+        environmentID: ctx.payload.environment_id,
+        statuses: ctx.payload.statuses ? [...ctx.payload.statuses] : undefined,
+        includeRunning: ctx.payload.include_running,
+        includeFinished: ctx.payload.include_finished,
+        reason: ctx.payload.reason ?? "session_process_cleanup_requested",
+      })
+    })
+
     const revert = Effect.fn("SessionHttpApi.revert")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof RevertPayload.Type
@@ -438,6 +461,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           requestID: ctx.params.permissionID,
           reply: ctx.payload.response,
           scope: ctx.payload.scope,
+          reviewed_by: ctx.payload.reviewed_by,
+          review_reason: ctx.payload.review_reason,
+          overridden_by_constraints: ctx.payload.overridden_by_constraints,
         })
         .pipe(
         Effect.catchTag("Permission.NotFoundError", (error) =>
@@ -474,6 +500,128 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         cwd: current.directory || ctx.query.directory || process.cwd(),
         patch: ctx.payload,
       })
+    })
+
+    const handoff = Effect.fn("SessionHttpApi.handoff")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof HandoffQuery.Type
+    }) {
+      const current = yield* requireSession(ctx.params.sessionID)
+      const currentSecurity = SessionSecurity.get({
+        sessionID: ctx.params.sessionID,
+        cwd: current.directory || ctx.query.directory || process.cwd(),
+      })
+      const events = PublicEventLog.list({ sessionID: ctx.params.sessionID })
+      const lastEvent = events.at(-1)
+      const rawRefs = events.flatMap((event) => (event.rawRef ? [event.rawRef] : []))
+      const processes = ExecProcessRegistry.list({ sessionID: ctx.params.sessionID })
+      const running = processes.filter((process) => process.status === "running")
+      const selectedRemoteUnsupported =
+        currentSecurity.environmentID !== "default" &&
+        currentSecurity.environmentID !== "local-default" &&
+        currentSecurity.remoteEnvironmentSupported === false
+      const unsupported = [
+        running.length > 0 ? "running_process_handoff_degraded" : undefined,
+        selectedRemoteUnsupported ? "selected_remote_environment_unsupported" : undefined,
+      ].filter((item): item is string => !!item)
+      const confirmed = ctx.query.confirm === true
+      const snapshot = {
+        schema: "aialra.session_handoff.v1" as const,
+        handoff_id: `handoff_${crypto.randomUUID()}`,
+        session_id: ctx.params.sessionID,
+        thread_id: lastEvent?.threadID ?? ctx.params.sessionID,
+        source: ctx.query.source ?? "api",
+        target: ctx.query.target ?? "desktop",
+        requested_at: new Date().toISOString(),
+        status: !confirmed ? "pending_confirmation" as const : unsupported.length ? "degraded" as const : "ready" as const,
+        last_event_id: lastEvent?.id ?? ctx.query.lastEventID,
+        last_event_sequence: lastEvent?.sequence ?? 0,
+        event_stream: {
+          replay_url: `/session/${ctx.params.sessionID}/events/public`,
+          last_event_id: lastEvent?.id ?? ctx.query.lastEventID,
+          last_event_sequence: lastEvent?.sequence ?? 0,
+          supports_last_event_id: true,
+        },
+        raw_sync: {
+          raw_ref_count: rawRefs.length,
+          persisted_raw_ref_count: rawRefs.filter((ref) => ref.persisted).length,
+          memory_raw_ref_count: rawRefs.filter((ref) => !ref.persisted).length,
+          status: rawRefs.some((ref) => !ref.persisted) ? "partial_memory_only" : "ready",
+        },
+        environment: {
+          selected_environment_id: currentSecurity.environmentID,
+          cwd: currentSecurity.runtimeProof.environment_cwd,
+          remote_supported: currentSecurity.remoteEnvironmentSupported,
+          remote_status: currentSecurity.remoteEnvironmentStatus,
+          handoff_status: selectedRemoteUnsupported ? "unsupported" : "ready",
+        },
+        security: {
+          active_permission_profile_id: currentSecurity.runtimeProof.active_permission_profile_id,
+          active_permission_profile_kind: currentSecurity.runtimeProof.active_permission_profile_kind ?? "unknown",
+          approval_policy: currentSecurity.runtimeProof.approval_policy,
+          approvals_reviewer: currentSecurity.approvalsReviewer,
+          sandbox_policy: String(currentSecurity.runtimeProof.file_system.mode),
+          executor_backend: currentSecurity.executorBackend,
+          grants_status: "session_policy_snapshot",
+        },
+        process_registry: {
+          total: processes.length,
+          running: running.length,
+          completed: processes.filter((process) => process.status === "completed").length,
+          failed: processes.filter((process) => process.status === "failed" || process.status === "timeout").length,
+          aborted: processes.filter((process) => process.status === "aborted").length,
+          handoff_status: running.length > 0 ? "degraded" : "ready",
+          unsupported_reason:
+            running.length > 0
+              ? "running processes stay bound to the current runtime and cannot be moved to another desktop runtime"
+              : undefined,
+          processes: processes.slice(-50).map((process) => ({
+            process_id: process.process_id,
+            turn_id: process.turn_id,
+            status: process.status,
+            command_preview: process.command.length > 160 ? `${process.command.slice(0, 159)}...` : process.command,
+            environment_id: process.environment_id,
+            cwd: process.cwd,
+            handoff_status: process.status === "running" ? "degraded" : "replay_only",
+            unsupported_reason:
+              process.status === "running"
+                ? "process runtime is in-memory and must be observed or reconnected, not silently migrated"
+                : undefined,
+          })),
+        },
+        confirmation: {
+          required: true,
+          confirmed,
+          reason:
+            "handoff carries session identity, event cursor, raw sync state, security controls and process registry state",
+        },
+        unsupported,
+      }
+      PublicEventLog.recordManual({
+        type: confirmed ? "session.handoff.prepared" : "session.handoff.requested",
+        severity: unsupported.length ? "warning" : "info",
+        sessionID: ctx.params.sessionID,
+        threadID: snapshot.thread_id,
+        title: confirmed ? "Session handoff snapshot prepared" : "Session handoff requested",
+        summary: `${snapshot.source} -> ${snapshot.target} ${snapshot.status}`,
+        status: snapshot.status,
+        data: {
+          handoff_id: snapshot.handoff_id,
+          source: snapshot.source,
+          target: snapshot.target,
+          status: snapshot.status,
+          last_event_id: snapshot.last_event_id,
+          last_event_sequence: snapshot.last_event_sequence,
+          raw_ref_count: snapshot.raw_sync.raw_ref_count,
+          selected_environment_id: snapshot.environment.selected_environment_id,
+          active_permission_profile_id: snapshot.security.active_permission_profile_id,
+          running_processes: snapshot.process_registry.running,
+          unsupported: snapshot.unsupported,
+          confirmed,
+        },
+        raw: snapshot,
+      })
+      return snapshot
     })
 
     const environment = Effect.fn("SessionHttpApi.environment")(function* (ctx: {
@@ -542,11 +690,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("promptAsync", promptAsync)
       .handle("command", command)
       .handle("shell", shell)
+      .handle("cleanupProcesses", cleanupProcesses)
       .handle("revert", revert)
       .handle("unrevert", unrevert)
       .handle("permissionRespond", permissionRespond)
       .handle("security", security)
       .handle("securityUpdate", securityUpdate)
+      .handle("handoff", handoff)
       .handle("environment", environment)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)

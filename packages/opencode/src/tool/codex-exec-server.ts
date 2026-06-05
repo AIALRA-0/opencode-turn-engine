@@ -4,6 +4,7 @@ import type { ShellSandboxCommand } from "./turn-sandbox"
 import { CodexTurn, type PermissionProfileFileSystemEntry, type TurnContext } from "@/session/turn-context"
 import { SessionSecurity } from "@/session/security"
 import { Effect } from "effect"
+import type { ExecProcessRuntime } from "@/session/exec-process-registry"
 
 type JsonRecord = Record<string, unknown>
 
@@ -42,6 +43,7 @@ type FsReadDirectoryResponse = {
     fileName: string
     isDirectory: boolean
     isFile: boolean
+    isSymlink?: boolean
   }>
 }
 
@@ -68,13 +70,24 @@ type ManagedServer = {
 }
 
 type RunProcessInput = {
+  processID?: string
   argv: string[]
   cwd: string
   env: Record<string, string>
   sandbox?: ShellSandboxCommand
   timeoutMs: number
+  backgroundTimeoutMs?: number
+  yieldTimeMs?: number
   ctx?: Tool.Context
   onOutput: (chunk: { stream: "stdout" | "stderr"; text: string; seq: number }) => void
+  onBackgroundFinish?: (result: {
+    processID: string
+    exitCode: number | null
+    failure: string | null
+    timedOut: boolean
+    aborted: boolean
+    durationMs: number
+  }) => void | Promise<void>
 }
 
 const decoder = new TextDecoder()
@@ -254,6 +267,21 @@ export class CodexExecServerClient {
     await this.request("process/terminate", { processId: processID })
   }
 
+  async writeStdin(processID: string, text: string, closeStdin = false) {
+    const deltaBase64 = text ? Buffer.from(text, "utf8").toString("base64") : null
+    await this.request("process/writeStdin", {
+      processHandle: processID,
+      deltaBase64,
+      closeStdin,
+    }).catch(() =>
+      this.request("command/exec/write", {
+        processId: processID,
+        deltaBase64,
+        closeStdin,
+      }),
+    )
+  }
+
   async close() {
     try {
       this.#ws.close()
@@ -375,18 +403,103 @@ async function withClient<T>(fn: (client: CodexExecServerClient) => Promise<T>) 
 export async function runProcess(input: RunProcessInput) {
   const url = process.env.AIALRA_CODEX_EXEC_SERVER_URL ?? await defaultSidecarUrl()
   const client = await CodexExecServerClient.connect(url ? { url } : undefined)
-  const processID = `proc_${Date.now().toString(36)}_${Math.random().toString(16).slice(2)}`
+  const processID = input.processID ?? `proc_${Date.now().toString(36)}_${Math.random().toString(16).slice(2)}`
   const started = Date.now()
   const argv = input.sandbox ? [input.sandbox.program, ...input.sandbox.args] : input.argv
   let aborted = input.ctx?.abort.aborted ?? false
+  let yielded = false
   let terminate: Promise<void> | undefined
   const requestTerminate = () => {
     terminate ??= client.terminate(processID).catch(() => {})
     return terminate
   }
+  const backgroundTimeoutMs = input.backgroundTimeoutMs ?? input.timeoutMs
+  const runtime: ExecProcessRuntime = {
+    ptyID: processID,
+    writeStdin: (text) => client.writeStdin(processID, text),
+    closeStdin: () => client.writeStdin(processID, "", true),
+    interrupt: () => client.terminate(processID),
+    abort: () => client.terminate(processID),
+  }
   const onAbort = () => {
     aborted = true
     requestTerminate()
+  }
+
+  const finishTrace = () =>
+    Effect.runPromise(AialraTurnTrace.emit({
+      phase: "exec_server.process.finished",
+      turnID: input.ctx?.turn?.turnID,
+      sessionID: input.ctx?.sessionID,
+      messageID: input.ctx?.messageID,
+      data: {
+        processID,
+        durationMs: Math.max(0, Date.now() - started),
+      },
+    }))
+
+  const drainBackground = async (afterSeq: number | null, exitCode: number | null, failure: string | null) => {
+    try {
+      while (Date.now() - started <= backgroundTimeoutMs) {
+        if (aborted) {
+          await Promise.race([requestTerminate(), new Promise((resolve) => setTimeout(resolve, 100))])
+          await input.onBackgroundFinish?.({
+            processID,
+            exitCode: null,
+            failure: null,
+            timedOut: false,
+            aborted: true,
+            durationMs: Math.max(0, Date.now() - started),
+          })
+          return
+        }
+        const result = (await client.request("process/read", {
+          processId: processID,
+          afterSeq,
+          maxBytes: 1024 * 1024,
+          waitMs: 250,
+        })) as ProcessReadResponse
+        afterSeq = result.nextSeq
+        exitCode = result.exitCode
+        failure = result.failure
+        for (const chunk of result.chunks ?? []) {
+          input.onOutput({ stream: chunk.stream, text: decodeChunk(chunk.chunk), seq: chunk.seq })
+        }
+        if (result.closed) {
+          await input.onBackgroundFinish?.({
+            processID,
+            exitCode,
+            failure,
+            timedOut: false,
+            aborted: false,
+            durationMs: Math.max(0, Date.now() - started),
+          })
+          return
+        }
+      }
+      await client.terminate(processID)
+      await input.onBackgroundFinish?.({
+        processID,
+        exitCode: null,
+        failure: "background_terminal_max_timeout",
+        timedOut: true,
+        aborted: false,
+        durationMs: Math.max(0, Date.now() - started),
+      })
+    } catch (error) {
+      await input.onBackgroundFinish?.({
+        processID,
+        exitCode: null,
+        failure: error instanceof Error ? error.message : String(error),
+        timedOut: false,
+        aborted,
+        durationMs: Math.max(0, Date.now() - started),
+      })
+    } finally {
+      input.ctx?.abort.removeEventListener("abort", onAbort)
+      await finishTrace()
+      await client.close()
+    }
   }
 
   try {
@@ -410,7 +523,7 @@ export async function runProcess(input: RunProcessInput) {
       cwd: input.cwd,
       env: input.env,
       tty: false,
-      pipeStdin: false,
+      pipeStdin: input.yieldTimeMs !== undefined,
       arg0: null,
     })
 
@@ -422,7 +535,7 @@ export async function runProcess(input: RunProcessInput) {
     while (Date.now() - started <= input.timeoutMs) {
       if (aborted) {
         await Promise.race([requestTerminate(), new Promise((resolve) => setTimeout(resolve, 100))])
-        return { exitCode: null, failure: null, timedOut: false, aborted: true }
+        return { processID, exitCode: null, failure: null, timedOut: false, aborted: true }
       }
       const result = (await client.request("process/read", {
         processId: processID,
@@ -438,28 +551,26 @@ export async function runProcess(input: RunProcessInput) {
       }
       if (aborted) {
         await Promise.race([requestTerminate(), new Promise((resolve) => setTimeout(resolve, 100))])
-        return { exitCode: null, failure: null, timedOut: false, aborted: true }
+        return { processID, exitCode: null, failure: null, timedOut: false, aborted: true }
       }
       if (result.closed) {
-        return { exitCode, failure, timedOut: false, aborted: false }
+        return { processID, exitCode, failure, timedOut: false, aborted: false }
+      }
+      if (input.yieldTimeMs !== undefined && Date.now() - started >= input.yieldTimeMs) {
+        yielded = true
+        void drainBackground(afterSeq, exitCode, failure)
+        return { processID, exitCode, failure, timedOut: false, aborted: false, running: true, runtime }
       }
     }
 
     await client.terminate(processID)
-    return { exitCode: null, failure: "timeout", timedOut: true, aborted: false }
+    return { processID, exitCode: null, failure: "timeout", timedOut: true, aborted: false }
   } finally {
-    input.ctx?.abort.removeEventListener("abort", onAbort)
-    await Effect.runPromise(AialraTurnTrace.emit({
-      phase: "exec_server.process.finished",
-      turnID: input.ctx?.turn?.turnID,
-      sessionID: input.ctx?.sessionID,
-      messageID: input.ctx?.messageID,
-      data: {
-        processID,
-        durationMs: Math.max(0, Date.now() - started),
-      },
-    }))
-    await client.close()
+    if (!yielded) {
+      input.ctx?.abort.removeEventListener("abort", onAbort)
+      await finishTrace()
+      await client.close()
+    }
   }
 }
 

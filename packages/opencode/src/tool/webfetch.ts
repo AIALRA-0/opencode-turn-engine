@@ -7,7 +7,9 @@ import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
 import { AialraTurnTrace } from "@/session/turn-trace"
 import { SessionSecurity } from "@/session/security"
+import { TurnSandbox } from "./turn-sandbox"
 import { CodexExecServer } from "./codex-exec-server"
+import type { NetworkProxyConfig } from "@/session/turn-context"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
@@ -16,6 +18,11 @@ const MAX_TIMEOUT = 120 * 1000 // 2 minutes
 type FetchResponse = {
   headers: Record<string, string>
   arrayBuffer: ArrayBuffer
+}
+
+type NetworkAccessResult = {
+  networkAccess: boolean
+  networkProxy?: NetworkProxyConfig
 }
 
 class WebFetchHttpStatusError extends Error {
@@ -63,13 +70,42 @@ export const WebFetchTool = Tool.define(
         )
       }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(new Error("Request timed out")) }))
     }
+    const proxyFetch = (url: string, headers: Record<string, string>, timeout: number, proxy: NetworkProxyConfig) =>
+      Effect.tryPromise({
+        try: async () => {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), timeout)
+          try {
+            const response = await fetch(url, {
+              headers,
+              signal: controller.signal,
+              proxy: proxy.url,
+            } as RequestInit & { proxy?: string })
+            if (response.status < 200 || response.status >= 300) throw new WebFetchHttpStatusError(response.status, url)
+            return {
+              headers: Object.fromEntries(response.headers.entries()),
+              arrayBuffer: await response.arrayBuffer(),
+            } satisfies FetchResponse
+          } finally {
+            clearTimeout(timer)
+          }
+        },
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
     const fetchResponse = (
       ctx: Tool.Context,
       url: string,
       headers: Record<string, string>,
       networkAccess: boolean,
       timeout: number,
+      networkProxy?: NetworkProxyConfig,
     ) => {
+      if (networkProxy?.required) {
+        if (networkProxy.enforcement === "environment" && networkProxy.url) {
+          return proxyFetch(url, headers, timeout, networkProxy)
+        }
+        return Effect.fail(new Error("NetworkProxy is required for webfetch, but no usable proxy URL is configured"))
+      }
       const viaNode = nodeFetch(url, headers, timeout)
       if (!CodexExecServer.enabledForContext(ctx)) return viaNode
       return Effect.tryPromise({
@@ -122,7 +158,7 @@ export const WebFetchTool = Tool.define(
           })
 
           const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
-          const networkAccess = yield* ensureNetworkAccess(ctx, params.url)
+          const network = yield* ensureNetworkAccess(ctx, params.url)
 
           // Build Accept header based on requested format with q parameters for fallbacks
           let acceptHeader = "*/*"
@@ -148,10 +184,10 @@ export const WebFetchTool = Tool.define(
             "Accept-Language": "en-US,en;q=0.9",
           }
 
-          const response = yield* fetchResponse(ctx, params.url, headers, networkAccess, timeout).pipe(
-            Effect.tapError((error) => classifyHttpResult(ctx, params.url, networkAccess, error)),
+          const response = yield* fetchResponse(ctx, params.url, headers, network.networkAccess, timeout, network.networkProxy).pipe(
+            Effect.tapError((error) => classifyHttpResult(ctx, params.url, network.networkAccess, error, network.networkProxy)),
           )
-          yield* classifyHttpResult(ctx, params.url, networkAccess, undefined)
+          yield* classifyHttpResult(ctx, params.url, network.networkAccess, undefined, network.networkProxy)
 
           // Check content length
           const contentLength = response.headers["content-length"]
@@ -240,10 +276,29 @@ function extractTextFromHTML(html: string) {
   return text.trim()
 }
 
+function redactedNetworkProxy(proxy: NetworkProxyConfig | undefined) {
+  if (!proxy) return undefined
+  if (!proxy.url) return proxy
+  return {
+    ...proxy,
+    url: "redacted",
+  }
+}
+
 const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(function* (ctx: Tool.Context, url: string) {
   const turn = ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
-  if (!turn) return false
+  if (!turn) return { networkAccess: false } satisfies NetworkAccessResult
   const policy = turn.network_policy ?? turn.http_context?.network_policy ?? "ask"
+  const decision = yield* TurnSandbox.assertNetworkAccess(
+    {
+      ...ctx,
+      extra: {
+        ...ctx.extra,
+        tool: "webfetch",
+      },
+    },
+    url,
+  )
   yield* AialraTurnTrace.emit({
     phase: "sandbox.effective",
     turnID: turn.turnID,
@@ -254,12 +309,16 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
       operation: "network",
       target: url,
       network_policy: policy,
+      network_permissions: turn.network_permissions,
+      network_sandbox_policy: turn.network_sandbox_policy,
+      networkDecision: decision,
+      network_sandbox_decision: decision.networkSandboxDecision,
+      network_proxy: redactedNetworkProxy(decision.networkProxy as NetworkProxyConfig | undefined),
       active_permission_profile: turn.active_permission_profile,
       approval_policy: turn.approval_policy,
     },
   })
-  if (policy === "on") return true
-  if (policy === "ask") {
+  if (decision.needsApproval) {
     yield* ctx.ask({
       permission: "network",
       patterns: [url],
@@ -267,9 +326,19 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
       metadata: {
         reason: "network_policy",
         url,
+        decision,
       },
     })
-    return true
+    return {
+      networkAccess: true,
+      networkProxy: decision.networkProxy as NetworkProxyConfig | undefined,
+    } satisfies NetworkAccessResult
+  }
+  if (decision.networkAccess) {
+    return {
+      networkAccess: true,
+      networkProxy: decision.networkProxy as NetworkProxyConfig | undefined,
+    } satisfies NetworkAccessResult
   }
   yield* AialraTurnTrace.emit({
     phase: "http.request.classified",
@@ -281,6 +350,7 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
       url,
       classification: "network_denied_by_policy",
       network_policy: policy,
+      network_sandbox_policy: turn.network_sandbox_policy,
       sandboxDenied: true,
     },
   })
@@ -294,13 +364,20 @@ const ensureNetworkAccess = Effect.fn("WebFetchTool.ensureNetworkAccess")(functi
       operation: "network",
       target: url,
       network_policy: policy,
+      network_sandbox_policy: turn.network_sandbox_policy,
       active_permission_profile: turn.active_permission_profile,
     },
   })
   return yield* Effect.die(new Error(`Network access is disabled for this turn: ${url}`))
 })
 
-function classifyHttpResult(ctx: Tool.Context, url: string, networkAccess: boolean, error: Error | undefined) {
+function classifyHttpResult(
+  ctx: Tool.Context,
+  url: string,
+  networkAccess: boolean,
+  error: Error | undefined,
+  networkProxy?: NetworkProxyConfig,
+) {
   const turn = ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
   if (!turn) return Effect.void
   const status = error instanceof WebFetchHttpStatusError ? error.status : undefined
@@ -315,7 +392,11 @@ function classifyHttpResult(ctx: Tool.Context, url: string, networkAccess: boole
       status,
       classification: error ? httpFailureClass(error) : "http_2xx_success",
       networkAccess,
+      network_proxy: networkProxy
+        ? redactedNetworkProxy(networkProxy)
+        : undefined,
       network_policy: turn.network_policy ?? turn.http_context?.network_policy ?? "ask",
+      network_sandbox_policy: turn.network_sandbox_policy,
       sandboxDenied: false,
       message: error?.message,
     },

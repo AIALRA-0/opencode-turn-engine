@@ -623,7 +623,15 @@ function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
 
 function providerMeta(metadata: Record<string, any> | undefined) {
   if (!metadata) return undefined
-  const { providerExecuted: _, ...rest } = metadata
+  const {
+    providerExecuted: _providerExecuted,
+    providerExecution: _providerExecution,
+    provider_tool_type: _providerToolType,
+    provider_tool_kind: _providerToolKind,
+    executor_type: _executorType,
+    toolResult: _toolResult,
+    ...rest
+  } = metadata
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 

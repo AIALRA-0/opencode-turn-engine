@@ -4,6 +4,8 @@ import { Effect, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Ripgrep } from "../file/ripgrep"
 import { Skill } from "../skill"
+import { AialraTurnTrace } from "../session/turn-trace"
+import { CodexTurn } from "../session/turn-context"
 import * as Tool from "./tool"
 import DESCRIPTION from "./skill.txt"
 
@@ -35,6 +37,34 @@ export const SkillTool = Tool.define(
 
           const dir = path.dirname(info.location)
           const base = pathToFileURL(dir).href
+          if (ctx.turn) {
+            ctx.turn.skill_catalog = CodexTurn.markSkillCatalogUsed(ctx.turn.skill_catalog, info.name)
+            const item = ctx.turn.skill_catalog.available.find((skill) => skill.name === info.name)
+            yield* AialraTurnTrace.emit({
+              phase: "skill.used",
+              turnID: ctx.turn.turnID,
+              sessionID: ctx.sessionID,
+              messageID: ctx.messageID,
+              data: {
+                name: info.name,
+                skill_id: item?.skill_id ?? info.name,
+                version: item?.version,
+                source: item?.source,
+                location: info.location,
+                dir,
+                callID: ctx.callID,
+                prompt_injected: item?.prompt_injected ?? false,
+                tools: item?.tools ?? ["skill"],
+                mcp_resources: item?.mcp_resources ?? [],
+                commands: item?.commands ?? [],
+                external_resources: item?.external_resources ?? [],
+                permission_requirements: item?.permission_requirements ?? [`skill:${info.name}`],
+                used_ids: ctx.turn.skill_catalog.used_ids,
+                usage_count: item?.usage_count ?? 0,
+                contentChars: info.content.length,
+              },
+            })
+          }
           const limit = 10
           const files = yield* rg.files({ cwd: dir, follow: false, hidden: true, signal: ctx.abort }).pipe(
             Stream.filter((file) => !file.includes("SKILL.md")),

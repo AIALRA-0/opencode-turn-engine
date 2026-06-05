@@ -24,6 +24,7 @@ type PermissionRespondFn = (input: {
 
 type TurnPermissionRequest = PermissionRequest & {
   turnID?: string
+  environment_id?: string
 }
 
 function isNonAllowRule(rule: unknown) {
@@ -162,6 +163,22 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       return request.tool?.messageID
     }
 
+    function environmentID(permission: PermissionRequest) {
+      const request = permission as TurnPermissionRequest
+      if (request.environment_id) return request.environment_id
+      const execApproval = request.metadata?.exec_approval
+      if (typeof execApproval === "object" && execApproval && "environment_id" in execApproval) {
+        const id = (execApproval as { environment_id?: unknown }).environment_id
+        if (typeof id === "string") return id
+      }
+      const applyPatchApproval = request.metadata?.apply_patch_approval
+      if (typeof applyPatchApproval === "object" && applyPatchApproval && "environment_id" in applyPatchApproval) {
+        const id = (applyPatchApproval as { environment_id?: unknown }).environment_id
+        if (typeof id === "string") return id
+      }
+      return "legacy"
+    }
+
     function commandSignature(permission: PermissionRequest) {
       return `${permission.permission}:${permission.patterns.join("\u0000")}`
     }
@@ -169,7 +186,7 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
     function turnKey(permission: PermissionRequest) {
       const id = turnID(permission)
       if (!id) return
-      return `${permission.sessionID}:${id}`
+      return `${permission.sessionID}:${environmentID(permission)}:${id}`
     }
 
     function turnCommandKey(permission: PermissionRequest) {

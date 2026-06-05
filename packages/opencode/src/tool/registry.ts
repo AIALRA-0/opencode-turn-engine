@@ -10,6 +10,10 @@ import { TaskTool } from "./task"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
+import { WriteStdinTool } from "./write_stdin"
+import { AwaitProcessTool } from "./await_process"
+import { CleanupProcessesTool } from "./cleanup_processes"
+import { RequestPermissionsTool } from "./request_permissions"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import * as Tool from "./tool"
@@ -128,6 +132,10 @@ export const layer: Layer.Layer<
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
+    const writeStdin = yield* WriteStdinTool
+    const awaitProcess = yield* AwaitProcessTool
+    const cleanupProcesses = yield* CleanupProcessesTool
+    const requestPermissions = yield* RequestPermissionsTool
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
@@ -230,6 +238,10 @@ export const layer: Layer.Layer<
           grep: Tool.init(greptool),
           edit: Tool.init(edit),
           write: Tool.init(writetool),
+          write_stdin: Tool.init(writeStdin),
+          await_process: Tool.init(awaitProcess),
+          cleanup_processes: Tool.init(cleanupProcesses),
+          request_permissions: Tool.init(requestPermissions),
           task: Tool.init(task),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
@@ -254,6 +266,10 @@ export const layer: Layer.Layer<
             tool.grep,
             tool.edit,
             tool.write,
+            tool.write_stdin,
+            tool.await_process,
+            tool.cleanup_processes,
+            tool.request_permissions,
             tool.task,
             tool.fetch,
             tool.todo,

@@ -1,4 +1,5 @@
 import * as path from "path"
+import crypto from "crypto"
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { Bus } from "../bus"
@@ -16,10 +17,39 @@ import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { TurnSandbox } from "./turn-sandbox"
 import { CodexFs } from "./codex-fs"
+import { CodexTurn } from "@/session/turn-context"
+import { ApplyPatchApproval } from "@/session/apply-patch-approval"
+import type { FileMutation, FileWriteMetadata, FileWriteState } from "@/session/file-write-protocol"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
 })
+
+function sha256(bytes: Uint8Array) {
+  return crypto.createHash("sha256").update(bytes).digest("hex")
+}
+
+function state(input: { exists: boolean; bytes?: Uint8Array; bom?: boolean }): FileWriteState {
+  if (!input.exists) return { exists: false }
+  const bytes = input.bytes ?? new Uint8Array()
+  return {
+    exists: true,
+    size: bytes.length,
+    sha256: sha256(bytes),
+    bom: input.bom,
+  }
+}
+
+function bytes(text: string, bom: boolean) {
+  return new TextEncoder().encode(Bom.join(text, bom))
+}
+
+function changedChars(oldText: string, newText: string) {
+  return {
+    chars_added: Math.max(0, newText.length - oldText.length),
+    chars_removed: Math.max(0, oldText.length - newText.length),
+  }
+}
 
 export const ApplyPatchTool = Tool.define(
   "apply_patch",
@@ -58,14 +88,18 @@ export const ApplyPatchTool = Tool.define(
 
       // Validate file paths and check permissions
       const fileChanges: Array<{
+        requestedPath: string
         filePath: string
         oldContent: string
         newContent: string
         type: "add" | "update" | "delete" | "move"
         movePath?: string
+        moveRequestedPath?: string
         diff: string
         additions: number
         deletions: number
+        before: FileWriteState
+        desired: FileWriteState
         bom: boolean
       }> = []
 
@@ -78,20 +112,25 @@ export const ApplyPatchTool = Tool.define(
 
         switch (hunk.type) {
           case "add": {
-            const oldContent = ""
+            const exists = yield* CodexFs.existsSafe(ctx, afs, filePath)
+            const beforeBytes = exists ? yield* CodexFs.readFile(ctx, afs, filePath) : new Uint8Array()
+            const source = exists ? yield* CodexFs.readBomFile(ctx, afs, filePath) : { bom: false, text: "" }
+            const oldContent = source.text
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
             const next = Bom.split(newContent)
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, next.text))
+            const desiredBom = source.bom || next.bom
+            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, "", next.text))
 
             let additions = 0
             let deletions = 0
-            for (const change of diffLines(oldContent, next.text)) {
+            for (const change of diffLines("", next.text)) {
               if (change.added) additions += change.count || 0
               if (change.removed) deletions += change.count || 0
             }
 
             fileChanges.push({
+              requestedPath: hunk.path,
               filePath,
               oldContent,
               newContent: next.text,
@@ -99,7 +138,9 @@ export const ApplyPatchTool = Tool.define(
               diff,
               additions,
               deletions,
-              bom: next.bom,
+              before: state({ exists, bytes: beforeBytes, bom: source.bom }),
+              desired: state({ exists: true, bytes: bytes(next.text, desiredBom), bom: desiredBom }),
+              bom: desiredBom,
             })
 
             totalDiff += diff + "\n"
@@ -116,6 +157,7 @@ export const ApplyPatchTool = Tool.define(
             }
 
             const source = yield* CodexFs.readBomFile(ctx, afs, filePath)
+            const beforeBytes = yield* CodexFs.readFile(ctx, afs, filePath)
             const oldContent = source.text
             let newContent = oldContent
             let bom = source.bom
@@ -147,14 +189,18 @@ export const ApplyPatchTool = Tool.define(
             yield* assertExternalDirectoryEffect(ctx, movePath, { access: "write" })
 
             fileChanges.push({
+              requestedPath: hunk.path,
               filePath,
               oldContent,
               newContent,
               type: hunk.move_path ? "move" : "update",
               movePath,
+              moveRequestedPath: hunk.move_path,
               diff,
               additions,
               deletions,
+              before: state({ exists: true, bytes: beforeBytes, bom: source.bom }),
+              desired: state({ exists: true, bytes: bytes(newContent, bom), bom }),
               bom,
             })
 
@@ -164,12 +210,14 @@ export const ApplyPatchTool = Tool.define(
 
           case "delete": {
             const source = yield* CodexFs.readBomFile(ctx, afs, filePath)
+            const beforeBytes = yield* CodexFs.readFile(ctx, afs, filePath)
             const contentToDelete = source.text
             const deleteDiff = trimDiff(createTwoFilesPatch(filePath, filePath, contentToDelete, ""))
 
             const deletions = contentToDelete.split("\n").length
 
             fileChanges.push({
+              requestedPath: hunk.path,
               filePath,
               oldContent: contentToDelete,
               newContent: "",
@@ -177,6 +225,8 @@ export const ApplyPatchTool = Tool.define(
               diff: deleteDiff,
               additions: 0,
               deletions,
+              before: state({ exists: true, bytes: beforeBytes, bom: source.bom }),
+              desired: { exists: false },
               bom: source.bom,
             })
 
@@ -199,6 +249,40 @@ export const ApplyPatchTool = Tool.define(
 
       // Check permissions if needed
       const relativePaths = fileChanges.map((c) => path.relative(instance.worktree, c.filePath).replaceAll("\\", "/"))
+      const patchApproval = yield* ApplyPatchApproval.requested(ctx, {
+        patchText: params.patchText,
+        patchSha256: sha256(new TextEncoder().encode(params.patchText)),
+        hunkCount: hunks.length,
+        totalDiff,
+        files: fileChanges.map((change) => ({
+          requested_path: change.requestedPath,
+          resolved_path: change.movePath ?? change.filePath,
+          operation: change.type === "add"
+            ? change.before.exists
+              ? "overwrite"
+              : "create"
+            : change.type === "delete"
+              ? "delete"
+              : change.type === "move"
+                ? "move"
+                : "overwrite",
+          move_path: change.movePath,
+          additions: change.additions,
+          deletions: change.deletions,
+          diff_sha256: sha256(new TextEncoder().encode(change.diff)),
+          diff_preview: change.diff.length > 2_000 ? `${change.diff.slice(0, 2_000)}...` : change.diff,
+          before: change.before,
+          desired: change.desired,
+          protected_path_checked: true,
+          symlink_realpath_checked: true,
+        })),
+        turnDiffPreview: {
+          files_changed: fileChanges.length,
+          additions: fileChanges.reduce((total, change) => total + change.additions, 0),
+          deletions: fileChanges.reduce((total, change) => total + change.deletions, 0),
+          patch_chars: params.patchText.length,
+        },
+      })
       yield* ctx.ask({
         permission: "edit",
         patterns: relativePaths,
@@ -207,6 +291,7 @@ export const ApplyPatchTool = Tool.define(
           filepath: relativePaths.join(", "),
           diff: totalDiff,
           files,
+          apply_patch_approval: patchApproval,
         },
       })
 
@@ -258,6 +343,111 @@ export const ApplyPatchTool = Tool.define(
         yield* bus.publish(FileWatcher.Event.Updated, update)
       }
 
+      const environment = ctx.turn?.environments.find((item) => item.environmentID === ctx.turn?.selected_environment_id)
+      const mutations: FileMutation[] = yield* Effect.all(
+        fileChanges.map((change, index) =>
+          Effect.gen(function* () {
+            const target = change.movePath ?? change.filePath
+            const afterExists = change.type === "delete" ? false : yield* CodexFs.existsSafe(ctx, afs, target)
+            const afterBytes = afterExists ? yield* CodexFs.readFile(ctx, afs, target) : new Uint8Array()
+            const afterSource = afterExists ? yield* CodexFs.readBomFile(ctx, afs, target) : { bom: false, text: "" }
+            return {
+              schema: "aialra.file_mutation.v1",
+              mutation_id: `file_mutation_${ctx.callID || Date.now().toString(36)}_${index}`,
+              tool: "apply_patch",
+              operation:
+                change.type === "add"
+                  ? change.before.exists
+                    ? "overwrite"
+                    : "create"
+                  : change.type === "delete"
+                    ? "delete"
+                    : change.type === "move"
+                      ? "move"
+                      : "overwrite",
+              applied: true,
+              requested_path: change.moveRequestedPath ?? change.requestedPath,
+              resolved_path: target,
+              environment_id: ctx.turn?.selected_environment_id ?? "legacy",
+              before: change.before,
+              after: state({ exists: afterExists, bytes: afterBytes, bom: afterSource.bom }),
+              desired: change.desired,
+              diff: {
+                ...changedChars(change.oldContent, afterSource.text),
+                patch_chars: change.diff.length,
+              },
+            } satisfies FileMutation
+          }),
+        ),
+      )
+      const fileWrite: FileWriteMetadata = {
+        schema: "aialra.file_write.v1",
+        tool: "apply_patch",
+        status: "completed",
+        session_id: String(ctx.sessionID),
+        turn_id: ctx.turn?.turnID ? String(ctx.turn.turnID) : undefined,
+        message_id: String(ctx.messageID),
+        call_id: ctx.callID,
+        environment_id: ctx.turn?.selected_environment_id ?? "legacy",
+        environment_cwd: environment?.cwd ?? (ctx.turn ? CodexTurn.environmentCwd(ctx.turn) : instance.directory),
+        requested_path: fileChanges.length === 1 ? fileChanges[0].requestedPath : `apply_patch:${fileChanges.length}:files`,
+        resolved_path: fileChanges.length === 1 ? fileChanges[0].movePath ?? fileChanges[0].filePath : instance.worktree,
+        policy: {
+          overwrite: "allow",
+          dry_run: false,
+          encoding: "utf-8",
+          preserves_bom: fileChanges.some((change) => change.bom),
+          atomic: false,
+          atomic_reason: "codex_fs_rename_api_unavailable",
+        },
+        permission_decision: {
+          status: "allowed",
+          source: "turn_context",
+          active_permission_profile: ctx.turn?.active_permission_profile,
+          sandbox_policy: ctx.turn?.sandbox_policy,
+          approval_policy: ctx.turn?.approval_policy,
+        },
+        before: mutations[0]?.before ?? { exists: false },
+        after: mutations[0]?.after ?? { exists: false },
+        desired: mutations[0]?.desired,
+        patch_intent: {
+          patch_chars: params.patchText.length,
+          hunk_count: hunks.length,
+          affected_files: fileChanges.map((change, index) => ({
+            requested_path: change.requestedPath,
+            resolved_path: change.movePath ?? change.filePath,
+            operation: mutations[index]?.operation ?? "overwrite",
+            move_path: change.movePath,
+            additions: change.additions,
+            deletions: change.deletions,
+            applied: true,
+            hunk_status: "applied",
+          })),
+        },
+        mutation: mutations[0] ?? {
+          schema: "aialra.file_mutation.v1",
+          mutation_id: `file_mutation_${ctx.callID || Date.now().toString(36)}_empty`,
+          tool: "apply_patch",
+          operation: "preview",
+          applied: false,
+          requested_path: "apply_patch",
+          resolved_path: instance.worktree,
+          environment_id: ctx.turn?.selected_environment_id ?? "legacy",
+          before: { exists: false },
+          after: { exists: false },
+          diff: { chars_added: 0, chars_removed: 0, patch_chars: 0 },
+        },
+      }
+
+      yield* ctx.metadata({
+        metadata: {
+          diff: totalDiff,
+          files,
+          fileWrite,
+          fileMutations: mutations,
+        },
+      })
+
       // Notify LSP of file changes and collect diagnostics
       for (const change of fileChanges) {
         if (change.type === "delete") continue
@@ -294,6 +484,8 @@ export const ApplyPatchTool = Tool.define(
           diff: totalDiff,
           files,
           diagnostics,
+          fileWrite,
+          fileMutations: mutations,
         },
         output,
       }

@@ -10,6 +10,7 @@ export const EventPaths = {
   sessionPublicEvents: "/session/:sessionID/events/public",
   sessionPublicEventRaw: "/session/:sessionID/events/:eventID/raw",
   sessionRawLab: "/session/:sessionID/raw-lab",
+  sessionRawDownload: "/session/:sessionID/raw-lab/download",
 } as const
 
 export const EventApi = HttpApi.make("event").add(
@@ -66,6 +67,17 @@ export const EventApi = HttpApi.make("event").add(
           identifier: "event.sessionRawLab",
           summary: "Read unified raw lab data",
           description: "Read public events, raw references, trace JSONL, and DB message/part JSON for one session.",
+        }),
+      ),
+      HttpApiEndpoint.get("sessionRawDownload", EventPaths.sessionRawDownload, {
+        params: { sessionID: Schema.String },
+        query: WorkspaceRoutingQuery,
+        success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/json" })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "event.sessionRawDownload",
+          summary: "Download unified raw audit bundle",
+          description: "Download public events, raw payloads, trace JSONL, turn history, and DB message/part JSON as one audit bundle.",
         }),
       ),
     )

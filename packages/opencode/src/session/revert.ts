@@ -9,6 +9,7 @@ import { MessageV2 } from "./message-v2"
 import { SessionID, MessageID, PartID } from "./schema"
 import { SessionRunState } from "./run-state"
 import { SessionSummary } from "./summary"
+import { AialraTurnTrace } from "./turn-trace"
 
 const log = Log.create({ service: "session.revert" })
 
@@ -40,6 +41,17 @@ export const layer = Layer.effect(
 
     const revert = Effect.fn("SessionRevert.revert")(function* (input: RevertInput) {
       yield* state.assertNotBusy(input.sessionID)
+      yield* AialraTurnTrace.emit({
+        phase: "thread.rollback.requested",
+        sessionID: input.sessionID,
+        turnID: input.messageID,
+        messageID: input.messageID,
+        data: {
+          messageID: input.messageID,
+          partID: input.partID,
+          mode: input.partID ? "part" : "message",
+        },
+      })
       const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
       let lastUser: MessageV2.User | undefined
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -68,7 +80,20 @@ export const layer = Layer.effect(
         }
       }
 
-      if (!rev) return session
+      if (!rev) {
+        yield* AialraTurnTrace.emit({
+          phase: "thread.rollback.noop",
+          sessionID: input.sessionID,
+          turnID: input.messageID,
+          messageID: input.messageID,
+          data: {
+            reason: "target_not_found",
+            messageID: input.messageID,
+            partID: input.partID,
+          },
+        })
+        return session
+      }
 
       rev.snapshot = session.revert?.snapshot ?? (yield* snap.track())
       if (session.revert?.snapshot) yield* snap.restore(session.revert.snapshot)
@@ -87,6 +112,26 @@ export const layer = Layer.effect(
           files: diffs.length,
         },
       })
+      yield* AialraTurnTrace.emit({
+        phase: "thread.rollback.applied",
+        sessionID: input.sessionID,
+        turnID: rev.messageID,
+        messageID: rev.messageID,
+        data: {
+          requestedMessageID: input.messageID,
+          requestedPartID: input.partID,
+          rollbackMessageID: rev.messageID,
+          rollbackPartID: rev.partID,
+          revertedMessageCount: range.length,
+          revertedPatchCount: patches.length,
+          diffBytes: rev.diff?.length ?? 0,
+          summary: {
+            additions: diffs.reduce((sum, x) => sum + x.additions, 0),
+            deletions: diffs.reduce((sum, x) => sum + x.deletions, 0),
+            files: diffs.length,
+          },
+        },
+      })
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
     })
 
@@ -97,6 +142,17 @@ export const layer = Layer.effect(
       if (!session.revert) return session
       if (session.revert.snapshot) yield* snap.restore(session.revert.snapshot)
       yield* sessions.clearRevert(input.sessionID)
+      yield* AialraTurnTrace.emit({
+        phase: "thread.rollback.restored",
+        sessionID: input.sessionID,
+        turnID: session.revert.messageID,
+        messageID: session.revert.messageID,
+        data: {
+          rollbackMessageID: session.revert.messageID,
+          rollbackPartID: session.revert.partID,
+          snapshot: session.revert.snapshot,
+        },
+      })
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
     })
 
@@ -141,6 +197,18 @@ export const layer = Layer.effect(
         }
       }
       yield* sessions.clearRevert(sessionID)
+      yield* AialraTurnTrace.emit({
+        phase: "thread.rollback.cleaned",
+        sessionID,
+        turnID: messageID,
+        messageID,
+        data: {
+          rollbackMessageID: messageID,
+          rollbackPartID: session.revert.partID,
+          removedMessageCount: remove.length,
+          trimmedPartMessageID: target?.info.id,
+        },
+      })
     })
 
     return Service.of({ revert, unrevert, cleanup })

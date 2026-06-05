@@ -40,6 +40,8 @@ import { Global } from "@opencode-ai/core/global"
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optionalOmitUndefined } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { PublicEventLog } from "./public-event"
+import { SessionSecurity } from "./security"
 
 const log = Log.create({ service: "session" })
 
@@ -696,7 +698,7 @@ export const layer: Layer.Layer<
     }) {
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
-      return yield* createNext({
+      const created = yield* createNext({
         parentID: input?.parentID,
         directory: ctx.directory,
         path: sessionPath(ctx.worktree, ctx.directory),
@@ -706,6 +708,59 @@ export const layer: Layer.Layer<
         permission: input?.permission,
         workspaceID: input?.workspaceID ?? workspace,
       })
+      const security = SessionSecurity.get({ sessionID: created.id, cwd: created.directory })
+      PublicEventLog.recordManual({
+        type: "session.configured",
+        severity: "info",
+        sessionID: created.id,
+        title: "Session configured",
+        summary: `cwd=${created.directory} profile=${security.permissionProfileID}`,
+        status: "configured",
+        data: {
+          sessionID: created.id,
+          parentID: created.parentID,
+          workspaceID: created.workspaceID,
+          projectID: created.projectID,
+          directory: created.directory,
+          path: created.path,
+          cwd: created.directory,
+          worktree: ctx.worktree,
+          version: created.version,
+          agent: created.agent,
+          model: created.model,
+          permission: created.permission,
+          permissionProfileID: security.permissionProfileID,
+          approvalPolicy: security.approvalPolicy,
+          approvalsReviewer: security.approvalsReviewer,
+          networkPolicy: security.networkPolicy,
+          commandPolicy: security.commandPolicy,
+          networkAccess: security.networkAccess,
+          networkSandboxPolicy: security.networkSandboxPolicy,
+          networkProxy: security.networkProxy,
+          executorBackend: security.executorBackend,
+          environmentID: security.environmentID,
+          selectedEnvironmentCwd: security.cwd,
+          remoteEnvironmentSupported: security.remoteEnvironmentSupported,
+          remoteEnvironmentStatus: security.remoteEnvironmentStatus,
+          platformSandbox: security.platformSandbox,
+          effectivePermissionProfile: security.effectivePermissionProfile,
+          fileSystemPolicy: security.fileSystemPolicy,
+          shellEnvPolicy: "runtime shell environment is resolved per tool call",
+          toolRegistry: "resolved per agent and turn at prompt runtime",
+          skillCatalog: "resolved per agent and turn at prompt runtime",
+          extensionData: {},
+        },
+        raw: {
+          source: "session.create",
+          session: created,
+          security,
+          instance: {
+            directory: ctx.directory,
+            worktree: ctx.worktree,
+          },
+        },
+      })
+      return created
     })
 
     const fork = Effect.fn("Session.fork")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {

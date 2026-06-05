@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import os from "os"
@@ -6,6 +6,9 @@ import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "../../src/shell/shell"
 import { ShellTool } from "../../src/tool/shell"
+import { WriteStdinTool } from "../../src/tool/write_stdin"
+import { AwaitProcessTool } from "../../src/tool/await_process"
+import { CleanupProcessesTool } from "../../src/tool/cleanup_processes"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -19,6 +22,10 @@ import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { CodexTurn, type TurnContext } from "../../src/session/turn-context"
+import { ExecProcessRegistry } from "../../src/session/exec-process-registry"
+import { PublicEventLog } from "../../src/session/public-event"
+import { ExecCommandEnd } from "../../src/session/exec-command-end"
+import { EngineeringHarness } from "../../src/session/engineering"
 
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
@@ -40,6 +47,18 @@ const initShell = Effect.fn("ShellToolTest.init")(function* () {
 })
 
 const initBash = initShell
+const initWriteStdin = Effect.fn("ShellToolTest.initWriteStdin")(function* () {
+  const info = yield* WriteStdinTool
+  return yield* info.init()
+})
+const initAwaitProcess = Effect.fn("ShellToolTest.initAwaitProcess")(function* () {
+  const info = yield* AwaitProcessTool
+  return yield* info.init()
+})
+const initCleanupProcesses = Effect.fn("ShellToolTest.initCleanupProcesses")(function* () {
+  const info = yield* CleanupProcessesTool
+  return yield* info.init()
+})
 
 const run = Effect.fn("ShellToolTest.run")(function* (
   args: Tool.InferParameters<typeof ShellTool>,
@@ -74,35 +93,98 @@ const ctx = {
   ask: () => Effect.void,
 }
 
-function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
+function turn(
+  cwd: string,
+  overrides: Partial<
+    Omit<
+      TurnContext,
+      | "model_info"
+      | "effort_resolution"
+      | "reasoning_summary_policy"
+      | "service_tier_resolution"
+      | "dynamic_tools"
+      | "skill_catalog"
+    >
+  > = {},
+): TurnContext {
   return {
     version: "aialra.user_turn.v1",
     turnID: MessageID.make("msg_turn_shell"),
     startedAt: Date.now(),
     items: [],
+    input_items: [],
+    input_schema: {
+      codex: "Op::UserInput",
+      supported_items: ["text", "image", "local_image", "file", "skill", "mention", "subtask"],
+    },
     cwd,
     approval_policy: "on-request",
     sandbox_policy: CodexTurn.defaultSandboxPolicy(cwd),
     permission_profile: CodexTurn.workspacePermissionProfile(cwd),
     active_permission_profile: { id: ":workspace" },
     model: { providerID: "test", modelID: "test" },
+    model_info: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    effort_resolution: CodexTurn.reasoningEffortResolution({
+      modelInfo: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    }),
+    reasoning_summary_policy: CodexTurn.defaultReasoningSummaryPolicy(),
+    service_tier_resolution: CodexTurn.serviceTierResolution({
+      modelInfo: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    }),
+    dynamic_tools: CodexTurn.defaultDynamicTools({
+      requested: {},
+      activePermissionProfile: { id: ":workspace" },
+      approvalPolicy: "on-request",
+      modelSupportsTools: true,
+      selectedEnvironmentID: "default",
+    }),
+    skill_catalog: CodexTurn.defaultSkillCatalog({
+      skills: [],
+      agent: "build",
+      cwd,
+      activePermissionProfile: { id: ":workspace" },
+      approvalPolicy: "on-request",
+      selectedEnvironmentID: "default",
+    }),
     collaboration_mode: { kind: "default" },
     environments: [{ environmentID: "default", cwd }],
     selected_environment_id: "default",
     network_policy: "off",
+    network_permissions: CodexTurn.defaultNetworkPermissions("off"),
+    shell_environment_policy: CodexTurn.defaultShellEnvironmentPolicy(),
     command_policy: "workspace",
+    security_constraints: CodexTurn.defaultSecurityConstraints(cwd),
     route: "prompt",
     sessionID: SessionID.make("ses_shell_turn"),
     messageID: MessageID.make("msg_turn_shell"),
     agent: "build",
     noReply: false,
     format: "text",
+    thread_settings: {
+      requested: {},
+      resolved: {},
+      effective: {},
+    },
+    metadata: { source: "test" },
+    extension_data: {},
     retry: CodexTurn.retryConfig({}),
     ...overrides,
   }
 }
 
 Shell.acceptable.reset()
+const previousExecBackend = process.env.AIALRA_EXEC_BACKEND
+beforeAll(() => {
+  process.env.AIALRA_EXEC_BACKEND = "node-bun"
+})
+afterAll(() => {
+  if (previousExecBackend === undefined) delete process.env.AIALRA_EXEC_BACKEND
+  else process.env.AIALRA_EXEC_BACKEND = previousExecBackend
+})
+afterEach(() => {
+  ExecCommandEnd.clearForTest()
+  PublicEventLog.clearForTest()
+})
 const quote = (text: string) => `"${text}"`
 const squote = (text: string) => `'${text}'`
 const projectRoot = path.join(__dirname, "../..")
@@ -168,7 +250,45 @@ const withShell = <A, E, R>(item: { label: string; shell: string }, self: Effect
         if (prev === undefined) delete process.env.SHELL
         else process.env.SHELL = prev
         Shell.acceptable.reset()
-        Shell.preferred.reset()
+      Shell.preferred.reset()
+    }),
+  )
+
+const envPolicyTurn = (
+  cwd: string,
+  overrides: Partial<
+    Omit<
+      TurnContext,
+      | "model_info"
+      | "effort_resolution"
+      | "reasoning_summary_policy"
+      | "service_tier_resolution"
+      | "dynamic_tools"
+      | "skill_catalog"
+    >
+  > = {},
+) =>
+  turn(cwd, {
+    sandbox_policy: { type: "danger-full-access" },
+    permission_profile: CodexTurn.fullAccessPermissionProfile(),
+    active_permission_profile: { id: ":danger-full-access" },
+    ...overrides,
+  })
+
+const withEnv = <A, E, R>(values: Record<string, string>, self: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]))
+      for (const [key, value] of Object.entries(values)) process.env[key] = value
+      return previous
+    }),
+    () => self,
+    (previous) =>
+      Effect.sync(() => {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }
       }),
   )
 
@@ -268,6 +388,97 @@ describe("tool.shell", () => {
   )
 })
 
+describe("tool.shell environment policy", () => {
+  it.live("does not expose sensitive process env by default", () =>
+    runIn(
+      projectRoot,
+      withEnv(
+        {
+          OPENAI_API_KEY: "openai-secret",
+          GITHUB_TOKEN: "github-secret",
+          AWS_SECRET_ACCESS_KEY: "aws-secret",
+          SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+        },
+        Effect.gen(function* () {
+          const result = yield* run(
+            {
+              command: `printf '%s|%s|%s|%s|%s\\n' "$OPENAI_API_KEY" "$GITHUB_TOKEN" "$AWS_SECRET_ACCESS_KEY" "$SSH_AUTH_SOCK" "$PATH"`,
+              description: "check shell env policy",
+            },
+            { ...ctx, turn: envPolicyTurn(projectRoot) },
+          )
+          const values = result.output.trim().split("|")
+          expect(values[0]).toBe("")
+          expect(values[1]).toBe("")
+          expect(values[2]).toBe("")
+          expect(values[3]).toBe("")
+          expect(values[4].length).toBeGreaterThan(0)
+        }),
+      ),
+    ),
+  )
+
+  it.live("allows an explicit shell env override without inheriting the host secret", () =>
+    runIn(
+      projectRoot,
+      withEnv(
+        {
+          OPENAI_API_KEY: "host-secret",
+        },
+        Effect.gen(function* () {
+          const result = yield* run(
+            {
+              command: `echo "$OPENAI_API_KEY"`,
+              description: "check explicit shell env override",
+            },
+            {
+              ...ctx,
+              turn: envPolicyTurn(projectRoot, {
+                shell_environment_policy: {
+                  ...CodexTurn.defaultShellEnvironmentPolicy(),
+                  allowlist: ["OPENAI_API_KEY"],
+                  overrides: {
+                    OPENAI_API_KEY: "allowed-test",
+                  },
+                },
+              }),
+            },
+          )
+          expect(result.output.trim()).toBe("allowed-test")
+        }),
+      ),
+    ),
+  )
+
+  it.live("injects per-environment shell env values", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run(
+          {
+            command: `echo "$AIALRA_SAFE_VAR"`,
+            description: "check per-environment env",
+          },
+          {
+            ...ctx,
+            turn: envPolicyTurn(projectRoot, {
+              shell_environment_policy: {
+                ...CodexTurn.defaultShellEnvironmentPolicy(),
+                per_environment: {
+                  default: {
+                    AIALRA_SAFE_VAR: "per-env-ok",
+                  },
+                },
+              },
+            }),
+          },
+        )
+        expect(result.output.trim()).toBe("per-env-ok")
+      }),
+    ),
+  )
+})
+
 describe("tool.shell permissions", () => {
   each("asks for every command when turn command policy is ask", () =>
     Effect.gen(function* () {
@@ -287,6 +498,43 @@ describe("tool.shell permissions", () => {
           expect(bashReq).toBeDefined()
           expect(bashReq!.metadata.reason).toBe("command_policy")
           expect(bashReq!.patterns).toContain("pwd")
+          expect(bashReq!.metadata.exec_approval).toEqual(
+            expect.objectContaining({
+              schema: "aialra.exec_approval_request.v1",
+              command: "pwd",
+              cwd: tmp,
+              environment_id: "default",
+              permission_profile_id: ":workspace",
+              risk_level: "low",
+              approval_scope: expect.objectContaining({
+                allowed_scopes: expect.arrayContaining(["once-command", "turn-command", "turn-all", "always-command", "always-all"]),
+              }),
+              final_decision: { status: "pending" },
+            }),
+          )
+          expect(PublicEventLog.list({ sessionID: String(ctx.sessionID) })).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: "exec.approval.requested",
+                turnID: "msg_turn_shell",
+                status: "requested",
+                data: expect.objectContaining({
+                  command: "pwd",
+                  cwd: tmp,
+                  reason: "command_policy",
+                  constraints_result: expect.objectContaining({ reason: "command_policy" }),
+                }),
+              }),
+              expect.objectContaining({
+                type: "terminal.interaction",
+                status: "requested",
+                data: expect.objectContaining({
+                  phase: "approval_requested",
+                  command: "pwd",
+                }),
+              }),
+            ]),
+          )
         }),
       )
     }),
@@ -1255,6 +1503,426 @@ describe("tool.shell abort", () => {
         expect(result.output).toContain("first")
         expect(result.output).toContain("second")
         expect(updates.length).toBeGreaterThan(1)
+      }),
+    ),
+  )
+
+  it.live("returns a running process when yield_time_ms elapses before command exit", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const result = yield* run({
+          command: `printf started && sleep 1 && printf done`,
+          description: "Yield running process",
+          timeout: 5_000,
+          yield_time_ms: 1,
+        })
+        expect(result.output).toContain("started")
+        expect(result.output).toContain("Command is still running after foreground yield time")
+        expect(result.metadata.running).toBe(true)
+        expect(result.metadata.process_id).toContain("proc_exec_")
+        expect(result.metadata.effective_yield_time_ms).toBe(250)
+        expect(result.metadata.yield_time_clamped).toBe(true)
+        const running = ExecProcessRegistry.get(result.metadata.process_id)
+        expect(running?.status).toBe("running")
+        expect(running?.cwd).toBe(projectRoot)
+        expect(running?.command).toContain("printf started")
+        expect(running?.background).toBe(true)
+        expect(running?.pid).toEqual(expect.any(Number))
+        expect(ExecProcessRegistry.read(result.metadata.process_id, { sessionID: ctx.sessionID })?.status).toBe("running")
+        expect(ExecProcessRegistry.listLiveProcesses({ sessionID: ctx.sessionID }).map((record) => record.process_id)).toContain(
+          result.metadata.process_id,
+        )
+        yield* Effect.sleep("1500 millis")
+        const completed = ExecProcessRegistry.get(result.metadata.process_id)
+        expect(completed?.status).toBe("completed")
+        expect(completed?.exit_code).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("times out a yielded process after background terminal max timeout", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const result = yield* run(
+          {
+            command: `printf started && sleep 5 && printf late`,
+            description: "Background terminal timeout",
+            timeout: 5_000,
+            yield_time_ms: 1,
+          },
+          {
+            ...ctx,
+            turn: turn(projectRoot, {
+              engineering: EngineeringHarness.snapshot({
+                controls: EngineeringHarness.normalize({
+                  backgroundTerminalMaxTimeoutMs: 1_000,
+                  singleCommandTimeoutMs: 5_000,
+                }),
+                prompt: "background timeout test",
+              }),
+            }),
+          },
+        )
+        expect(result.metadata.running).toBe(true)
+        expect(result.metadata.process_id).toContain("proc_exec_")
+        expect(ExecProcessRegistry.get(result.metadata.process_id)?.background_timeout_ms).toBe(1_000)
+        yield* Effect.sleep("1600 millis")
+        const timedOut = ExecProcessRegistry.get(result.metadata.process_id)
+        expect(timedOut?.status).toBe("timeout")
+        expect(timedOut?.failure).toBe("background_terminal_max_timeout")
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "exec_command.end",
+              status: "timeout",
+              data: expect.objectContaining({
+                timeout_reason: "background_terminal_max_timeout",
+                terminal_state: expect.objectContaining({ timeout: true }),
+              }),
+            }),
+          ]),
+        )
+      }),
+    ),
+  )
+
+  it.live("denies new yielded commands when the live process limit is reached", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const turnContext = turn(projectRoot, {
+          engineering: EngineeringHarness.snapshot({
+            controls: EngineeringHarness.normalize({
+              maxLiveProcessesPerSession: 1,
+              maxLiveProcessesPerTurn: 1,
+              maxLiveProcessesPerEnvironment: 1,
+            }),
+            prompt: "live process capacity test",
+          }),
+        })
+        const first = yield* run(
+          {
+            command: `printf first && sleep 5 && printf done`,
+            description: "First yielded process",
+            timeout: 10_000,
+            yield_time_ms: 1,
+          },
+          { ...ctx, callID: "live_1", turn: turnContext },
+        )
+        expect(first.metadata.running).toBe(true)
+        const err = yield* fail(
+          {
+            command: `printf second && sleep 5 && printf done`,
+            description: "Second yielded process",
+            timeout: 10_000,
+            yield_time_ms: 1,
+          },
+          { ...ctx, callID: "live_2", turn: turnContext },
+        )
+        expect(err.message).toContain("Live background process limit reached")
+        expect(ExecProcessRegistry.listLiveProcesses({ sessionID: ctx.sessionID }).length).toBe(1)
+        const aborted = yield* ExecProcessRegistry.abort(first.metadata.process_id, {
+          sessionID: ctx.sessionID,
+          turnID: turnContext.turnID,
+          messageID: ctx.messageID,
+          actor: "user",
+          reason: "test_cleanup_after_capacity_denied",
+        })
+        expect(aborted.ok).toBe(true)
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: "exec_process.capacity_checked", status: "allowed" }),
+            expect.objectContaining({
+              type: "exec_process.capacity_denied",
+              status: "denied",
+              data: expect.objectContaining({
+                dimension: "session",
+                limit_per_session: 1,
+              }),
+            }),
+          ]),
+        )
+      }),
+    ),
+  )
+
+  it.live("aborts and cleans up a yielded process through the unified process manager", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const result = yield* run({
+          command: `printf waiting && sleep 5 && printf late`,
+          description: "Abort through process manager",
+          timeout: 10_000,
+          yield_time_ms: 1,
+        })
+        expect(result.metadata.running).toBe(true)
+        const aborted = yield* ExecProcessRegistry.abort(result.metadata.process_id, {
+          sessionID: ctx.sessionID,
+          messageID: ctx.messageID,
+          actor: "user",
+          reason: "test_abort",
+        })
+        expect(aborted.ok).toBe(true)
+        expect(ExecProcessRegistry.read(result.metadata.process_id, { sessionID: ctx.sessionID })?.status).toBe("aborted")
+        yield* ExecProcessRegistry.cleanup({ sessionID: ctx.sessionID })
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: "exec_process.abort_requested", status: "requested" }),
+            expect.objectContaining({
+              type: "exec_command.end",
+              status: "aborted",
+              data: expect.objectContaining({ abort_reason: "test_abort" }),
+            }),
+            expect.objectContaining({ type: "exec_process.cleanup", status: "cleaned" }),
+          ]),
+        )
+      }),
+    ),
+  )
+
+  it.live("awaits a yielded process through the unified process manager", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const turnContext = turn(projectRoot)
+        const result = yield* run(
+          {
+            command: `printf started && sleep 0.5 && printf done`,
+            description: "Await process completion",
+            timeout: 5_000,
+            yield_time_ms: 1,
+          },
+          { ...ctx, turn: turnContext },
+        )
+        expect(result.metadata.running).toBe(true)
+        const awaitProcess = yield* initAwaitProcess()
+        const awaited = yield* awaitProcess.execute(
+          {
+            process_id: result.metadata.process_id,
+            timeout_ms: 5_000,
+            description: "Wait for process completion",
+          },
+          { ...ctx, turn: turnContext },
+        )
+        expect(awaited.metadata.await_status).toBe("completed")
+        expect(awaited.metadata.exit).toBe(0)
+        expect(awaited.output).toContain("terminal state: completed")
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: "exec_process.await_started", status: "waiting" }),
+            expect.objectContaining({ type: "exec_process.await_finished", status: "completed" }),
+          ]),
+        )
+      }),
+    ),
+  )
+
+  it.live("awaiter timeout does not kill a yielded process", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const turnContext = turn(projectRoot)
+        const result = yield* run(
+          {
+            command: `printf waiting && sleep 5 && printf late`,
+            description: "Await process timeout",
+            timeout: 10_000,
+            yield_time_ms: 1,
+          },
+          { ...ctx, turn: turnContext },
+        )
+        expect(result.metadata.running).toBe(true)
+        const awaitProcess = yield* initAwaitProcess()
+        const awaited = yield* awaitProcess.execute(
+          {
+            process_id: result.metadata.process_id,
+            timeout_ms: 1_000,
+            description: "Wait briefly for process",
+          },
+          { ...ctx, turn: turnContext },
+        )
+        expect(awaited.metadata.await_status).toBe("await_timeout")
+        expect(ExecProcessRegistry.get(result.metadata.process_id)?.status).toBe("running")
+        const aborted = yield* ExecProcessRegistry.abort(result.metadata.process_id, {
+          sessionID: ctx.sessionID,
+          turnID: turnContext.turnID,
+          messageID: ctx.messageID,
+          actor: "user",
+          reason: "test_cleanup_after_await_timeout",
+        })
+        expect(aborted.ok).toBe(true)
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: "exec_process.await_started", status: "waiting" }),
+            expect.objectContaining({ type: "exec_process.await_timeout", status: "await_timeout" }),
+          ]),
+        )
+      }),
+    ),
+  )
+
+  it.live("cleanup_processes terminates selected running background processes", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        PublicEventLog.clearForTest()
+        const turnContext = turn(projectRoot)
+        const result = yield* run(
+          {
+            command: `printf cleanup && sleep 5 && printf late`,
+            description: "Cleanup running process",
+            timeout: 10_000,
+            yield_time_ms: 1,
+          },
+          { ...ctx, callID: "cleanup_1", turn: turnContext },
+        )
+        expect(result.metadata.running).toBe(true)
+        const cleanupProcesses = yield* initCleanupProcesses()
+        const cleaned = yield* cleanupProcesses.execute(
+          {
+            process_id: result.metadata.process_id,
+            include_running: true,
+            description: "test cleanup running process",
+          },
+          { ...ctx, turn: turnContext },
+        )
+        expect(cleaned.metadata.cleaned).toBe(1)
+        expect(cleaned.metadata.failed).toBe(0)
+        const record = ExecProcessRegistry.get(result.metadata.process_id)
+        expect(record?.status).toBe("aborted")
+        expect(record?.cleanup_at).toEqual(expect.any(Number))
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "exec_process.cleanup",
+              status: "terminated",
+              data: expect.objectContaining({
+                process_id: result.metadata.process_id,
+                previous_status: "running",
+              }),
+            }),
+          ]),
+        )
+      }),
+    ),
+  )
+
+  it.live("writes stdin to a yielded process_id", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        ExecProcessRegistry.clearForTest()
+        const command = `${bin} -e ${evalarg('process.stdin.once("data",d=>{console.log("got:"+d.toString().trim());process.exit(0)})')}`
+        const result = yield* run({
+          command,
+          description: "Start stdin waiter",
+          timeout: 5_000,
+          yield_time_ms: 1,
+        })
+        expect(result.metadata.running).toBe(true)
+        const writeStdin = yield* initWriteStdin()
+        const written = yield* writeStdin.execute(
+          {
+            process_id: result.metadata.process_id,
+            text: "hello from stdin",
+            control: "newline",
+            description: "Send waiter input",
+          },
+          ctx,
+        )
+        expect(written.metadata.status).toBe("written")
+        const completed = yield* Effect.promise(async () => {
+          for (const _ of Array.from({ length: 20 })) {
+            const record = ExecProcessRegistry.get(result.metadata.process_id)
+            if (record?.status !== "running") return record
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
+          return ExecProcessRegistry.get(result.metadata.process_id)
+        })
+        expect(completed?.status).toBe("completed")
+        expect(completed?.exit_code).toBe(0)
+        expect(completed?.stdin_writes).toBe(1)
+        const events = PublicEventLog.list({ sessionID: ctx.sessionID })
+          .filter(
+            (event) =>
+              event.type === "terminal.interaction" &&
+              event.data.process_id === result.metadata.process_id &&
+              event.data.command === command,
+          )
+          .map((event) => event.data.phase)
+        expect(events).toEqual(expect.arrayContaining(["exec_started", "process_running", "stdin_write", "process_end"]))
+        const deltas = PublicEventLog.list({ sessionID: ctx.sessionID }).filter(
+          (event) =>
+            event.type === "exec_command.output_delta" &&
+            event.data.process_id === result.metadata.process_id &&
+            event.rawRef,
+        )
+        expect(deltas).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              status: "delta",
+              data: expect.objectContaining({
+                stream: "stdout",
+                encoding: "base64",
+                byte_length: expect.any(Number),
+                codex_command_exec: expect.objectContaining({ method: "command/exec/outputDelta" }),
+              }),
+              rawRef: expect.any(Object),
+            }),
+          ]),
+        )
+        expect(deltas[0]?.data.delta_base64).toBeUndefined()
+        expect(deltas[0] ? PublicEventLog.readRaw({ sessionID: ctx.sessionID, eventID: deltas[0].id }) : undefined).toEqual(
+          expect.objectContaining({
+            base64_payload: expect.any(String),
+            raw_payload: expect.objectContaining({
+              delta_base64: expect.any(String),
+              codex_command_exec: expect.objectContaining({ deltaBase64: expect.any(String) }),
+              codex_item: expect.objectContaining({ delta: expect.any(String) }),
+            }),
+          }),
+        )
+        const ends = PublicEventLog.list({ sessionID: ctx.sessionID }).filter(
+          (event) =>
+            event.type === "exec_command.end" &&
+            event.data.process_id === result.metadata.process_id &&
+            event.data.command === command,
+        )
+        expect(ends).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              status: "completed",
+              data: expect.objectContaining({
+                process_id: result.metadata.process_id,
+                status: "completed",
+                exit_code: 0,
+                terminal_state: expect.objectContaining({ completed: true, aborted: false }),
+              }),
+            }),
+          ]),
+        )
       }),
     ),
   )

@@ -126,7 +126,18 @@ export namespace AbortAudit {
   }
 
   export function shellMetadata(turn: TurnContext | undefined) {
-    const request = latestForTurn(turn)
+    return shellMetadataFromRequest(latestForTurn(turn))
+  }
+
+  export function shellMetadataForSession(input: { sessionID: SessionID | string; turnID?: string }) {
+    return shellMetadataFromRequest(
+      input.turnID
+        ? requests.get(String(input.sessionID))?.findLast((item) => !item.turnID || item.turnID === input.turnID)
+        : latest(input.sessionID),
+    )
+  }
+
+  function shellMetadataFromRequest(request: AbortAuditRequest | undefined) {
     const source = request?.source ?? "unknown"
     return {
       aborted: true,

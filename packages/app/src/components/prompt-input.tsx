@@ -78,6 +78,7 @@ import { useQueryOptions } from "@/context/server-sync"
 import { pathKey } from "@/utils/path-key"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { displayName } from "@/pages/layout/helpers"
+import { describeThinkingSelectorOption } from "@/context/thinking-selector"
 
 interface PromptInputProps {
   class?: string
@@ -1101,6 +1102,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   )
 
   const variants = createMemo(() => ["default", ...local.model.variant.list()])
+  const thinkingOption = (value: string) =>
+    describeThinkingSelectorOption({
+      value,
+      options: variants(),
+      modelName: local.model.current()?.name,
+    })
+  const selectedThinkingOption = createMemo(() => thinkingOption(local.model.variant.current() ?? "default"))
   const accepting = createMemo(() => {
     const id = params.id
     if (!id) return permission.isAutoAcceptingDirectory(sdk.directory)
@@ -1896,14 +1904,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                             <TooltipKeybind
                               placement="top"
                               gutter={4}
-                              title={language.t("command.model.variant.cycle")}
+                              title={`${language.t("command.model.variant.cycle")}\n${selectedThinkingOption().title}`}
                               keybind={command.keybind("model.variant.cycle")}
                             >
                               <Select
                                 size="normal"
                                 options={variants()}
                                 current={local.model.variant.current() ?? "default"}
-                                label={(x) => (x === "default" ? language.t("common.default") : x)}
+                                label={(x) => thinkingOption(x).label}
                                 onSelect={(value) => {
                                   local.model.variant.set(value === "default" ? undefined : value)
                                   restoreFocus()
@@ -1911,9 +1919,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                                 class="capitalize max-w-[160px] text-text-base"
                                 valueClass="truncate text-13-regular text-text-base"
                                 triggerStyle={control()}
-                                triggerProps={{ "data-action": "prompt-model-variant" }}
+                                triggerProps={{
+                                  "data-action": "prompt-model-variant",
+                                  title: selectedThinkingOption().title,
+                                  "aria-label": selectedThinkingOption().title,
+                                }}
                                 variant="ghost"
-                              />
+                              >
+                                {(value) => {
+                                  const option = thinkingOption(value ?? "default")
+                                  return (
+                                    <div class="min-w-0">
+                                      <div class="truncate text-13-regular text-text-base">{option.label}</div>
+                                      <div class="truncate text-10-regular text-text-muted">{option.detail}</div>
+                                    </div>
+                                  )
+                                }}
+                              </Select>
                             </TooltipKeybind>
                           </div>
                         </Show>

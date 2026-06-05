@@ -93,6 +93,108 @@ export const RevertPayload = Schema.Struct(Struct.omit(SessionRevert.RevertInput
 export const PermissionResponsePayload = Schema.Struct({
   response: Permission.Reply,
   scope: Schema.optional(Permission.ReplyScope),
+  reviewed_by: Schema.optional(Schema.Unknown),
+  review_reason: Schema.optional(Schema.String),
+  overridden_by_constraints: Schema.optional(Schema.Boolean),
+})
+export const CleanupProcessesPayload = Schema.Struct({
+  process_id: Schema.optional(Schema.String),
+  process_ids: Schema.optional(Schema.Array(Schema.String)),
+  turn_id: Schema.optional(Schema.String),
+  environment_id: Schema.optional(Schema.String),
+  statuses: Schema.optional(Schema.Array(Schema.Literals(["running", "completed", "failed", "timeout", "aborted"]))),
+  include_running: Schema.optional(Schema.Boolean),
+  include_finished: Schema.optional(Schema.Boolean),
+  reason: Schema.optional(Schema.String),
+})
+
+export const HandoffQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  source: Schema.optional(Schema.Literals(["web", "desktop", "api"])),
+  target: Schema.optional(Schema.Literals(["desktop", "web", "local-runtime", "unknown"])),
+  confirm: Schema.optional(QueryBoolean),
+  lastEventID: Schema.optional(Schema.String),
+})
+
+export const HandoffSnapshot = Schema.Struct({
+  schema: Schema.Literal("aialra.session_handoff.v1"),
+  handoff_id: Schema.String,
+  session_id: SessionID,
+  thread_id: Schema.String,
+  source: Schema.String,
+  target: Schema.String,
+  requested_at: Schema.String,
+  status: Schema.Literals(["pending_confirmation", "ready", "degraded", "unsupported"]),
+  last_event_id: Schema.optional(Schema.String),
+  last_event_sequence: Schema.Number,
+  event_stream: Schema.Struct({
+    replay_url: Schema.String,
+    last_event_id: Schema.optional(Schema.String),
+    last_event_sequence: Schema.Number,
+    supports_last_event_id: Schema.Boolean,
+  }),
+  raw_sync: Schema.Struct({
+    raw_ref_count: Schema.Number,
+    persisted_raw_ref_count: Schema.Number,
+    memory_raw_ref_count: Schema.Number,
+    status: Schema.String,
+  }),
+  environment: Schema.Struct({
+    selected_environment_id: Schema.String,
+    cwd: Schema.String,
+    remote_supported: Schema.Boolean,
+    remote_status: Schema.String,
+    handoff_status: Schema.String,
+  }),
+  security: Schema.Struct({
+    active_permission_profile_id: Schema.String,
+    active_permission_profile_kind: Schema.String,
+    approval_policy: Schema.String,
+    approvals_reviewer: Schema.String,
+    sandbox_policy: Schema.String,
+    executor_backend: Schema.String,
+    grants_status: Schema.String,
+  }),
+  process_registry: Schema.Struct({
+    total: Schema.Number,
+    running: Schema.Number,
+    completed: Schema.Number,
+    failed: Schema.Number,
+    aborted: Schema.Number,
+    handoff_status: Schema.String,
+    unsupported_reason: Schema.optional(Schema.String),
+    processes: Schema.Array(
+      Schema.Struct({
+        process_id: Schema.String,
+        turn_id: Schema.optional(Schema.String),
+        status: Schema.String,
+        command_preview: Schema.String,
+        environment_id: Schema.optional(Schema.String),
+        cwd: Schema.optional(Schema.String),
+        handoff_status: Schema.String,
+        unsupported_reason: Schema.optional(Schema.String),
+      }),
+    ),
+  }),
+  confirmation: Schema.Struct({
+    required: Schema.Boolean,
+    confirmed: Schema.Boolean,
+    reason: Schema.String,
+  }),
+  unsupported: Schema.Array(Schema.String),
+})
+export type HandoffSnapshot = typeof HandoffSnapshot.Type
+export const CleanupProcessesResult = Schema.Struct({
+  cleaned: Schema.Number,
+  failed: Schema.Number,
+  results: Schema.Array(
+    Schema.Struct({
+      process_id: Schema.String,
+      status: Schema.Literals(["cleaned", "terminated", "failed"]),
+      previous_status: Schema.Literals(["running", "completed", "failed", "timeout", "aborted"]),
+      reason: Schema.optional(Schema.String),
+    }),
+  ),
 })
 
 export const SessionPaths = {
@@ -116,10 +218,12 @@ export const SessionPaths = {
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
   shell: `${root}/:sessionID/shell`,
+  cleanupProcesses: `${root}/:sessionID/process/cleanup`,
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
   security: `${root}/:sessionID/security`,
+  handoff: `${root}/:sessionID/handoff`,
   environment: `${root}/:sessionID/environment`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
@@ -388,6 +492,20 @@ export const SessionApi = HttpApi.make("session")
             description: "Execute a shell command within the session context and return the AI's response.",
           }),
         ),
+        HttpApiEndpoint.post("cleanupProcesses", SessionPaths.cleanupProcesses, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: CleanupProcessesPayload,
+          success: described(CleanupProcessesResult, "Cleaned background processes"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.process.cleanup",
+            summary: "Clean background processes",
+            description:
+              "Clean finished background process records or terminate selected running background processes for the current session.",
+          }),
+        ),
         HttpApiEndpoint.post("revert", SessionPaths.revert, {
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
@@ -453,6 +571,19 @@ export const SessionApi = HttpApi.make("session")
             summary: "Update turn security controls",
             description:
               "Update Sandbox Control Center settings. The values are used by TurnContext, tool gates, sandbox checks, and public audit events.",
+          }),
+        ),
+        HttpApiEndpoint.get("handoff", SessionPaths.handoff, {
+          params: { sessionID: SessionID },
+          query: HandoffQuery,
+          success: described(HandoffSnapshot, "Session handoff snapshot"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.handoff",
+            summary: "Prepare session handoff",
+            description:
+              "Build an auditable web/desktop handoff snapshot for a session, including event cursor, raw sync state, selected environment, active security profile, grants, and process registry state.",
           }),
         ),
         HttpApiEndpoint.get("environment", SessionPaths.environment, {

@@ -702,7 +702,17 @@ describe("session HttpApi", () => {
           sessionID: string
           selectedEnvironmentID: string
           selectedEnvironmentCwd: string
-          environments: Array<{ environmentID: string; cwd: string; kind?: string; status?: string }>
+          environments: Array<{
+            environmentID: string
+            cwd: string
+            kind?: string
+            status?: string
+            runtimeID?: string
+            network?: { policy: string; access: string }
+            sandbox?: { policy: string; enforced: boolean; status: string }
+            connection?: { state: string; reason?: string }
+            capabilities?: string[]
+          }>
           remoteEnvironmentSupported: boolean
           remoteEnvironmentStatus: string
         }>(pathFor(SessionPaths.environment, { sessionID: created.id }), {
@@ -712,13 +722,35 @@ describe("session HttpApi", () => {
         expect(status.sessionID).toBe(created.id)
         expect(status.selectedEnvironmentID).toBe("default")
         expect(status.selectedEnvironmentCwd).toBe(test.directory)
-        expect(status.environments).toEqual([
-          expect.objectContaining({
-            environmentID: "default",
-            cwd: test.directory,
-            kind: "local",
-          }),
-        ])
+        expect(status.environments).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              environmentID: "default",
+              cwd: test.directory,
+              kind: "local",
+              runtimeID: `local:default:${test.directory}`,
+              network: expect.objectContaining({ policy: "ask" }),
+              sandbox: expect.objectContaining({ policy: "workspace-write", enforced: true }),
+              connection: expect.objectContaining({ state: "ready" }),
+              capabilities: expect.arrayContaining(["filesystem", "shell", "sandbox"]),
+            }),
+            expect.objectContaining({
+              environmentID: "remote",
+              kind: "disabled",
+              connection: expect.objectContaining({ state: "unsupported" }),
+            }),
+            expect.objectContaining({
+              environmentID: "container",
+              kind: "disabled",
+              connection: expect.objectContaining({ state: "unsupported" }),
+            }),
+            expect.objectContaining({
+              environmentID: "external",
+              kind: "disabled",
+              connection: expect.objectContaining({ state: "unsupported" }),
+            }),
+          ]),
+        )
         expect(status.remoteEnvironmentSupported).toBe(false)
         expect(status.remoteEnvironmentStatus).toContain("远程环境")
       }),

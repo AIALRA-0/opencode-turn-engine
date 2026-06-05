@@ -114,6 +114,23 @@ describe("tool.glob", () => {
         ctx,
       )
       expect(result.metadata.count).toBe(1)
+      expect(result.metadata.fileSearch).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_search.v1",
+          tool: "glob",
+          requested_pattern: "*.ts",
+          requested_path: test.directory,
+          search_cwd: test.directory,
+          backend: expect.objectContaining({ name: "ripgrep_files" }),
+          counts: expect.objectContaining({ returned: 1 }),
+          results: [
+            expect.objectContaining({
+              path: path.join(test.directory, "a.ts"),
+              relative_path: "a.ts",
+            }),
+          ],
+        }),
+      )
       expect(result.output).toContain(path.join(test.directory, "a.ts"))
       expect(result.output).not.toContain(path.join(test.directory, "b.txt"))
       expect(PublicEventLog.list({ sessionID: "ses_test" })).toEqual(
@@ -123,6 +140,39 @@ describe("tool.glob", () => {
             data: expect.objectContaining({ method: "fs/search", tool: "glob" }),
           }),
         ]),
+      )
+    }),
+  )
+
+  it.instance("honors max results hidden policy and ignore filters", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "a.ts"), "export const a = 1\n"))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "b.ts"), "export const b = 1\n"))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, ".hidden.ts"), "export const hidden = 1\n"))
+      const info = yield* GlobTool
+      const glob = yield* info.init()
+      const result = yield* glob.execute(
+        {
+          pattern: "*.ts",
+          path: test.directory,
+          maxResults: 1,
+          showHidden: false,
+          ignore: ["b.ts"],
+        },
+        ctx,
+      )
+
+      expect(result.metadata.count).toBe(1)
+      expect(result.output).toContain(path.join(test.directory, "a.ts"))
+      expect(result.output).not.toContain(path.join(test.directory, "b.ts"))
+      expect(result.output).not.toContain(path.join(test.directory, ".hidden.ts"))
+      expect(result.metadata.fileSearch).toEqual(
+        expect.objectContaining({
+          limits: expect.objectContaining({ max_results: 1 }),
+          filters: expect.objectContaining({ show_hidden: false, ignore: ["b.ts"] }),
+          counts: expect.objectContaining({ returned: 1 }),
+        }),
       )
     }),
   )

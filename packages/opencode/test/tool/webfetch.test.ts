@@ -41,7 +41,20 @@ const exec = Effect.fn("WebFetchToolTest.exec")(function* (
   return yield* tool.execute(args, inputCtx)
 })
 
-function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
+function turn(
+  cwd: string,
+  overrides: Partial<
+    Omit<
+      TurnContext,
+      | "model_info"
+      | "effort_resolution"
+      | "reasoning_summary_policy"
+      | "service_tier_resolution"
+      | "dynamic_tools"
+      | "skill_catalog"
+    >
+  > = {},
+): TurnContext {
   const sessionID = SessionID.make("ses_webfetch")
   const messageID = MessageID.make("msg_webfetch")
   return {
@@ -51,19 +64,57 @@ function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
     messageID,
     startedAt: Date.now(),
     items: [],
+    input_items: [],
+    input_schema: {
+      codex: "Op::UserInput",
+      supported_items: ["text", "image", "local_image", "file", "skill", "mention", "subtask"],
+    },
     cwd,
     approval_policy: "never",
     sandbox_policy: CodexTurn.defaultSandboxPolicy(cwd),
     permission_profile: CodexTurn.workspacePermissionProfile(cwd),
     active_permission_profile: { id: ":workspace" },
     model: { providerID: "test", modelID: "test" },
+    model_info: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    effort_resolution: CodexTurn.reasoningEffortResolution({
+      modelInfo: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    }),
+    reasoning_summary_policy: CodexTurn.defaultReasoningSummaryPolicy(),
+    service_tier_resolution: CodexTurn.serviceTierResolution({
+      modelInfo: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    }),
+    dynamic_tools: CodexTurn.defaultDynamicTools({
+      requested: {},
+      activePermissionProfile: { id: ":workspace" },
+      approvalPolicy: "never",
+      modelSupportsTools: true,
+      selectedEnvironmentID: "default",
+    }),
+    skill_catalog: CodexTurn.defaultSkillCatalog({
+      skills: [],
+      agent: "build",
+      cwd,
+      activePermissionProfile: { id: ":workspace" },
+      approvalPolicy: "never",
+      selectedEnvironmentID: "default",
+    }),
     collaboration_mode: { kind: "default" },
     environments: [{ environmentID: "default", cwd }],
     selected_environment_id: "default",
+    network_permissions: CodexTurn.defaultNetworkPermissions("ask"),
+    shell_environment_policy: CodexTurn.defaultShellEnvironmentPolicy(),
+    security_constraints: CodexTurn.defaultSecurityConstraints(cwd),
     route: "prompt",
     agent: "build",
     noReply: false,
     format: "text",
+    thread_settings: {
+      requested: {},
+      resolved: {},
+      effective: {},
+    },
+    metadata: { source: "test" },
+    extension_data: {},
     retry: CodexTurn.retryConfig({}),
     ...overrides,
   }
@@ -145,10 +196,13 @@ describe("tool.webfetch", () => {
 
   it.instance("denies webfetch when the active turn network policy is off", () =>
     Effect.gen(function* () {
-      const active = turn(process.cwd(), { network_policy: "off" })
+      const active = turn(process.cwd(), {
+        network_policy: "off",
+        network_permissions: CodexTurn.defaultNetworkPermissions("off"),
+      })
       const exit = yield* Effect.exit(exec({ url: "https://example.com", format: "text" }, { ...ctx, turn: active }))
       expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Network access is disabled")
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("当前网络 mode=off")
     }),
   )
 
@@ -158,7 +212,18 @@ describe("tool.webfetch", () => {
       (url) =>
         Effect.gen(function* () {
           const requests: Array<{ permission: string; patterns: readonly string[]; metadata: Record<string, unknown> }> = []
-          const active = turn(process.cwd(), { network_policy: "ask" })
+          const constraints = CodexTurn.defaultSecurityConstraints(process.cwd())
+          const active = turn(process.cwd(), {
+            network_policy: "ask",
+            network_permissions: {
+              ...CodexTurn.defaultNetworkPermissions("ask"),
+              private_network: "allow",
+            },
+            security_constraints: {
+              ...constraints,
+              network: constraints.network.filter((rule) => rule.target !== "loopback"),
+            },
+          })
           const target = new URL("/network.txt", url).toString()
           const result = yield* exec(
             { url: target, format: "text" },
@@ -180,5 +245,45 @@ describe("tool.webfetch", () => {
           expect(requests.some((request) => request.permission === "network" && request.patterns.includes(target))).toBe(true)
         }),
     ),
+  )
+
+  it.instance("denies webfetch targets outside the active network allowlist", () =>
+    Effect.gen(function* () {
+      const constraints = CodexTurn.defaultSecurityConstraints(process.cwd())
+      const active = turn(process.cwd(), {
+        network_policy: "on",
+        network_permissions: {
+          ...CodexTurn.defaultNetworkPermissions("on"),
+          allowlist: ["github.com", "pypi.org"],
+        },
+        security_constraints: {
+          ...constraints,
+          network: constraints.network.filter((rule) => rule.target !== "unknown-domain"),
+        },
+      })
+      const exit = yield* Effect.exit(exec({ url: "https://example.com", format: "text" }, { ...ctx, turn: active }))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("不在网络 allowlist")
+    }),
+  )
+
+  it.instance("honors webfetch denylist before making the request", () =>
+    Effect.gen(function* () {
+      const constraints = CodexTurn.defaultSecurityConstraints(process.cwd())
+      const active = turn(process.cwd(), {
+        network_policy: "on",
+        network_permissions: {
+          ...CodexTurn.defaultNetworkPermissions("on"),
+          denylist: ["example.com"],
+        },
+        security_constraints: {
+          ...constraints,
+          network: constraints.network.filter((rule) => rule.target !== "unknown-domain"),
+        },
+      })
+      const exit = yield* Effect.exit(exec({ url: "https://example.com", format: "text" }, { ...ctx, turn: active }))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("命中网络 denylist")
+    }),
   )
 })

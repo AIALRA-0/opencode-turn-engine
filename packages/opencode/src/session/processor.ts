@@ -1,5 +1,5 @@
 import { Image } from "@/image/image"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Option } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
@@ -28,7 +28,11 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { AialraTurnTrace } from "./turn-trace"
-import { CodexTurn } from "./turn-context"
+import { CodexTurn, type TurnContext } from "./turn-context"
+import { RuntimeProtocol } from "./runtime-item"
+import { ToolResultProtocol } from "./tool-result-settlement"
+import { ToolOutputStore } from "./tool-output-store"
+import { ProviderTool } from "./provider-tool-protocol"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
@@ -48,6 +52,10 @@ function isAbortLike(error: unknown) {
   if (error instanceof DOMException && error.name === "AbortError") return true
   if (!(error instanceof Error)) return false
   return error.name === "AbortError" || error.message.toLowerCase().includes("abort")
+}
+
+function hasAbortMetadata(metadata: Record<string, any>) {
+  return isRecord(metadata.abort) && metadata.abort.aborted === true
 }
 
 export type Result = "compact" | "stop" | "continue"
@@ -96,6 +104,21 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: MessageV2.TextPart | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  reasoningToolLinks: Record<
+    string,
+    Array<{
+      callID: string
+      tool: string
+      phase: "tool-input-start" | "tool-call"
+      linkedAt: number
+    }>
+  >
+  activeTurn: TurnContext | undefined
+  runtimeItemSequence: number
+  rawResponseSequence: number
+  reasoningRawSequence: number
+  reasoningRawSeen: boolean
+  reasoningRawUnsupportedEmitted: boolean
 }
 
 type StreamEvent = LLMEvent
@@ -119,6 +142,7 @@ export const layer = Layer.effect(
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const outputStore = yield* Effect.serviceOption(ToolOutputStore.Service)
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
@@ -136,6 +160,13 @@ export const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        reasoningToolLinks: {},
+        activeTurn: undefined,
+        runtimeItemSequence: 0,
+        rawResponseSequence: 0,
+        reasoningRawSequence: 0,
+        reasoningRawSeen: false,
+        reasoningRawUnsupportedEmitted: false,
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -205,17 +236,55 @@ export const layer = Layer.effect(
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
+        const completedAt = Date.now()
         yield* session.updatePart({
           ...match.part,
           state: {
             status: "completed",
             input: match.part.state.input,
             output: output.output,
-            metadata: output.metadata,
+            metadata: ToolResultProtocol.ToolResultSettlement.attach(
+              output.metadata,
+              ToolResultProtocol.ToolResultSettlement.build({
+                sessionID: match.part.sessionID,
+                turnID: ctx.assistantMessage.parentID,
+                messageID: match.part.messageID,
+                environmentID: ctx.activeTurn?.selected_environment_id,
+                executorType: match.part.metadata?.providerExecuted === true ? "provider" : "local",
+                toolCallID,
+                tool: match.part.tool,
+                status: hasAbortMetadata(output.metadata) ? "aborted" : "completed",
+                startedAt: match.part.state.time.start,
+                completedAt,
+                output: output.output,
+                metadata: output.metadata,
+                attachments: output.attachments?.length ?? 0,
+                providerExecuted: match.part.metadata?.providerExecuted === true,
+                source: match.part.metadata?.providerExecuted === true ? "provider_tool" : "processor",
+              }),
+            ),
             title: output.title,
-            time: { start: match.part.state.time.start, end: Date.now() },
+            time: { start: match.part.state.time.start, end: completedAt },
             attachments: output.attachments,
           },
+        })
+        const status = hasAbortMetadata(output.metadata) ? "aborted" : "completed"
+        const result = ToolResultProtocol.ToolResultSettlement.build({
+          sessionID: match.part.sessionID,
+          turnID: ctx.assistantMessage.parentID,
+          messageID: match.part.messageID,
+          environmentID: ctx.activeTurn?.selected_environment_id,
+          executorType: match.part.metadata?.providerExecuted === true ? "provider" : "local",
+          toolCallID,
+          tool: match.part.tool,
+          status,
+          startedAt: match.part.state.time.start,
+          completedAt,
+          output: output.output,
+          metadata: output.metadata,
+          attachments: output.attachments?.length ?? 0,
+          providerExecuted: match.part.metadata?.providerExecuted === true,
+          source: match.part.metadata?.providerExecuted === true ? "provider_tool" : "processor",
         })
         yield* AialraTurnTrace.emit({
           phase: "tool.call.finished",
@@ -225,25 +294,66 @@ export const layer = Layer.effect(
           data: {
             callID: toolCallID,
             tool: match.part.tool,
-            status: "completed",
+            status,
             title: output.title,
             outputChars: output.output.length,
             attachments: output.attachments?.length ?? 0,
+            resultID: result.resultID,
+            abort: status === "aborted" ? output.metadata.abort : undefined,
           },
         })
+        yield* ToolResultProtocol.ToolResultSettlement.emit(result)
         yield* settleToolCall(toolCallID)
       })
 
-      const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
+      const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (
+        toolCallID: string,
+        error: unknown,
+        providerMetadata?: unknown,
+      ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return false
+        const status = isAbortLike(error) ? "aborted" : "error"
+        const completedAt = Date.now()
+        const providerExecution =
+          match.part.metadata?.providerExecuted === true
+            ? ProviderTool.execution({
+                toolCallID,
+                tool: match.part.tool,
+                kind: "provider_tool_result",
+                status: status === "aborted" ? "aborted" : "failed",
+                providerMetadata: providerMetadata ?? match.part.metadata,
+              })
+            : undefined
+        const metadata = providerExecution
+          ? ProviderTool.attach(status === "aborted" ? { interrupted: true } : undefined, providerExecution)
+          : status === "aborted"
+            ? { interrupted: true }
+            : undefined
+        const result = ToolResultProtocol.ToolResultSettlement.build({
+          sessionID: match.part.sessionID,
+          turnID: ctx.assistantMessage.parentID,
+          messageID: match.part.messageID,
+          environmentID: ctx.activeTurn?.selected_environment_id,
+          executorType: match.part.metadata?.providerExecuted === true ? "provider" : "local",
+          toolCallID,
+          tool: match.part.tool,
+          status: status === "aborted" ? "aborted" : "failed",
+          startedAt: match.part.state.time.start,
+          completedAt,
+          error: errorMessage(error),
+          metadata,
+          providerExecuted: match.part.metadata?.providerExecuted === true,
+          source: match.part.metadata?.providerExecuted === true ? "provider_tool" : "processor",
+        })
         yield* session.updatePart({
           ...match.part,
           state: {
             status: "error",
             input: match.part.state.input,
             error: errorMessage(error),
-            time: { start: match.part.state.time.start, end: Date.now() },
+            metadata: ToolResultProtocol.ToolResultSettlement.attach(metadata, result),
+            time: { start: match.part.state.time.start, end: completedAt },
           },
         })
         yield* AialraTurnTrace.emit({
@@ -254,13 +364,79 @@ export const layer = Layer.effect(
           data: {
             callID: toolCallID,
             tool: match.part.tool,
-            status: "error",
+            status,
             errorType: error instanceof Error ? error.name : typeof error,
+            resultID: result.resultID,
           },
         })
+        yield* ToolResultProtocol.ToolResultSettlement.emit(result)
         if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
+        yield* settleToolCall(toolCallID)
+        return true
+      })
+
+      const abortToolCall = Effect.fn("SessionProcessor.abortToolCall")(function* (toolCallID: string) {
+        const match = yield* readToolCall(toolCallID)
+        if (!match || (match.part.state.status !== "running" && match.part.state.status !== "pending")) return false
+        const end = Date.now()
+        const metadata = {
+          ...(match.part.state.status === "running" && isRecord(match.part.state.metadata) ? match.part.state.metadata : {}),
+          interrupted: true,
+        }
+        const providerExecution =
+          match.part.metadata?.providerExecuted === true
+            ? ProviderTool.execution({
+                toolCallID,
+                tool: match.part.tool,
+                kind: "provider_tool_result",
+                status: "aborted",
+                providerMetadata: match.part.metadata,
+              })
+            : undefined
+        const outputMetadata = providerExecution ? ProviderTool.attach(metadata, providerExecution) : metadata
+        const start = match.part.state.status === "running" ? match.part.state.time.start : end
+        const result = ToolResultProtocol.ToolResultSettlement.build({
+          sessionID: match.part.sessionID,
+          turnID: ctx.assistantMessage.parentID,
+          messageID: match.part.messageID,
+          environmentID: ctx.activeTurn?.selected_environment_id,
+          executorType: match.part.metadata?.providerExecuted === true ? "provider" : "local",
+          toolCallID,
+          tool: match.part.tool,
+          status: "aborted",
+          startedAt: start,
+          completedAt: end,
+          error: "Tool execution aborted",
+          metadata: outputMetadata,
+          providerExecuted: match.part.metadata?.providerExecuted === true,
+          source: match.part.metadata?.providerExecuted === true ? "provider_tool" : "cleanup",
+        })
+        yield* session.updatePart({
+          ...match.part,
+          state: {
+            ...match.part.state,
+            status: "error",
+            error: "Tool execution aborted",
+            metadata: ToolResultProtocol.ToolResultSettlement.attach(outputMetadata, result),
+            time: { start, end },
+          },
+        })
+        yield* AialraTurnTrace.emit({
+          phase: "tool.call.finished",
+          turnID: ctx.assistantMessage.parentID,
+          sessionID: match.part.sessionID,
+          messageID: match.part.messageID,
+          data: {
+            callID: toolCallID,
+            tool: match.part.tool,
+            status: "aborted",
+            errorType: "AbortError",
+            resultID: result.resultID,
+          },
+        })
+        yield* ToolResultProtocol.ToolResultSettlement.emit(result)
         yield* settleToolCall(toolCallID)
         return true
       })
@@ -292,6 +468,35 @@ export const layer = Layer.effect(
             rawPolicy: "encrypted_raw_ref_or_message_part",
           },
         })
+        const policy = ctx.activeTurn?.reasoning_summary_policy ?? CodexTurn.defaultReasoningSummaryPolicy()
+        const summaryText = policy.enabled && policy.per_turn ? reasoningSummaryText(ctx.reasoningMap[reasoningID].text) : undefined
+        yield* AialraTurnTrace.emit({
+          phase: "reasoning.summary.created",
+          turnID: ctx.assistantMessage.parentID,
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            version: "aialra.reasoning_summary.v1",
+            reasoningID,
+            partID: ctx.reasoningMap[reasoningID].id,
+            enabled: policy.enabled,
+            level: policy.level,
+            auto_collapse: policy.auto_collapse,
+            per_turn: policy.per_turn,
+            tool_linked: policy.tool_linked,
+            policySource: policy.source,
+            summary: summaryText,
+            summaryChars: summaryText?.length ?? 0,
+            sourceChars: ctx.reasoningMap[reasoningID].text.length,
+            reason: policy.enabled ? undefined : "reasoning summary policy disabled",
+            toolLinks: policy.tool_linked ? (ctx.reasoningToolLinks[reasoningID] ?? []) : [],
+            providerMetadataKeys: ctx.reasoningMap[reasoningID].metadata
+              ? Object.keys(ctx.reasoningMap[reasoningID].metadata).sort()
+              : [],
+            rawPolicy: "full reasoning remains in DB message part and raw lab, public event stores summary only",
+          },
+        })
+        delete ctx.reasoningToolLinks[reasoningID]
         delete ctx.reasoningMap[reasoningID]
       })
 
@@ -299,13 +504,21 @@ export const layer = Layer.effect(
         id: string
         name: string
         providerExecuted?: boolean
+        providerMetadata?: unknown
       }) {
         const existing = yield* readToolCall(input.id)
         if (existing) {
           if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
+          const execution = ProviderTool.execution({
+            toolCallID: input.id,
+            tool: input.name,
+            kind: "provider_tool_call",
+            status: "called",
+            providerMetadata: input.providerMetadata,
+          })
           const part = yield* session.updatePart({
             ...existing.part,
-            metadata: { ...existing.part.metadata, providerExecuted: true },
+            metadata: ProviderTool.attach(existing.part.metadata, execution),
           })
           ctx.toolcalls[input.id] = {
             ...existing.call,
@@ -332,7 +545,18 @@ export const layer = Layer.effect(
           tool: input.name,
           callID: input.id,
           state: { status: "pending", input: {}, raw: "" },
-          metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
+          metadata: input.providerExecuted
+            ? ProviderTool.attach(
+                undefined,
+                ProviderTool.execution({
+                  toolCallID: input.id,
+                  tool: input.name,
+                  kind: "provider_tool_call",
+                  status: "called",
+                  providerMetadata: input.providerMetadata,
+                }),
+              )
+            : undefined,
         } satisfies MessageV2.ToolPart)
         ctx.toolcalls[input.id] = {
           done: yield* Deferred.make<void>(),
@@ -369,9 +593,97 @@ export const layer = Layer.effect(
 
       const toolInput = (value: unknown): Record<string, any> => (isRecord(value) ? value : { value })
 
+      const reasoningSummaryText = (text: string) => {
+        const collapsed = text.replace(/\s+/g, " ").trim()
+        if (!collapsed) return "模型返回了推理内容，但内容为空或只有空白字符"
+        if (collapsed.length <= 480) return collapsed
+        return `${collapsed.slice(0, 477)}...`
+      }
+
+      const linkReasoningToTool = (input: {
+        callID: string
+        tool: string
+        phase: "tool-input-start" | "tool-call"
+      }) => {
+        Object.keys(ctx.reasoningMap).forEach((reasoningID) => {
+          const links = ctx.reasoningToolLinks[reasoningID] ?? []
+          if (links.some((link) => link.callID === input.callID)) return
+          ctx.reasoningToolLinks[reasoningID] = [...links, { ...input, linkedAt: Date.now() }]
+        })
+      }
+
+      const emitRawResponseItem = (value: StreamEvent, kind: string, extra: Record<string, unknown> = {}) =>
+        AialraTurnTrace.emit({
+          phase: "model.raw.item",
+          turnID: ctx.assistantMessage.parentID,
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            schema: "aialra.raw_response_item.v1",
+            raw_item_id: `raw_${ctx.assistantMessage.id}_${++ctx.rawResponseSequence}`,
+            model_call_id: `model_${ctx.assistantMessage.id}`,
+            response_message_id: ctx.assistantMessage.id,
+            turn_id: ctx.assistantMessage.parentID,
+            session_id: ctx.sessionID,
+            providerID: ctx.model.providerID,
+            modelID: ctx.model.id,
+            sequence: ctx.rawResponseSequence,
+            kind,
+            normalized_event_type: value.type,
+            raw_payload_kind: "provider_stream_event",
+            ...extra,
+            raw_payload: value,
+          },
+        })
+
+      const emitReasoningRawItem = (
+        value: StreamEvent | undefined,
+        kind: "reasoning_start" | "reasoning_delta" | "reasoning_end" | "unsupported",
+        extra: Record<string, unknown> = {},
+      ) => {
+        const sequence = ++ctx.reasoningRawSequence
+        if (kind === "unsupported") ctx.reasoningRawUnsupportedEmitted = true
+        else ctx.reasoningRawSeen = true
+        return AialraTurnTrace.emit({
+          phase: "reasoning.raw.item",
+          turnID: ctx.assistantMessage.parentID,
+          sessionID: ctx.sessionID,
+          messageID: ctx.assistantMessage.id,
+          data: {
+            schema: "aialra.reasoning_raw_item.v1",
+            reasoning_raw_id: `reasoning_raw_${ctx.assistantMessage.id}_${sequence}`,
+            model_call_id: `model_${ctx.assistantMessage.id}`,
+            response_message_id: ctx.assistantMessage.id,
+            turn_id: ctx.assistantMessage.parentID,
+            session_id: ctx.sessionID,
+            providerID: ctx.model.providerID,
+            modelID: ctx.model.id,
+            sequence,
+            kind,
+            display_policy: kind === "unsupported" ? "unsupported" : "rawRef_only",
+            normalized_event_type: value?.type ?? "unsupported",
+            raw_payload_kind: value ? "provider_stream_event" : "unsupported_marker",
+            ...extra,
+            raw_payload: value ?? {
+              type: "unsupported",
+              reason: typeof extra.reason === "string" ? extra.reason : "provider_emitted_no_reasoning_items",
+            },
+          },
+        })
+      }
+
+      const emitReasoningUnsupported = (reason: string) =>
+        ctx.reasoningRawSeen || ctx.reasoningRawUnsupportedEmitted
+          ? Effect.void
+          : emitReasoningRawItem(undefined, "unsupported", {
+              reason,
+              providerMetadata: undefined,
+            })
+
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
           case "step-start":
+            yield* emitRawResponseItem(value, "step_start")
             yield* status.set(ctx.sessionID, { type: "busy" })
             yield* AialraTurnTrace.emit({
               phase: "model.stream.started",
@@ -382,6 +694,14 @@ export const layer = Layer.effect(
             return
 
           case "reasoning-start":
+            yield* emitRawResponseItem(value, "reasoning_start", {
+              reasoningID: value.id,
+              providerMetadata: value.providerMetadata,
+            })
+            yield* emitReasoningRawItem(value, "reasoning_start", {
+              reasoningID: value.id,
+              providerMetadata: value.providerMetadata,
+            })
             if (value.id in ctx.reasoningMap) return
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (flags.experimentalEventSystem) {
@@ -404,6 +724,18 @@ export const layer = Layer.effect(
             return
 
           case "reasoning-delta":
+            yield* emitRawResponseItem(value, "reasoning_delta", {
+              reasoningID: value.id,
+              chars: value.text.length,
+              preview: value.text.slice(0, 240),
+              providerMetadata: value.providerMetadata,
+            })
+            yield* emitReasoningRawItem(value, "reasoning_delta", {
+              reasoningID: value.id,
+              chars: value.text.length,
+              preview: value.text.slice(0, 240),
+              providerMetadata: value.providerMetadata,
+            })
             // Match dev: silently drop orphan deltas (no preceding reasoning-start).
             if (!(value.id in ctx.reasoningMap)) return
             ctx.reasoningMap[value.id].text += value.text
@@ -431,6 +763,14 @@ export const layer = Layer.effect(
             return
 
           case "reasoning-end":
+            yield* emitRawResponseItem(value, "reasoning_end", {
+              reasoningID: value.id,
+              providerMetadata: value.providerMetadata,
+            })
+            yield* emitReasoningRawItem(value, "reasoning_end", {
+              reasoningID: value.id,
+              providerMetadata: value.providerMetadata,
+            })
             if (value.providerMetadata && value.id in ctx.reasoningMap) {
               ctx.reasoningMap[value.id].metadata = value.providerMetadata
             }
@@ -438,10 +778,15 @@ export const layer = Layer.effect(
             return
 
           case "tool-input-start":
+            yield* emitRawResponseItem(value, "tool_input_start", {
+              callID: value.id,
+              tool: value.name,
+            })
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             const startedToolCall = yield* ensureToolCall(value)
+            linkReasoningToTool({ callID: value.id, tool: value.name, phase: "tool-input-start" })
             yield* AialraTurnTrace.emit({
               phase: "tool.input.started",
               turnID: ctx.assistantMessage.parentID,
@@ -456,6 +801,11 @@ export const layer = Layer.effect(
             return
 
           case "tool-input-delta":
+            yield* emitRawResponseItem(value, "tool_input_delta", {
+              callID: value.id,
+              chars: value.text.length,
+              preview: value.text.slice(0, 240),
+            })
             yield* AialraTurnTrace.emit({
               phase: "model.raw.chunk",
               turnID: ctx.assistantMessage.parentID,
@@ -471,6 +821,9 @@ export const layer = Layer.effect(
             return
 
           case "tool-input-end": {
+            yield* emitRawResponseItem(value, "tool_input_end", {
+              callID: value.id,
+            })
             const toolCall = yield* ensureToolCall(value)
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (flags.experimentalEventSystem) {
@@ -486,10 +839,17 @@ export const layer = Layer.effect(
           }
 
           case "tool-call": {
+            yield* emitRawResponseItem(value, "tool_call", {
+              callID: value.id,
+              tool: value.name,
+              providerExecuted: value.providerExecuted,
+              providerMetadata: value.providerMetadata,
+            })
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             const toolCall = yield* ensureToolCall(value)
+            linkReasoningToTool({ callID: value.id, tool: value.name, phase: "tool-call" })
             const input = toolInput(value.input)
             if (!toolCall.call.inputEnded) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
@@ -503,6 +863,16 @@ export const layer = Layer.effect(
               }
             }
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            const providerExecuted = value.providerExecuted === true || toolCall?.part.metadata?.providerExecuted === true
+            const providerExecution = providerExecuted
+              ? ProviderTool.execution({
+                  toolCallID: value.id,
+                  tool: value.name,
+                  kind: "provider_tool_call",
+                  status: "called",
+                  providerMetadata: value.providerMetadata,
+                })
+              : undefined
             if (flags.experimentalEventSystem) {
               yield* events.publish(SessionEvent.Tool.Called, {
                 sessionID: ctx.sessionID,
@@ -510,7 +880,7 @@ export const layer = Layer.effect(
                 tool: value.name,
                 input,
                 provider: {
-                  executed: toolCall.part.metadata?.providerExecuted === true,
+                  executed: providerExecuted,
                   ...(value.providerMetadata ? { metadata: value.providerMetadata } : {}),
                 },
                 timestamp: DateTime.makeUnsafe(Date.now()),
@@ -527,8 +897,8 @@ export const layer = Layer.effect(
                       input,
                       time: { start: Date.now() },
                     },
-              metadata: match.metadata?.providerExecuted
-                ? { ...value.providerMetadata, providerExecuted: true }
+              metadata: providerExecution
+                ? ProviderTool.attach(isRecord(value.providerMetadata) ? value.providerMetadata : undefined, providerExecution)
                 : value.providerMetadata,
             }))
             yield* AialraTurnTrace.emit({
@@ -540,9 +910,30 @@ export const layer = Layer.effect(
                 callID: value.id,
                 tool: value.name,
                 inputKeys: AialraTurnTrace.keys(input),
-                providerExecuted: toolCall?.part.metadata?.providerExecuted === true,
+                providerExecuted,
+                providerExecution,
               },
             })
+            if (providerExecution) {
+              yield* AialraTurnTrace.emit({
+                phase: "provider.tool.call",
+                turnID: ctx.assistantMessage.parentID,
+                sessionID: ctx.sessionID,
+                messageID: ctx.assistantMessage.id,
+                data: {
+                  schema: "aialra.provider_tool_item.v1",
+                  itemKind: "provider_tool_call",
+                  executor_type: "provider",
+                  provider_tool_type: providerExecution.provider_tool_type,
+                  callID: value.id,
+                  toolCallID: value.id,
+                  tool: value.name,
+                  inputKeys: AialraTurnTrace.keys(input),
+                  providerExecution,
+                  providerMetadata: value.providerMetadata,
+                },
+              })
+            }
 
             const parts = MessageV2.parts(ctx.assistantMessage.id)
             const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
@@ -566,6 +957,10 @@ export const layer = Layer.effect(
               patterns: [value.name],
               sessionID: ctx.assistantMessage.sessionID,
               turnID: ctx.assistantMessage.parentID,
+              requested_by: "processor_guard",
+              requested_at: new Date().toISOString(),
+              approval_reviewer: { role: "user", id: "current_user", label: "User，当前用户", source: "default" },
+              overridden_by_constraints: false,
               metadata: { tool: value.name, input },
               always: [value.name],
               ruleset: agent.permission,
@@ -575,6 +970,13 @@ export const layer = Layer.effect(
 
           case "tool-result": {
             const toolCall = yield* readToolCall(value.id)
+            yield* emitRawResponseItem(value, "tool_result", {
+              callID: value.id,
+              tool: value.name,
+              resultType: value.result.type,
+              providerExecuted: value.providerExecuted === true || toolCall?.part.metadata?.providerExecuted === true,
+              providerMetadata: value.providerMetadata,
+            })
             const rawOutput = toolResultOutput(value)
             const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
               attachment.mime.startsWith("image/")
@@ -597,18 +999,44 @@ export const layer = Layer.effect(
                   : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
               attachments: attachments.length ? attachments : undefined,
             }
+            const outputWithRef = Option.isSome(outputStore)
+              ? yield* outputStore.value.attach({
+                  sessionID: ctx.sessionID,
+                  turnID: ctx.assistantMessage.parentID,
+                  messageID: ctx.assistantMessage.id,
+                  callID: value.id,
+                  tool: value.name,
+                  result: output,
+                })
+              : output
+            const providerExecuted = value.providerExecuted === true || toolCall?.part.metadata?.providerExecuted === true
+            const providerExecution = providerExecuted
+              ? ProviderTool.execution({
+                  toolCallID: value.id,
+                  tool: value.name,
+                  kind: "provider_tool_result",
+                  status: "completed",
+                  providerMetadata: value.providerMetadata,
+                  rawOutputRef: isRecord(outputWithRef.metadata.outputRef) ? outputWithRef.metadata.outputRef : undefined,
+                  outputChars: outputWithRef.output.length,
+                  visibleOutputTruncated: outputWithRef.output.length > 4_000,
+                })
+              : undefined
+            const settledOutput = providerExecution
+              ? { ...outputWithRef, metadata: ProviderTool.attach(outputWithRef.metadata, providerExecution) }
+              : outputWithRef
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (flags.experimentalEventSystem) {
               yield* events.publish(SessionEvent.Tool.Success, {
                 sessionID: ctx.sessionID,
                 callID: value.id,
-                structured: output.metadata,
+                structured: settledOutput.metadata,
                 content: [
                   {
                     type: "text",
-                    text: output.output,
+                    text: settledOutput.output,
                   },
-                  ...(output.attachments?.map((item: MessageV2.FilePart) => ({
+                  ...(settledOutput.attachments?.map((item: MessageV2.FilePart) => ({
                     type: "file" as const,
                     uri: item.url,
                     mime: item.mime,
@@ -616,17 +1044,48 @@ export const layer = Layer.effect(
                   })) ?? []),
                 ],
                 provider: {
-                  executed: value.providerExecuted === true || toolCall?.part.metadata?.providerExecuted === true,
+                  executed: providerExecuted,
                 },
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
             }
-            yield* completeToolCall(value.id, output)
+            yield* completeToolCall(value.id, settledOutput)
+            if (providerExecution) {
+              const settledMetadata = settledOutput.metadata as Record<string, any>
+              yield* AialraTurnTrace.emit({
+                phase: "provider.tool.result",
+                turnID: ctx.assistantMessage.parentID,
+                sessionID: ctx.sessionID,
+                messageID: ctx.assistantMessage.id,
+                data: {
+                  schema: "aialra.provider_tool_item.v1",
+                  itemKind: "provider_tool_result",
+                  executor_type: "provider",
+                  provider_tool_type: providerExecution.provider_tool_type,
+                  callID: value.id,
+                  toolCallID: value.id,
+                  tool: value.name,
+                  status: "completed",
+                  resultID: ToolResultProtocol.ToolResultSettlement.resultID(value.id),
+                  outputChars: settledOutput.output.length,
+                  rawOutputRef: isRecord(settledMetadata.outputRef) ? settledMetadata.outputRef : undefined,
+                  providerExecution,
+                  providerMetadata: value.providerMetadata,
+                },
+              })
+            }
             return
           }
 
           case "tool-error": {
             const toolCall = yield* readToolCall(value.id)
+            yield* emitRawResponseItem(value, "tool_error", {
+              callID: value.id,
+              tool: value.name,
+              error: value.message,
+              providerExecuted: toolCall?.part.metadata?.providerExecuted === true,
+              providerMetadata: value.providerMetadata,
+            })
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (flags.experimentalEventSystem) {
               yield* events.publish(SessionEvent.Tool.Failed, {
@@ -642,11 +1101,43 @@ export const layer = Layer.effect(
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
             }
-            yield* failToolCall(value.id, value.error ?? new Error(value.message))
+            if (toolCall?.part.metadata?.providerExecuted === true) {
+              const providerExecution = ProviderTool.execution({
+                toolCallID: value.id,
+                tool: value.name,
+                kind: "provider_tool_result",
+                status: "failed",
+                providerMetadata: value.providerMetadata,
+              })
+              yield* AialraTurnTrace.emit({
+                phase: "provider.tool.result",
+                turnID: ctx.assistantMessage.parentID,
+                sessionID: ctx.sessionID,
+                messageID: ctx.assistantMessage.id,
+                data: {
+                  schema: "aialra.provider_tool_item.v1",
+                  itemKind: "provider_tool_result",
+                  executor_type: "provider",
+                  provider_tool_type: providerExecution.provider_tool_type,
+                  callID: value.id,
+                  toolCallID: value.id,
+                  tool: value.name,
+                  status: "failed",
+                  resultID: ToolResultProtocol.ToolResultSettlement.resultID(value.id),
+                  error: value.message,
+                  providerExecution,
+                  providerMetadata: value.providerMetadata,
+                },
+              })
+            }
+            yield* failToolCall(value.id, value.error ?? new Error(value.message), value.providerMetadata)
             return
           }
 
           case "provider-error":
+            yield* emitRawResponseItem(value, "provider_error", {
+              error: value.message,
+            })
             throw new Error(value.message)
 
           case "step-start":
@@ -689,6 +1180,12 @@ export const layer = Layer.effect(
             return
 
           case "step-finish": {
+            yield* emitRawResponseItem(value, "step_finish", {
+              finish: value.reason,
+              providerMetadata: value.providerMetadata,
+              usage: value.usage,
+            })
+            yield* emitReasoningUnsupported("step_finished_without_reasoning_raw")
             const completedSnapshot = yield* snapshot.track()
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             const usage = Session.getUsage({
@@ -765,6 +1262,9 @@ export const layer = Layer.effect(
           }
 
           case "text-start":
+            yield* emitRawResponseItem(value, "assistant_text_start", {
+              providerMetadata: value.providerMetadata,
+            })
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               if (flags.experimentalEventSystem) {
@@ -793,6 +1293,11 @@ export const layer = Layer.effect(
             return
 
           case "text-delta":
+            yield* emitRawResponseItem(value, "assistant_text_delta", {
+              chars: value.text.length,
+              preview: value.text.slice(0, 240),
+              providerMetadata: value.providerMetadata,
+            })
             if (!ctx.currentText) return
             ctx.currentText.text += value.text
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
@@ -819,6 +1324,9 @@ export const layer = Layer.effect(
             return
 
           case "text-end":
+            yield* emitRawResponseItem(value, "assistant_text_end", {
+              providerMetadata: value.providerMetadata,
+            })
             if (!ctx.currentText) return
             // oxlint-disable-next-line no-self-assign -- reactivity trigger
             ctx.currentText.text = ctx.currentText.text
@@ -860,6 +1368,8 @@ export const layer = Layer.effect(
             return
 
           case "finish":
+            yield* emitRawResponseItem(value, "finish")
+            yield* emitReasoningUnsupported("stream_finished_without_reasoning_raw")
             return
         }
       })
@@ -887,14 +1397,8 @@ export const layer = Layer.effect(
           ctx.currentText = undefined
         }
 
-        for (const part of Object.values(ctx.reasoningMap)) {
-          const end = Date.now()
-          yield* session.updatePart({
-            ...part,
-            time: { start: part.time.start ?? end, end },
-          })
-        }
-        ctx.reasoningMap = {}
+        yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
+        ctx.reasoningToolLinks = {}
 
         yield* Effect.forEach(
           Object.values(ctx.toolcalls),
@@ -903,21 +1407,7 @@ export const layer = Layer.effect(
         )
 
         for (const toolCallID of Object.keys(ctx.toolcalls)) {
-          const match = yield* readToolCall(toolCallID)
-          if (!match) continue
-          const part = match.part
-          const end = Date.now()
-          const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-          yield* session.updatePart({
-            ...part,
-            state: {
-              ...part.state,
-              status: "error",
-              error: "Tool execution aborted",
-              metadata: { ...metadata, interrupted: true },
-              time: { start: "time" in part.state ? part.state.time.start : end, end },
-            },
-          })
+          yield* abortToolCall(toolCallID)
         }
         ctx.toolcalls = {}
         ctx.assistantMessage.time.completed = Date.now()
@@ -992,6 +1482,7 @@ export const layer = Layer.effect(
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
+            ctx.reasoningToolLinks = {}
             let sawTerminal = false
             yield* status.set(ctx.sessionID, { type: "busy" })
             const stream = llm.stream({
@@ -1000,9 +1491,18 @@ export const layer = Layer.effect(
             })
 
             const turn = streamInput.turn
+            ctx.activeTurn = turn
             yield* stream.pipe(
               Stream.tap((event) =>
                 Effect.gen(function* () {
+                  const runtimeItem = RuntimeProtocol.RuntimeItem.fromLLMEvent(event, ++ctx.runtimeItemSequence)
+                  yield* AialraTurnTrace.emit({
+                    phase: "runtime.item.received",
+                    turnID: ctx.assistantMessage.parentID,
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.assistantMessage.id,
+                    data: runtimeItem,
+                  })
                   if (event.type === "finish" || event.type === "step-finish") sawTerminal = true
                   if (
                     event.type === "text-delta" ||
@@ -1015,6 +1515,15 @@ export const layer = Layer.effect(
                     }
                   }
                   yield* handleEvent(event)
+                  if (RuntimeProtocol.RuntimeItem.shouldEmitSettled(runtimeItem)) {
+                    yield* AialraTurnTrace.emit({
+                      phase: "runtime.item.settled",
+                      turnID: ctx.assistantMessage.parentID,
+                      sessionID: ctx.sessionID,
+                      messageID: ctx.assistantMessage.id,
+                      data: runtimeItem,
+                    })
+                  }
                 }),
               ),
               Stream.takeUntil(() => ctx.needsCompaction),

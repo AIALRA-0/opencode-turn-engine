@@ -28,7 +28,20 @@ const ctx = {
   ask: () => Effect.void,
 }
 
-function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
+function turn(
+  cwd: string,
+  overrides: Partial<
+    Omit<
+      TurnContext,
+      | "model_info"
+      | "effort_resolution"
+      | "reasoning_summary_policy"
+      | "service_tier_resolution"
+      | "dynamic_tools"
+      | "skill_catalog"
+    >
+  > = {},
+): TurnContext {
   const sessionID = SessionID.make("ses_repo_overview")
   const messageID = MessageID.make("msg_repo_overview")
   return {
@@ -38,19 +51,57 @@ function turn(cwd: string, overrides: Partial<TurnContext> = {}): TurnContext {
     messageID,
     startedAt: Date.now(),
     items: [],
+    input_items: [],
+    input_schema: {
+      codex: "Op::UserInput",
+      supported_items: ["text", "image", "local_image", "file", "skill", "mention", "subtask"],
+    },
     cwd,
     approval_policy: "never",
     sandbox_policy: CodexTurn.defaultSandboxPolicy(cwd),
     permission_profile: CodexTurn.workspacePermissionProfile(cwd),
     active_permission_profile: { id: ":workspace" },
     model: { providerID: "test", modelID: "test" },
+    model_info: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    effort_resolution: CodexTurn.reasoningEffortResolution({
+      modelInfo: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    }),
+    reasoning_summary_policy: CodexTurn.defaultReasoningSummaryPolicy(),
+    service_tier_resolution: CodexTurn.serviceTierResolution({
+      modelInfo: CodexTurn.modelInfo({ providerID: "test", modelID: "test" }),
+    }),
+    dynamic_tools: CodexTurn.defaultDynamicTools({
+      requested: {},
+      activePermissionProfile: { id: ":workspace" },
+      approvalPolicy: "never",
+      modelSupportsTools: true,
+      selectedEnvironmentID: "default",
+    }),
+    skill_catalog: CodexTurn.defaultSkillCatalog({
+      skills: [],
+      agent: "scout",
+      cwd,
+      activePermissionProfile: { id: ":workspace" },
+      approvalPolicy: "never",
+      selectedEnvironmentID: "default",
+    }),
     collaboration_mode: { kind: "default" },
     environments: [{ environmentID: "default", cwd }],
     selected_environment_id: "default",
+    network_permissions: CodexTurn.defaultNetworkPermissions("ask"),
+    shell_environment_policy: CodexTurn.defaultShellEnvironmentPolicy(),
+    security_constraints: CodexTurn.defaultSecurityConstraints(cwd),
     route: "prompt",
     agent: "scout",
     noReply: false,
     format: "text",
+    thread_settings: {
+      requested: {},
+      resolved: {},
+      effective: {},
+    },
+    metadata: { source: "test" },
+    extension_data: {},
     retry: CodexTurn.retryConfig({}),
     ...overrides,
   }

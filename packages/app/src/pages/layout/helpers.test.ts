@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test"
 import {
   collectNewSessionDeepLinks,
   collectOpenProjectDeepLinks,
+  collectSessionHandoffDeepLinks,
   drainPendingDeepLinks,
   parseDeepLink,
   parseNewSessionDeepLink,
+  parseSessionHandoffDeepLink,
 } from "./deep-links"
 import { type Session } from "@opencode-ai/sdk/v2/client"
 import {
@@ -90,6 +92,30 @@ describe("layout deep links", () => {
       "opencode://new-session?directory=/c&prompt=ship%20it",
     ])
     expect(result).toEqual([{ directory: "/a" }, { directory: "/c", prompt: "ship it" }])
+  })
+
+  test("parses session handoff deep links with event cursor and environment", () => {
+    expect(
+      parseSessionHandoffDeepLink(
+        "opencode://session-handoff?directory=/tmp/demo&sessionID=ses_1&threadID=msg_1&lastEventID=pev_1&environmentID=default",
+      ),
+    ).toEqual({
+      directory: "/tmp/demo",
+      sessionID: "ses_1",
+      threadID: "msg_1",
+      lastEventID: "pev_1",
+      environmentID: "default",
+    })
+  })
+
+  test("collects only valid session handoff links", () => {
+    const result = collectSessionHandoffDeepLinks([
+      "opencode://session-handoff?directory=/a&session_id=ses_a",
+      "opencode://session-handoff?directory=/b",
+      "opencode://new-session?directory=/c",
+    ])
+
+    expect(result).toEqual([{ directory: "/a", sessionID: "ses_a" }])
   })
 
   test("drains global deep links once", () => {

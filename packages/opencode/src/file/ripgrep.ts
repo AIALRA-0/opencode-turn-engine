@@ -123,6 +123,8 @@ export interface SearchInput {
   pattern: string
   glob?: string[]
   limit?: number
+  hidden?: boolean
+  ignore?: string[]
   follow?: boolean
   file?: string[]
   signal?: AbortSignal
@@ -210,10 +212,15 @@ function filesArgs(input: FilesInput) {
 }
 
 function searchArgs(input: SearchInput) {
-  const args = ["--no-config", "--json", "--hidden", "--glob=!.git/*", "--no-messages"]
+  const args = ["--no-config", "--json", "--glob=!.git/*", "--no-messages"]
+  if (input.hidden !== false) args.push("--hidden")
+  if (input.hidden === false) args.push("--glob=!.*")
   if (input.follow) args.push("--follow")
   if (input.glob) {
     for (const glob of input.glob) args.push(`--glob=${glob}`)
+  }
+  if (input.ignore) {
+    for (const glob of input.ignore) args.push(`--glob=${glob.startsWith("!") ? glob : `!${glob}`}`)
   }
   if (input.limit) args.push(`--max-count=${input.limit}`)
   args.push("--", input.pattern, ...(input.file ?? ["."]))

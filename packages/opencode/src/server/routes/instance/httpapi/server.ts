@@ -43,6 +43,8 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { ToolFoundation } from "@/session/tool-foundation"
+import { ToolOutputStore } from "@/session/tool-output-store"
 import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -215,6 +217,8 @@ export function createRoutes(
       Question.defaultLayer,
       Ripgrep.defaultLayer,
       RuntimeFlags.defaultLayer,
+      ToolFoundation.defaultLayer,
+      ToolOutputStore.defaultLayer,
       Session.defaultLayer,
       SessionCompaction.defaultLayer,
       SessionPrompt.defaultLayer,

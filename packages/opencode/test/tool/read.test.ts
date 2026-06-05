@@ -491,6 +491,57 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("records directory read metadata with hidden filtering, recursion, and pagination", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const target = path.join(dir, "dir")
+      yield* put(path.join(target, "visible.txt"), "visible")
+      yield* put(path.join(target, ".hidden"), "hidden")
+      yield* put(path.join(target, "sub", "nested.txt"), "nested")
+
+      const result = yield* exec(dir, {
+        filePath: target,
+        showHidden: false,
+        recursiveDepth: 1,
+        limit: 2,
+        sort: "name",
+      })
+
+      expect(result.output).toContain("sub/nested.txt")
+      expect(result.output).not.toContain(".hidden")
+      expect(result.metadata.directoryRead).toEqual(
+        expect.objectContaining({
+          schema: "aialra.directory_read.v1",
+          requested_path: target,
+          resolved_path: target,
+          listing: expect.objectContaining({
+            hidden_policy: "exclude",
+            hidden_count: 1,
+            recursive_depth: 1,
+            effective_recursive_depth: 1,
+            total: 3,
+            returned: 2,
+            sort: "name",
+          }),
+          truncation: expect.objectContaining({
+            truncated: true,
+            reason: "entry_limit",
+          }),
+          entries: expect.arrayContaining([
+            expect.objectContaining({ relative_path: "sub", type: "directory" }),
+          ]),
+        }),
+      )
+      expect(result.metadata.fileRead).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_read.v1",
+          kind: "directory",
+          truncation: expect.objectContaining({ truncated: true }),
+        }),
+      )
+    }),
+  )
+
   it.live("truncates long lines", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

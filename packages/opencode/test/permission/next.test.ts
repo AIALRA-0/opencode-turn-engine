@@ -899,7 +899,15 @@ it.instance(
           expect.objectContaining({
             type: "security.override.resolved",
             status: "turn-all",
-            data: expect.objectContaining({ linkage: "approval_scope_updates_server_reviewer_state" }),
+            data: expect.objectContaining({
+              linkage: "approval_scope_updates_server_reviewer_state",
+              approval_decision: expect.objectContaining({
+                schema: "aialra.approval_decision.v1",
+                decision: "allow_turn_all",
+                grant_scope: "turn-all",
+                creates_runtime_grant: true,
+              }),
+            }),
           }),
         ]),
       )
@@ -957,7 +965,15 @@ it.instance(
           expect.objectContaining({
             type: "security.override.resolved",
             status: "always-all",
-            data: expect.objectContaining({ linkage: "approval_scope_updates_server_reviewer_state" }),
+            data: expect.objectContaining({
+              linkage: "approval_scope_updates_server_reviewer_state",
+              approval_decision: expect.objectContaining({
+                schema: "aialra.approval_decision.v1",
+                decision: "allow_session_all",
+                grant_scope: "always-all",
+                creates_runtime_grant: true,
+              }),
+            }),
           }),
         ]),
       )
@@ -987,6 +1003,163 @@ it.instance(
       expect(yield* waitForPending(1)).toHaveLength(1)
       yield* rejectAll()
       yield* Fiber.await(otherSession)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "reply - six approval scopes have distinct backend behavior",
+  () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session_six_scope")
+      const turnID = MessageID.make("msg_six_scope")
+
+      const once = yield* ask({
+        id: PermissionID.make("per_six_once"),
+        sessionID,
+        turnID,
+        permission: "bash",
+        patterns: ["npm test"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionID.make("per_six_once"), reply: "once", scope: "once-command" })
+      yield* Fiber.join(once)
+
+      const onceAgain = yield* ask({
+        id: PermissionID.make("per_six_once_again"),
+        sessionID,
+        turnID,
+        permission: "bash",
+        patterns: ["npm test"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      expect((yield* waitForPending(1)).map((item) => item.id)).toEqual([PermissionID.make("per_six_once_again")])
+      yield* rejectAll()
+      yield* Fiber.await(onceAgain)
+
+      const turnCommand = yield* ask({
+        id: PermissionID.make("per_six_turn_command"),
+        sessionID,
+        turnID,
+        permission: "bash",
+        patterns: ["bun test"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionID.make("per_six_turn_command"), reply: "once", scope: "turn-command" })
+      yield* Fiber.join(turnCommand)
+      expect(
+        yield* ask({
+          sessionID,
+          turnID,
+          permission: "bash",
+          patterns: ["bun test"],
+          metadata: {},
+          always: [],
+          ruleset: [],
+        }),
+      ).toBeUndefined()
+
+      const sessionCommand = yield* ask({
+        id: PermissionID.make("per_six_session_command"),
+        sessionID,
+        turnID,
+        permission: "bash",
+        patterns: ["node --test"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionID.make("per_six_session_command"), reply: "once", scope: "always-command" })
+      yield* Fiber.join(sessionCommand)
+      expect(
+        yield* ask({
+          sessionID,
+          turnID: MessageID.make("msg_six_scope_next"),
+          permission: "bash",
+          patterns: ["node --test"],
+          metadata: {},
+          always: [],
+          ruleset: [],
+        }),
+      ).toBeUndefined()
+
+      const logs = PublicEventLog.list({ sessionID }).filter((event) => event.type === "permission.grant.created")
+      expect(logs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            status: "once-command",
+            data: expect.objectContaining({
+              approval_decision: expect.objectContaining({
+                decision: "allow_once_command",
+                creates_runtime_grant: false,
+              }),
+            }),
+          }),
+          expect.objectContaining({
+            status: "turn-command",
+            data: expect.objectContaining({
+              approval_decision: expect.objectContaining({
+                decision: "allow_turn_command",
+                creates_runtime_grant: true,
+              }),
+            }),
+          }),
+          expect.objectContaining({
+            status: "always-command",
+            data: expect.objectContaining({
+              approval_decision: expect.objectContaining({
+                decision: "allow_session_command",
+                creates_runtime_grant: true,
+              }),
+            }),
+          }),
+        ]),
+      )
+    }),
+  { git: true },
+)
+
+it.instance(
+  "reply - turn-all with six-button scope resolves already pending requests in the same turn",
+  () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session_six_turn_all_pending")
+      const turnID = MessageID.make("msg_six_turn_all_pending")
+      const a = yield* ask({
+        id: PermissionID.make("per_six_turn_all_a"),
+        sessionID,
+        turnID,
+        permission: "bash",
+        patterns: ["pwd"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      const b = yield* ask({
+        id: PermissionID.make("per_six_turn_all_b"),
+        sessionID,
+        turnID,
+        permission: "edit",
+        patterns: ["src/tool.ts"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(2)
+      yield* reply({ requestID: PermissionID.make("per_six_turn_all_a"), reply: "once", scope: "turn-all" })
+      yield* Fiber.join(a)
+      yield* Fiber.join(b)
+      expect(yield* list()).toHaveLength(0)
     }),
   { git: true },
 )
@@ -1060,11 +1233,11 @@ it.instance(
             orElse: () => Effect.fail(new Error("timed out waiting for permission replied event")),
           }),
         ),
-      ).toEqual({
+      ).toEqual(expect.objectContaining({
         sessionID: SessionID.make("session_test"),
         requestID: PermissionID.make("per_test7"),
         reply: "once",
-      })
+      }))
     }),
   { git: true },
 )

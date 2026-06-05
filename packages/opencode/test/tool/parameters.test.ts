@@ -10,6 +10,8 @@ import { ToolJsonSchema } from "../../src/tool/json-schema"
 // provider-compatible while tools use Effect Schema internally.
 
 import { Parameters as ApplyPatch } from "../../src/tool/apply_patch"
+import { Parameters as AwaitProcess } from "../../src/tool/await_process"
+import { Parameters as CleanupProcesses } from "../../src/tool/cleanup_processes"
 import { Parameters as Edit } from "../../src/tool/edit"
 import { Parameters as Glob } from "../../src/tool/glob"
 import { Parameters as Grep } from "../../src/tool/grep"
@@ -25,6 +27,7 @@ import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
 import { Parameters as WebSearch } from "../../src/tool/websearch"
 import { Parameters as Write } from "../../src/tool/write"
+import { Parameters as WriteStdin } from "../../src/tool/write_stdin"
 
 const parse = <S extends Schema.Decoder<unknown>>(schema: S, input: unknown): S["Type"] =>
   Schema.decodeUnknownSync(schema)(input)
@@ -37,7 +40,9 @@ const toJsonSchema = ToolJsonSchema.fromSchema
 describe("tool parameters", () => {
   describe("JSON Schema (wire shape)", () => {
     test("apply_patch", () => expect(toJsonSchema(ApplyPatch)).toMatchSnapshot())
+    test("await_process", () => expect(toJsonSchema(AwaitProcess)).toMatchSnapshot())
     test("bash", () => expect(toJsonSchema(Shell)).toMatchSnapshot())
+    test("cleanup_processes", () => expect(toJsonSchema(CleanupProcesses)).toMatchSnapshot())
     test("edit", () => expect(toJsonSchema(Edit)).toMatchSnapshot())
     test("glob", () => expect(toJsonSchema(Glob)).toMatchSnapshot())
     test("grep", () => expect(toJsonSchema(Grep)).toMatchSnapshot())
@@ -52,6 +57,7 @@ describe("tool parameters", () => {
     test("webfetch", () => expect(toJsonSchema(WebFetch)).toMatchSnapshot())
     test("websearch", () => expect(toJsonSchema(WebSearch)).toMatchSnapshot())
     test("write", () => expect(toJsonSchema(Write)).toMatchSnapshot())
+    test("write_stdin", () => expect(toJsonSchema(WriteStdin)).toMatchSnapshot())
 
     test("inlines named child schemas for provider compatibility", () => {
       const schema = toJsonSchema(Question)
@@ -95,6 +101,52 @@ describe("tool parameters", () => {
     })
     test("rejects non-string patchText", () => {
       expect(accepts(ApplyPatch, { patchText: 123 })).toBe(false)
+    })
+  })
+
+  describe("await_process", () => {
+    test("accepts process_id + description", () => {
+      expect(parse(AwaitProcess, { process_id: "proc_test", description: "wait" })).toEqual({
+        process_id: "proc_test",
+        description: "wait",
+      })
+    })
+    test("accepts optional timeout and poll interval", () => {
+      const parsed = parse(AwaitProcess, {
+        process_id: "proc_test",
+        description: "wait",
+        timeout_ms: 1000,
+        poll_interval_ms: 250,
+      })
+      expect(parsed.timeout_ms).toBe(1000)
+      expect(parsed.poll_interval_ms).toBe(250)
+    })
+    test("rejects missing process_id", () => {
+      expect(accepts(AwaitProcess, { description: "wait" })).toBe(false)
+    })
+  })
+
+  describe("cleanup_processes", () => {
+    test("accepts description-only cleanup", () => {
+      expect(parse(CleanupProcesses, { description: "clean finished" })).toEqual({ description: "clean finished" })
+    })
+    test("accepts process filters and running cleanup flag", () => {
+      const parsed = parse(CleanupProcesses, {
+        description: "clean selected",
+        process_id: "proc_one",
+        process_ids: ["proc_two"],
+        statuses: ["running", "timeout"],
+        include_running: true,
+        include_finished: false,
+      })
+      expect(parsed.process_id).toBe("proc_one")
+      expect(parsed.process_ids).toEqual(["proc_two"])
+      expect(parsed.statuses).toEqual(["running", "timeout"])
+      expect(parsed.include_running).toBe(true)
+      expect(parsed.include_finished).toBe(false)
+    })
+    test("rejects missing description", () => {
+      expect(accepts(CleanupProcesses, { process_id: "proc_one" })).toBe(false)
     })
   })
 

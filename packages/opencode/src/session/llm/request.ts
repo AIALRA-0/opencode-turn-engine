@@ -89,19 +89,20 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
         providerOptions: input.provider.options,
       })
   const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
-  if (input.turn?.effort) {
+  const shouldApplyTurnEffort = input.turn?.effort_resolution.source !== "variant"
+  if (input.turn?.effort && input.turn.model_info.supports.reasoning_effort && shouldApplyTurnEffort) {
     options.reasoningEffort ??= input.turn.effort
     options.reasoning_effort ??= input.turn.effort
     options.effort ??= input.turn.effort
   }
-  if (input.turn?.summary) {
+  if (input.turn?.summary && input.turn.model_info.supports.reasoning_summary) {
     options.reasoningSummary ??= input.turn.summary
     options.reasoning_summary ??= input.turn.summary
     options.summary ??= input.turn.summary
   }
-  if (input.turn?.service_tier) {
-    options.serviceTier ??= input.turn.service_tier
-    options.service_tier ??= input.turn.service_tier
+  if (input.turn?.effective_service_tier && input.turn.model_info.supports.service_tier) {
+    options.serviceTier ??= input.turn.effective_service_tier
+    options.service_tier ??= input.turn.effective_service_tier
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 

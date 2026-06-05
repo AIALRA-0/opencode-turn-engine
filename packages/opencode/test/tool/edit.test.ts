@@ -99,6 +99,31 @@ describe("tool.edit", () => {
         const result = yield* run({ filePath: filepath, oldString: "", newString: "new content" })
 
         expect(result.metadata.diff).toContain("new content")
+        expect(result.metadata.fileWrite).toEqual(
+          expect.objectContaining({
+            schema: "aialra.file_write.v1",
+            tool: "edit",
+            before: expect.objectContaining({ exists: false }),
+            after: expect.objectContaining({ exists: true, size: "new content".length }),
+            edit_intent: expect.objectContaining({
+              old_snippet: "",
+              new_snippet: "new content",
+            }),
+            mutation: expect.objectContaining({
+              schema: "aialra.file_mutation.v1",
+              tool: "edit",
+              operation: "create",
+              applied: true,
+            }),
+          }),
+        )
+        expect(result.metadata.fileMutations).toEqual([
+          expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            tool: "edit",
+            operation: "create",
+          }),
+        ])
         expect(yield* load(filepath)).toBe("new content")
       }),
     )
@@ -153,6 +178,25 @@ describe("tool.edit", () => {
         const result = yield* run({ filePath: filepath, oldString: "old content", newString: "new content" })
 
         expect(result.output).toContain("Edit applied successfully")
+        expect(result.metadata.fileWrite).toEqual(
+          expect.objectContaining({
+            schema: "aialra.file_write.v1",
+            tool: "edit",
+            before: expect.objectContaining({ exists: true, size: "old content here".length }),
+            after: expect.objectContaining({ exists: true, size: "new content here".length }),
+            edit_intent: expect.objectContaining({
+              old_snippet: "old content",
+              new_snippet: "new content",
+              replace_all: false,
+              applied_range: expect.objectContaining({ start: 0, end: 3 }),
+            }),
+            mutation: expect.objectContaining({
+              operation: "overwrite",
+              applied: true,
+            }),
+          }),
+        )
+        expect(result.metadata.fileWrite.before.sha256).not.toBe(result.metadata.fileWrite.after.sha256)
         expect(yield* load(filepath)).toBe("new content here")
       }),
     )

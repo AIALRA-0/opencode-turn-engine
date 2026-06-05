@@ -194,6 +194,31 @@ describe("Session input schemas", () => {
     expect(decode({ sessionID })).toEqual({ sessionID })
     expect(decode({ sessionID, limit: 50 })).toEqual({ sessionID, limit: 50 })
   })
+
+  test("PromptInput accepts per-turn settings overrides", () => {
+    const decode = decodeUnknown(SessionPrompt.PromptInput)
+    const input = {
+      sessionID,
+      parts: [{ type: "text" as const, text: "use a one-turn sandbox override" }],
+      settings: {
+        cwd: "/tmp/turn-only",
+        permissionProfileID: ":read-only" as const,
+        approvalPolicy: "never" as const,
+        networkPolicy: "on" as const,
+        commandPolicy: "read" as const,
+        environmentID: "alt",
+        effort: "xhigh",
+        summary: "auto",
+        serviceTier: "flex",
+        extensionData: {
+          benchmark: {
+            caseID: "case-001",
+          },
+        },
+      },
+    }
+    expect(decode(input)).toEqual(input)
+  })
 })
 
 describe("SessionRevert.RevertInput", () => {

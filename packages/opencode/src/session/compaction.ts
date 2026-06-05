@@ -20,6 +20,7 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionEvent } from "@opencode-ai/core/session-event"
+import { AialraTurnTrace } from "./turn-trace"
 
 const log = Log.create({ service: "session.compaction" })
 
@@ -338,6 +339,18 @@ export const layer = Layer.effect(
           }
         }
         log.info("pruned", { count: toPrune.length })
+        yield* AialraTurnTrace.emit({
+          phase: "context.compaction.pruned",
+          sessionID: input.sessionID,
+          data: {
+            partCount: toPrune.length,
+            prunedTokens: pruned,
+            totalTokens: total,
+            protectedTokens: PRUNE_PROTECT,
+            minimumTokens: PRUNE_MINIMUM,
+            strategy: "tool_output_prune",
+          },
+        })
       }
     })
 
@@ -394,6 +407,7 @@ export const layer = Layer.effect(
         cfg,
         model,
       })
+      const compactedMessageCount = selected.head.length
       // Allow plugins to inject context or replace compaction prompt.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
@@ -464,6 +478,25 @@ export const layer = Layer.effect(
         }).toObject()
         processor.message.finish = "error"
         yield* session.updateMessage(processor.message)
+        yield* AialraTurnTrace.emit({
+          phase: "context.compaction.failed",
+          sessionID: input.sessionID,
+          turnID: input.parentID,
+          messageID: msg.id,
+          data: {
+            reason: "context_overflow_after_compaction",
+            auto: input.auto,
+            overflow: input.overflow === true,
+            parentID: input.parentID,
+            assistantMessageID: msg.id,
+            beforeMessageCount: history.length,
+            compactedMessageCount,
+            tailStartID: selected.tail_start_id,
+            previousSummaryChars: previousSummary?.length ?? 0,
+            promptChars: nextPrompt.length,
+            model: { providerID: model.providerID, modelID: model.id },
+          },
+        })
         return "stop"
       }
 
@@ -576,6 +609,30 @@ export const layer = Layer.effect(
             include: selected.tail_start_id,
           })
         }
+        yield* AialraTurnTrace.emit({
+          phase: "context.compaction.completed",
+          sessionID: input.sessionID,
+          turnID: input.parentID,
+          messageID: msg.id,
+          data: {
+            auto: input.auto,
+            overflow: input.overflow === true,
+            parentID: input.parentID,
+            assistantMessageID: msg.id,
+            beforeMessageCount: history.length,
+            compactedMessageCount,
+            retainedTailStartID: selected.tail_start_id,
+            tailStartID: selected.tail_start_id,
+            hiddenPriorCompactionPairs: prior.length,
+            previousSummaryChars: previousSummary?.length ?? 0,
+            summaryChars: summary?.length ?? 0,
+            promptChars: nextPrompt.length,
+            toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+            preserveRecentTokens: preserveRecentBudget({ cfg, model }),
+            strategy: "anchored_markdown_summary",
+            model: { providerID: model.providerID, modelID: model.id },
+          },
+        })
         yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })
       }
       return result
@@ -603,6 +660,20 @@ export const layer = Layer.effect(
         type: "compaction",
         auto: input.auto,
         overflow: input.overflow,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "context.compaction.started",
+        sessionID: input.sessionID,
+        turnID: msg.id,
+        messageID: msg.id,
+        data: {
+          reason: input.overflow ? "overflow" : input.auto ? "auto" : "manual",
+          auto: input.auto,
+          overflow: input.overflow === true,
+          agent: input.agent,
+          model: input.model,
+          compactionMessageID: msg.id,
+        },
       })
       if (flags.experimentalEventSystem) {
         yield* events.publish(SessionEvent.Compaction.Started, {

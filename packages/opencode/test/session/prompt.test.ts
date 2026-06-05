@@ -34,8 +34,11 @@ import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
+import { SessionSecurity } from "../../src/session/security"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
+import { ToolFoundation } from "../../src/session/tool-foundation"
+import { ToolOutputStore } from "../../src/session/tool-output-store"
 import { SessionV2 } from "../../src/v2/session"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
@@ -56,6 +59,7 @@ import { httpError, reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { PublicEventLog } from "../../src/session/public-event"
 
 void Log.init({ print: false })
 
@@ -295,7 +299,10 @@ function makeHttp(input?: { processor?: "blocking" }) {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provide(Instruction.defaultLayer),
+      Layer.provide(Skill.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),
+      Layer.provide(ToolFoundation.defaultLayer),
+      Layer.provide(ToolOutputStore.defaultLayer),
       Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
       Layer.provideMerge(deps),
     ),
@@ -328,6 +335,18 @@ const cfg = {
           cost: { input: 0, output: 0 },
           options: {},
         },
+        "gpt-5": {
+          id: "gpt-5",
+          name: "GPT 5 Test Model",
+          attachment: false,
+          reasoning: false,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+        },
       },
       options: {
         apiKey: "test-key",
@@ -340,6 +359,7 @@ const cfg = {
 function providerCfg(url: string) {
   return {
     ...cfg,
+    model: "test/test-model",
     provider: {
       ...cfg.provider,
       test: {
@@ -566,6 +586,81 @@ it.instance(
 )
 
 it.instance(
+  "loop emits dynamic tool resolution for the active turn",
+  () =>
+    Effect.gen(function* () {
+      PublicEventLog.clearForTest()
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Dynamic tools",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        settings: {
+          extensionData: {
+            benchmark: {
+              caseID: "dynamic-tools-case",
+            },
+          },
+        },
+        parts: [{ type: "text", text: "hello" }],
+      })
+
+      const events = PublicEventLog.list({ sessionID: chat.id })
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "tools.dynamic.resolved",
+            data: expect.objectContaining({
+              availableCount: expect.any(Number),
+              disabledCount: expect.any(Number),
+              available_ids: expect.any(Array),
+              resolver: expect.objectContaining({ model_supports_tools: true }),
+            }),
+          }),
+          expect.objectContaining({
+            type: "tool.foundation.resolved",
+            data: expect.objectContaining({
+              version: "aialra.tool_foundation.v1",
+              upstream: "opencode-v2",
+            }),
+          }),
+          expect.objectContaining({
+            type: "skill.catalog.resolved",
+            data: expect.objectContaining({
+              availableCount: expect.any(Number),
+              available_ids: expect.any(Array),
+              resolver: expect.objectContaining({ agent: "build" }),
+            }),
+          }),
+          expect.objectContaining({
+            type: "skill.catalog.injected",
+            data: expect.objectContaining({
+              injectedCount: expect.any(Number),
+              injected_ids: expect.any(Array),
+            }),
+          }),
+          expect.objectContaining({
+            type: "extension.data.attached",
+            extension_data: expect.objectContaining({
+              benchmark: expect.objectContaining({ caseID: "dynamic-tools-case" }),
+            }),
+            data: expect.objectContaining({
+              namespaces: expect.arrayContaining(["benchmark"]),
+            }),
+          }),
+        ]),
+      )
+    }),
+  { git: true },
+)
+
+it.instance(
   "prompt emits v2 prompted and synthetic events",
   () =>
     Effect.gen(function* () {
@@ -717,6 +812,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-glob-file-search")
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const session = yield* sessions.create({
@@ -735,7 +831,7 @@ it.instance(
       yield* llm.tool("glob", { pattern: "**/*.txt" })
       yield* llm.text("done")
 
-      const result = yield* prompt.loop({ sessionID: session.id })
+      const result = yield* withTurnTrace(traceDir, prompt.loop({ sessionID: session.id }))
       expect(result.info.role).toBe("assistant")
 
       const msgs = yield* MessageV2.filterCompactedEffect(session.id)
@@ -749,10 +845,116 @@ it.instance(
 
       expect(tool.state.output).toContain(file)
       expect(tool.state.output).not.toContain("No context found for instance")
+      expect(tool.state.metadata?.fileSearch).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_search.v1",
+          tool: "glob",
+          requested_pattern: "**/*.txt",
+          search_cwd: dir,
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+        }),
+      )
+      const events = readTraceEvents(traceDir)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "file.search" &&
+            event.data?.schema === "aialra.file_search.v1" &&
+            event.data?.tool === "glob" &&
+            event.data?.raw_ref?.schema === "aialra.tool_output_ref.v1",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.result.settled" &&
+            event.data?.schema === "aialra.tool_result_settlement.v1" &&
+            event.data?.tool === "glob" &&
+            event.data?.raw_output_ref?.schema === "aialra.tool_output_ref.v1",
+        ),
+      ).toBe(true)
       expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
     }),
   { git: true },
-  10_000,
+  30_000,
+)
+
+it.instance(
+  "grep tool records file search metadata during prompt runs",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-grep-file-search")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Grep context",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const file = path.join(dir, "needle.txt")
+      yield* writeText(file, "before\nneedle\nafter\n")
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "search text files" }],
+      })
+      yield* llm.tool("grep", { pattern: "needle", include: "*.txt", contextLines: 1 })
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(traceDir, prompt.loop({ sessionID: session.id }))
+      expect(result.info.role).toBe("assistant")
+
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const tool = msgs
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is CompletedToolPart =>
+            part.type === "tool" && part.tool === "grep" && part.state.status === "completed",
+        )
+      if (!tool) return
+
+      expect(tool.state.output).toContain(file)
+      expect(tool.state.output).toContain("Context 1: before")
+      expect(tool.state.output).toContain("Line 2: needle")
+      expect(tool.state.metadata?.fileSearch).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_search.v1",
+          tool: "grep",
+          requested_pattern: "needle",
+          search_cwd: dir,
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+          grep: expect.objectContaining({
+            include: "*.txt",
+            context_lines: 1,
+            returned_matches: 1,
+          }),
+        }),
+      )
+      const events = readTraceEvents(traceDir)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "file.search" &&
+            event.data?.schema === "aialra.file_search.v1" &&
+            event.data?.tool === "grep" &&
+            event.data?.raw_ref?.schema === "aialra.tool_output_ref.v1",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.result.settled" &&
+            event.data?.schema === "aialra.tool_result_settlement.v1" &&
+            event.data?.tool === "grep" &&
+            event.data?.raw_output_ref?.schema === "aialra.tool_output_ref.v1",
+        ),
+      ).toBe(true)
+      expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+    }),
+  { git: true },
+  30_000,
 )
 
 it.instance(
@@ -1393,7 +1595,7 @@ unix(
       })
 
       expect(result.info.role).toBe("assistant")
-      const tool = completedTool(result.parts)
+      const tool = completedTool(MessageV2.parts(result.info.id))
       if (!tool) return
 
       expect(tool.state.output).toContain("out")
@@ -1406,24 +1608,103 @@ unix(
 )
 
 unix(
+  "shell injects NetworkProxy environment variables when proxy is required",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const { prompt, run, chat } = yield* boot()
+      SessionSecurity.update({
+        sessionID: chat.id,
+        cwd: dir,
+        patch: {
+          networkPolicy: "on",
+          networkPermissions: {
+            proxyEnabled: true,
+            proxyURL: "http://proxy.local:8080",
+          },
+        },
+      })
+      const result = yield* prompt.shell({
+        sessionID: chat.id,
+        agent: "build",
+        command: "printf \"$HTTPS_PROXY\"",
+      })
+
+      expect(result.info.role).toBe("assistant")
+      const tool = completedTool(MessageV2.parts(result.info.id))
+      if (!tool) return
+
+      expect(tool.state.output).toContain("http://proxy.local:8080")
+      yield* run.assertNotBusy(chat.id)
+    }),
+  { git: true, config: cfg },
+)
+
+unix(
   "shell completes a fast command on the preferred shell",
   () =>
     Effect.gen(function* () {
       const { directory: dir } = yield* TestInstance
       const { prompt, run, chat } = yield* boot()
-      const result = yield* prompt.shell({
-        sessionID: chat.id,
-        agent: "build",
-        command: "pwd",
-      })
+      const traceDir = path.join(dir, "trace-shell-lifecycle")
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.shell({
+          sessionID: chat.id,
+          agent: "build",
+          command: "pwd",
+        }),
+      )
 
       expect(result.info.role).toBe("assistant")
-      const tool = completedTool(result.parts)
+      const tool = completedTool(MessageV2.parts(result.info.id))
       if (!tool) return
 
       expect(tool.state.input.command).toBe("pwd")
       expect(tool.state.output).toContain(dir)
       expect(tool.state.metadata.output).toContain(dir)
+      yield* waitForTracePhase(traceDir, "tool.lifecycle.completed")
+      yield* waitForTracePhase(traceDir, "exec_command.finished")
+      const events = readTraceEvents(traceDir)
+      const execStarted = events.find((event) => event.phase === "exec_command.started")
+      const execFinished = events.find((event) => event.phase === "exec_command.finished")
+      expect(execStarted?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.exec_command.v1",
+          cwd: dir,
+          command: "pwd",
+          environment_id: "default",
+          permission_profile_id: ":workspace",
+          turn_id: expect.stringContaining("msg_"),
+          process_id: expect.stringContaining("proc_exec_"),
+        }),
+      )
+      expect(events.some((event) => event.phase === "exec_command.output")).toBe(true)
+      expect(execFinished?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.exec_command.v1",
+          command: "pwd",
+          status: "completed",
+          exit_code: 0,
+        }),
+      )
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.lifecycle.requested" &&
+            event.data?.schema === "aialra.tool_lifecycle.v1" &&
+            event.data?.source === "shell_route",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.lifecycle.completed" &&
+            event.data?.schema === "aialra.tool_lifecycle.v1" &&
+            event.data?.source === "shell_route" &&
+            event.data?.status === "completed",
+        ),
+      ).toBe(true)
       yield* run.assertNotBusy(chat.id)
     }),
   { git: true, config: cfg },
@@ -1668,30 +1949,60 @@ unix(
   () =>
     withSh(() =>
       Effect.gen(function* () {
+        const { directory: dir } = yield* TestInstance
         const { prompt, run, chat } = yield* boot()
+        const traceDir = path.join(dir, "trace-shell-cancel")
 
-        const sh = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: "sleep 2" })
-          .pipe(Effect.forkChild)
-        yield* waitForBusy(chat.id)
-        yield* waitForRunningTool(chat.id)
+        const result = yield* withTurnTrace(
+          traceDir,
+          Effect.gen(function* () {
+            const sh = yield* prompt
+              .shell({ sessionID: chat.id, agent: "build", command: "sleep 2" })
+              .pipe(Effect.forkChild)
+            yield* waitForBusy(chat.id)
+            yield* waitForRunningTool(chat.id)
 
-        yield* prompt.cancel(chat.id)
+            yield* prompt.cancel(chat.id)
+            yield* prompt.cancel(chat.id)
 
-        const status = yield* SessionStatus.Service
-        expect((yield* status.get(chat.id)).type).toBe("idle")
-        const busy = yield* run.assertNotBusy(chat.id).pipe(Effect.exit)
-        expect(Exit.isSuccess(busy)).toBe(true)
+            const status = yield* SessionStatus.Service
+            expect((yield* status.get(chat.id)).type).toBe("idle")
+            const busy = yield* run.assertNotBusy(chat.id).pipe(Effect.exit)
+            expect(Exit.isSuccess(busy)).toBe(true)
 
-        const exit = yield* Fiber.await(sh)
-        expect(Exit.isSuccess(exit)).toBe(true)
-        if (Exit.isSuccess(exit)) {
-          expect(exit.value.info.role).toBe("assistant")
-          const tool = completedTool(exit.value.parts)
-          if (tool) {
-            expect(tool.state.output).toContain("Command aborted by OpenCode abort signal")
-          }
-        }
+            const exit = yield* Fiber.await(sh)
+            expect(Exit.isSuccess(exit)).toBe(true)
+            if (Exit.isFailure(exit)) return undefined
+            expect(exit.value.info.role).toBe("assistant")
+            return exit.value
+          }),
+        )
+        if (!result) return
+        const tool = completedTool(result.parts)
+        if (!tool) return
+
+        expect(tool.state.output).toContain("Command aborted by OpenCode abort signal")
+        expect(tool.state.metadata.abort?.aborted).toBe(true)
+        const events = readTraceEvents(traceDir)
+        const abortedEvents = events.filter(
+          (event) => event.phase === "tool.lifecycle.aborted" && event.data?.callID === tool.callID,
+        )
+        const completedEvents = events.filter(
+          (event) => event.phase === "tool.lifecycle.completed" && event.data?.callID === tool.callID,
+        )
+        expect(abortedEvents).toHaveLength(1)
+        expect(completedEvents).toHaveLength(0)
+        expect(
+          events.some(
+            (event) =>
+              event.phase === "tool.result.settled" &&
+              event.data?.schema === "aialra.tool_result_settlement.v1" &&
+              event.data?.toolCallID === tool.callID &&
+              event.data?.status === "aborted",
+          ),
+        ).toBe(true)
+        expect(tool.state.metadata.toolResult?.schema).toBe("aialra.tool_result_settlement.v1")
+        expect(tool.state.metadata.toolResult?.status).toBe("aborted")
       }),
     ),
   { git: true, config: cfg },
@@ -1753,39 +2064,79 @@ unix(
         title: "Interrupted bash truncation",
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
+      const traceDir = path.join(dir, "trace-bash-tool-cancel")
 
-      yield* prompt.prompt({
-        sessionID: chat.id,
-        agent: "build",
-        noReply: true,
-        parts: [{ type: "text", text: "run bash" }],
-      })
+      const result = yield* withTurnTrace(
+        traceDir,
+        Effect.gen(function* () {
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            noReply: true,
+            parts: [{ type: "text", text: "run bash" }],
+          })
 
-      yield* llm.tool("bash", {
-        command:
-          'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; sleep 2',
-        description: "Print many lines",
-        timeout: 30_000,
-        workdir: path.resolve(dir),
-      })
+          yield* llm.tool("bash", {
+            command:
+              'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; sleep 2',
+            description: "Print many lines",
+            timeout: 30_000,
+            workdir: path.resolve(dir),
+          })
 
-      const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* llm.wait(1)
-      yield* Effect.sleep(1000)
-      yield* prompt.cancel(chat.id)
+          const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+          yield* llm.wait(1)
+          yield* Effect.sleep(1000)
+          yield* prompt.cancel(chat.id)
 
-      const exit = yield* Fiber.await(run)
-      expect(Exit.isSuccess(exit)).toBe(true)
-      if (Exit.isFailure(exit)) return
+          const exit = yield* Fiber.await(run)
+          expect(Exit.isSuccess(exit)).toBe(true)
+          if (Exit.isFailure(exit)) return undefined
+          return exit.value
+        }),
+      )
+      if (!result) return
 
-      const tool = completedTool(exit.value.parts)
+      const tool = completedTool(result.parts)
       if (!tool) return
 
       expect(tool.state.metadata.truncated).toBe(true)
+      expect(tool.state.metadata.abort?.aborted).toBe(true)
       expect(typeof tool.state.metadata.outputPath).toBe("string")
       expect(tool.state.output).toMatch(/\.\.\.output truncated\.\.\./)
       expect(tool.state.output).toMatch(/Full output saved to:\s+\S+/)
       expect(tool.state.output).not.toContain("Tool execution aborted")
+      const events = readTraceEvents(traceDir)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.call.finished" &&
+            event.data?.callID === tool.callID &&
+            event.data?.status === "aborted",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.result.settled" &&
+            event.data?.schema === "aialra.tool_result_settlement.v1" &&
+            event.data?.toolCallID === tool.callID &&
+            event.data?.status === "aborted",
+        ),
+      ).toBe(true)
+      expect(tool.state.metadata.toolResult?.schema).toBe("aialra.tool_result_settlement.v1")
+      expect(tool.state.metadata.toolResult?.status).toBe("aborted")
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.lifecycle.aborted" &&
+            event.data?.callID === tool.callID &&
+            event.data?.status === "aborted",
+        ),
+      ).toBe(true)
+      expect(
+        events.some((event) => event.phase === "tool.lifecycle.completed" && event.data?.callID === tool.callID),
+      ).toBe(false)
     }),
   { git: true },
   30_000,
@@ -2664,8 +3015,38 @@ it.instance(
 
       expect(result.info.role).toBe("assistant")
       expect(fs.readFileSync(path.join(dir, "turn-created.txt"), "utf8")).toBe("ok")
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const tool = msgs
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted } =>
+            part.type === "tool" && part.tool === "write" && part.state.status === "completed",
+        )
+      expect(tool?.state.metadata?.fileWrite).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_write.v1",
+          status: "completed",
+          requested_path: "turn-created.txt",
+          resolved_path: path.join(dir, "turn-created.txt"),
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+          mutation: expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            operation: "create",
+            applied: true,
+          }),
+        }),
+      )
       yield* waitForTracePhase(traceDir, "turn.completed")
       const events = readTraceEvents(traceDir)
+      const fileWrite = events.find((event) => event.phase === "file.write")
+      expect(fileWrite?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_write.v1",
+          requested_path: "turn-created.txt",
+          resolved_path: path.join(dir, "turn-created.txt"),
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+        }),
+      )
       expect(
         events.some(
           (event) =>
@@ -2675,6 +3056,94 @@ it.instance(
         ),
       ).toBe(true)
       expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.foundation.executing" &&
+            event.data?.tool === "write" &&
+            event.data?.source === "opencode_registry",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.foundation.settled" &&
+            event.data?.tool === "write" &&
+            event.data?.status === "completed",
+        ),
+      ).toBe(true)
+      const lifecycleRequested = events.find(
+        (event) =>
+          event.phase === "tool.lifecycle.requested" &&
+          event.data?.schema === "aialra.tool_lifecycle.v1" &&
+          event.data?.tool === "write",
+      )
+      expect(lifecycleRequested).toBeTruthy()
+      expect(lifecycleRequested?.data?.cwd ?? lifecycleRequested?.data?.environment_cwd).toBeTruthy()
+      expect(lifecycleRequested?.data?.permission_profile).toBeTruthy()
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.lifecycle.completed" &&
+            event.data?.schema === "aialra.tool_lifecycle.v1" &&
+            event.data?.tool === "write" &&
+            event.data?.status === "completed",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "runtime.item.received" &&
+            event.data?.schema === "aialra.runtime_item.v1" &&
+            event.data?.kind === "tool_call_item" &&
+            event.data?.tool === "write",
+        ),
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "runtime.item.settled" &&
+            event.data?.schema === "aialra.runtime_item.v1" &&
+            event.data?.kind === "tool_result_item" &&
+            event.data?.tool === "write" &&
+            event.data?.status === "completed",
+        ),
+      ).toBe(true)
+      const outputStored = events.find(
+        (event) =>
+          event.phase === "tool.output.stored" &&
+          event.data?.schema === "aialra.tool_output_ref.v1" &&
+          event.data?.tool === "write",
+      )
+      expect(outputStored).toBeTruthy()
+      expect(typeof outputStored?.data?.path).toBe("string")
+      expect(fs.existsSync(String(outputStored?.data?.path))).toBe(true)
+      expect(fs.readFileSync(String(outputStored?.data?.path), "utf8").length).toBeGreaterThan(0)
+      expect(
+        events.some((event) => event.phase === "tool.output.stored" && event.data?.callID === outputStored?.data?.callID),
+      ).toBe(true)
+      const resultSettled = events.find(
+        (event) =>
+          event.phase === "tool.result.settled" &&
+          event.data?.schema === "aialra.tool_result_settlement.v1" &&
+          event.data?.tool === "write" &&
+          event.data?.status === "completed",
+      )
+      expect(resultSettled).toBeTruthy()
+      expect(resultSettled?.data?.toolCallID).toBe(outputStored?.data?.callID)
+      expect(resultSettled?.data?.rawOutputRef?.schema).toBe("aialra.tool_output_ref.v1")
+      expect(resultSettled?.data?.raw_output_ref?.schema).toBe("aialra.tool_output_ref.v1")
+      expect(resultSettled?.data?.environment_id).toBe("default")
+      expect(resultSettled?.data?.executor_type).toBe("local")
+      expect(resultSettled?.data?.completed_at).toBeTruthy()
+      expect(resultSettled?.data?.resultID).toBe(`tool_result_${String(outputStored?.data?.callID)}`)
+      expect(resultSettled?.data?.fileMutations).toEqual([
+        expect.objectContaining({
+          schema: "aialra.file_mutation.v1",
+          operation: "create",
+          applied: true,
+        }),
+      ])
 
       yield* sessions.remove(session.id)
     }),
@@ -2718,9 +3187,29 @@ it.instance(
               part.type === "tool" && part.tool === "write" && part.state.status === "error",
           )
         expect(tool?.state.error).toContain("Codex turn sandbox denied write access")
+        expect(tool?.state.metadata?.toolResult?.schema).toBe("aialra.tool_result_settlement.v1")
+        expect(tool?.state.metadata?.toolResult?.status).toBe("failed")
 
         const events = readTraceEvents(traceDir)
         expect(events.some((event) => event.phase === "tool.sandbox.denied")).toBe(true)
+        expect(
+          events.some(
+            (event) =>
+              event.phase === "tool.lifecycle.failed" &&
+              event.data?.schema === "aialra.tool_lifecycle.v1" &&
+              event.data?.tool === "write" &&
+              event.data?.status === "failed",
+          ),
+        ).toBe(true)
+        expect(
+          events.some(
+            (event) =>
+              event.phase === "tool.result.settled" &&
+              event.data?.schema === "aialra.tool_result_settlement.v1" &&
+              event.data?.toolCallID === tool?.callID &&
+              event.data?.status === "failed",
+          ),
+        ).toBe(true)
         expect(events.some((event) => event.phase === "turn.completed")).toBe(true)
       } finally {
         fs.rmSync(outside, { force: true })
@@ -2728,7 +3217,322 @@ it.instance(
       }
     }),
   { git: true },
-  10_000,
+  30_000,
+)
+
+it.instance(
+  "model edit tool records file mutation metadata and file.write event",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-edit-file")
+      fs.writeFileSync(path.join(dir, "edit-target.txt"), "old value\n", "utf8")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool edit file",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("edit", { filePath: "edit-target.txt", oldString: "old value", newString: "new value" })
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "edit file" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      expect(fs.readFileSync(path.join(dir, "edit-target.txt"), "utf8")).toBe("new value\n")
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const tool = msgs
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted } =>
+            part.type === "tool" && part.tool === "edit" && part.state.status === "completed",
+        )
+      expect(tool?.state.metadata?.fileWrite).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_write.v1",
+          tool: "edit",
+          requested_path: "edit-target.txt",
+          resolved_path: path.join(dir, "edit-target.txt"),
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+          edit_intent: expect.objectContaining({
+            old_snippet: "old value",
+            new_snippet: "new value",
+          }),
+          mutation: expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            tool: "edit",
+            operation: "overwrite",
+            applied: true,
+          }),
+        }),
+      )
+      const events = readTraceEvents(traceDir)
+      const fileWrite = events.find((event) => event.phase === "file.write")
+      expect(fileWrite?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_write.v1",
+          tool: "edit",
+          requested_path: "edit-target.txt",
+          resolved_path: path.join(dir, "edit-target.txt"),
+        }),
+      )
+      const resultSettled = events.find(
+        (event) =>
+          event.phase === "tool.result.settled" &&
+          event.data?.schema === "aialra.tool_result_settlement.v1" &&
+          event.data?.tool === "edit",
+      )
+      expect(resultSettled?.data?.fileMutations).toEqual([
+        expect.objectContaining({
+          schema: "aialra.file_mutation.v1",
+          tool: "edit",
+          operation: "overwrite",
+        }),
+      ])
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+  30_000,
+)
+
+it.instance(
+  "model apply_patch tool records per-file mutation metadata and file.write event",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-apply-patch-file")
+      fs.writeFileSync(path.join(dir, "patch-target.txt"), "old value\n", "utf8")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool apply patch file",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("apply_patch", {
+        patchText: [
+          "*** Begin Patch",
+          "*** Update File: patch-target.txt",
+          "@@",
+          "-old value",
+          "+new value",
+          "*** Add File: patch-created.txt",
+          "+created",
+          "*** End Patch",
+        ].join("\n"),
+      })
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          model: { providerID: ProviderID.make("test"), modelID: ModelID.make("gpt-5") },
+          parts: [{ type: "text", text: "apply a patch" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      expect(fs.readFileSync(path.join(dir, "patch-target.txt"), "utf8")).toBe("new value\n")
+      expect(fs.readFileSync(path.join(dir, "patch-created.txt"), "utf8")).toBe("created\n")
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const tool = msgs
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted } =>
+            part.type === "tool" && part.tool === "apply_patch" && part.state.status === "completed",
+        )
+      expect(tool?.state.metadata?.fileWrite).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_write.v1",
+          tool: "apply_patch",
+          requested_path: "apply_patch:2:files",
+          patch_intent: expect.objectContaining({
+            hunk_count: 2,
+            affected_files: expect.arrayContaining([
+              expect.objectContaining({ requested_path: "patch-target.txt", operation: "overwrite" }),
+              expect.objectContaining({ requested_path: "patch-created.txt", operation: "create" }),
+            ]),
+          }),
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+        }),
+      )
+      const events = readTraceEvents(traceDir)
+      const fileWrite = events.find((event) => event.phase === "file.write")
+      expect(fileWrite?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_write.v1",
+          tool: "apply_patch",
+          requested_path: "apply_patch:2:files",
+        }),
+      )
+      const resultSettled = events.find(
+        (event) =>
+          event.phase === "tool.result.settled" &&
+          event.data?.schema === "aialra.tool_result_settlement.v1" &&
+          event.data?.tool === "apply_patch",
+      )
+      expect(resultSettled?.data?.fileMutations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            tool: "apply_patch",
+            operation: "overwrite",
+          }),
+          expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            tool: "apply_patch",
+            operation: "create",
+          }),
+        ]),
+      )
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+  30_000,
+)
+
+it.instance(
+  "model read tool records environment scoped file.read event with raw ref",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-read-file")
+      fs.writeFileSync(path.join(dir, "README.md"), "hello from selected workspace\n", "utf8")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool read file",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("read", { filePath: "README.md" })
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "read README" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const tool = msgs
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted } =>
+            part.type === "tool" && part.tool === "read" && part.state.status === "completed",
+        )
+      expect(tool?.state.metadata?.fileRead).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_read.v1",
+          environment_id: "default",
+          requested_path: "README.md",
+          resolved_path: path.join(dir, "README.md"),
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+        }),
+      )
+      const events = readTraceEvents(traceDir)
+      const fileRead = events.find((event) => event.phase === "file.read")
+      expect(fileRead?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_read.v1",
+          environment_id: "default",
+          requested_path: "README.md",
+          resolved_path: path.join(dir, "README.md"),
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+        }),
+      )
+      expect(
+        events.some(
+          (event) =>
+            event.phase === "tool.result.settled" &&
+            event.data?.tool === "read" &&
+            event.data?.raw_output_ref?.schema === "aialra.tool_output_ref.v1",
+        ),
+      ).toBe(true)
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+  30_000,
+)
+
+it.instance(
+  "model read directory records directory.read event with raw ref",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const traceDir = path.join(dir, "trace-tool-read-directory")
+      fs.mkdirSync(path.join(dir, "src"), { recursive: true })
+      fs.writeFileSync(path.join(dir, "src", "index.ts"), "export const value = 1\n", "utf8")
+      fs.writeFileSync(path.join(dir, ".hidden"), "hidden\n", "utf8")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool read directory",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("read", { filePath: ".", showHidden: false, recursiveDepth: 1 })
+      yield* llm.text("done")
+
+      const result = yield* withTurnTrace(
+        traceDir,
+        prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "list current directory" }],
+        }),
+      )
+
+      expect(result.info.role).toBe("assistant")
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const tool = msgs
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted } =>
+            part.type === "tool" && part.tool === "read" && part.state.status === "completed",
+        )
+      expect(tool?.state.metadata?.directoryRead).toEqual(
+        expect.objectContaining({
+          schema: "aialra.directory_read.v1",
+          environment_id: "default",
+          requested_path: ".",
+          resolved_path: dir,
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+          listing: expect.objectContaining({
+            hidden_policy: "exclude",
+          }),
+        }),
+      )
+      expect(tool?.state.metadata?.directoryRead?.listing.hidden_count).toBeGreaterThanOrEqual(1)
+      const events = readTraceEvents(traceDir)
+      const directoryRead = events.find((event) => event.phase === "directory.read")
+      expect(directoryRead?.data).toEqual(
+        expect.objectContaining({
+          schema: "aialra.directory_read.v1",
+          environment_id: "default",
+          requested_path: ".",
+          resolved_path: dir,
+          raw_ref: expect.objectContaining({ schema: "aialra.tool_output_ref.v1" }),
+        }),
+      )
+
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+  30_000,
 )
 
 // Special characters in filenames

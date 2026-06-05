@@ -1266,3 +1266,55 @@ CodexApp 现场热修记录：`aialra-codexapp-login.service` 曾处于 inactive
 - Codex 的 stop/abort 来源在 CLI/TUI 内部链路更集中，AIALRA 现在补了来源审计，但 server restart、client disconnect、unknown 仍需要更多真实场景采样
 - Codex 的 stop gate 更像模型策略和验证习惯共同收敛，AIALRA 目前是工程门禁规则加验证事件，覆盖面已扩展但仍需要继续对照 Codex 源码逐项收敛
 - 对网页设计、图形设计、交互任务，AIALRA 不能只靠 test 命令。下一步要把 evidence gate 扩展为 screenshot、Playwright trace、视觉 diff、部署健康检查和用户验收 checklist
+
+## 2026-06-05 追加记录：95 项完成后的 regression-6 复验
+
+本轮先完成 95 项协议兼并计划的最后一项 REQ-095，也就是 turn-scoped skills，每轮技能目录。现在每个 turn 会记录可用技能、被禁用技能、技能需要的工具、MCP resource，MCP 资源、外部资源、命令和权限要求。技能真正被使用时，`skill.used` 会记录 skill id、版本、来源、是否注入 prompt、使用次数和相关命令/资源，Turn Inspector 也有中文摘要。
+
+验证已跑：
+
+```text
+packages/opencode: turn-context + skill tests 12 pass
+packages/app: turn inspector tests 3 pass
+packages/opencode: prompt + turn-context + skill regression 85 pass
+turn-observability node tests 7 pass
+opencode typecheck pass
+app typecheck pass
+app build pass
+opencode build --single pass
+git diff --check pass
+```
+
+然后按硬门槛执行 post-95 `tier-regression-6`，只跑 AIALRA OpenCode / DeepSeek V4 Pro max，没有跑 full-24：
+
+```text
+runID: 20260605011832
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260605011832.md
+completed: 6/6
+non-empty patch: 5/6
+verified pass: 4/6
+zero patch: 1/6
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+patch quality average: 72
+```
+
+人话结论：
+
+```text
+没有资格跑 full-24
+因为 verified pass 仍然是 4/6，没有提升
+并且 zero patch 从之前的 0/6 变成 1/6，反而变差
+好消息是 6/6 都结束了，没有超时，没有审批卡住，每轮都有终态
+坏消息是 scikit-learn__scikit-learn-13241 仍然会空转到零补丁，zero patch recovery 还不够强
+```
+
+部署记录：
+
+```text
+build version: 0.0.0-dev-202606050150
+services: aialra-opencode-web.service active, aialra-opencode-login.service active, aialra-codex-exec-server.service active
+deployment smoke: 11/11 login/proxy tests pass, CLI attach/run help checks pass
+script fix: e2e-smoke.sh no longer requires rg; it falls back to grep when ripgrep is absent
+```

@@ -4,6 +4,7 @@
 // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
 
 import * as path from "path"
+import crypto from "crypto"
 import { Effect, Schema, Semaphore } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
@@ -20,6 +21,8 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { TurnSandbox } from "./turn-sandbox"
 import * as Bom from "@/util/bom"
 import { CodexFs } from "./codex-fs"
+import { CodexTurn } from "@/session/turn-context"
+import type { FileMutation, FileWriteMetadata, FileWriteState } from "@/session/file-write-protocol"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -32,6 +35,40 @@ function detectLineEnding(text: string): "\n" | "\r\n" {
 function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
   if (ending === "\n") return text
   return text.replaceAll("\n", "\r\n")
+}
+
+function sha256(bytes: Uint8Array) {
+  return crypto.createHash("sha256").update(bytes).digest("hex")
+}
+
+function state(input: { exists: boolean; bytes?: Uint8Array<ArrayBufferLike>; bom?: boolean }): FileWriteState {
+  if (!input.exists) return { exists: false }
+  const bytes = input.bytes ?? new Uint8Array()
+  return {
+    exists: true,
+    size: bytes.length,
+    sha256: sha256(bytes),
+    bom: input.bom,
+  }
+}
+
+function changedChars(oldText: string, newText: string) {
+  return {
+    chars_added: Math.max(0, newText.length - oldText.length),
+    chars_removed: Math.max(0, oldText.length - newText.length),
+  }
+}
+
+function changedRange(oldText: string, newText: string) {
+  let start = 0
+  while (start < oldText.length && start < newText.length && oldText[start] === newText[start]) start++
+  let oldEnd = oldText.length
+  let newEnd = newText.length
+  while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === newText[newEnd - 1]) {
+    oldEnd--
+    newEnd--
+  }
+  return { start, end: oldEnd }
 }
 
 const locks = new Map<string, Semaphore.Semaphore>()
@@ -86,13 +123,20 @@ export const EditTool = Tool.define(
           let diff = ""
           let contentOld = ""
           let contentNew = ""
+          let existedBefore = false
+          let beforeBytes: Uint8Array<ArrayBufferLike> = new Uint8Array()
+          let sourceBom = false
+          let desiredBom = false
           yield* lock(filePath).withPermits(1)(
             Effect.gen(function* () {
               if (params.oldString === "") {
                 const existed = yield* CodexFs.existsSafe(ctx, afs, filePath)
+                existedBefore = existed
+                beforeBytes = existed ? yield* CodexFs.readFile(ctx, afs, filePath) : new Uint8Array()
                 const source = existed ? yield* CodexFs.readBomFile(ctx, afs, filePath) : { bom: false, text: "" }
                 const next = Bom.split(params.newString)
-                const desiredBom = source.bom || next.bom
+                sourceBom = source.bom
+                desiredBom = source.bom || next.bom
                 contentOld = source.text
                 contentNew = next.text
                 diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
@@ -120,7 +164,10 @@ export const EditTool = Tool.define(
               const info = yield* CodexFs.stat(ctx, afs, filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (!info) throw new Error(`File ${filePath} not found`)
               if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
+              existedBefore = true
+              beforeBytes = yield* CodexFs.readFile(ctx, afs, filePath)
               const source = yield* CodexFs.readBomFile(ctx, afs, filePath)
+              sourceBom = source.bom
               contentOld = source.text
 
               const ending = detectLineEnding(contentOld)
@@ -128,7 +175,7 @@ export const EditTool = Tool.define(
               const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
 
               const next = Bom.split(replace(contentOld, old, replacement, params.replaceAll))
-              const desiredBom = source.bom || next.bom
+              desiredBom = source.bom || next.bom
               contentNew = next.text
 
               diff = trimDiff(
@@ -181,12 +228,71 @@ export const EditTool = Tool.define(
             additions,
             deletions,
           }
+          const afterBytes = yield* CodexFs.readFile(ctx, afs, filePath)
+          const before = state({ exists: existedBefore, bytes: beforeBytes, bom: sourceBom })
+          const after = state({ exists: true, bytes: afterBytes, bom: desiredBom })
+          const environment = ctx.turn?.environments.find((item) => item.environmentID === ctx.turn?.selected_environment_id)
+          const mutation: FileMutation = {
+            schema: "aialra.file_mutation.v1",
+            mutation_id: `file_mutation_${ctx.callID || Date.now().toString(36)}`,
+            tool: "edit",
+            operation: existedBefore ? "overwrite" : "create",
+            applied: true,
+            requested_path: params.filePath,
+            resolved_path: filePath,
+            environment_id: ctx.turn?.selected_environment_id ?? "legacy",
+            before,
+            after,
+            diff: {
+              ...changedChars(contentOld, contentNew),
+              patch_chars: diff.length,
+            },
+          }
+          const fileWrite: FileWriteMetadata = {
+            schema: "aialra.file_write.v1",
+            tool: "edit",
+            status: "completed",
+            session_id: String(ctx.sessionID),
+            turn_id: ctx.turn?.turnID ? String(ctx.turn.turnID) : undefined,
+            message_id: String(ctx.messageID),
+            call_id: ctx.callID,
+            environment_id: ctx.turn?.selected_environment_id ?? "legacy",
+            environment_cwd: environment?.cwd ?? (ctx.turn ? CodexTurn.environmentCwd(ctx.turn) : instance.directory),
+            requested_path: params.filePath,
+            resolved_path: filePath,
+            policy: {
+              overwrite: "allow",
+              dry_run: false,
+              encoding: "utf-8",
+              preserves_bom: desiredBom,
+              atomic: false,
+              atomic_reason: "codex_fs_rename_api_unavailable",
+            },
+            permission_decision: {
+              status: "allowed",
+              source: "turn_context",
+              active_permission_profile: ctx.turn?.active_permission_profile,
+              sandbox_policy: ctx.turn?.sandbox_policy,
+              approval_policy: ctx.turn?.approval_policy,
+            },
+            before,
+            after,
+            edit_intent: {
+              old_snippet: params.oldString,
+              new_snippet: params.newString,
+              replace_all: params.replaceAll === true,
+              applied_range: changedRange(contentOld, contentNew),
+            },
+            mutation,
+          }
 
           yield* ctx.metadata({
             metadata: {
               diff,
               filediff,
               diagnostics: {},
+              fileWrite,
+              fileMutations: [mutation],
             },
           })
 
@@ -202,6 +308,8 @@ export const EditTool = Tool.define(
               diagnostics,
               diff,
               filediff,
+              fileWrite,
+              fileMutations: [mutation],
             },
             title: `${path.relative(instance.worktree, filePath)}`,
             output,

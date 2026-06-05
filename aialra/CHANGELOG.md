@@ -1,5 +1,28 @@
 # AIALRA changelog
 
+## 2026-06-05
+
+- Completed the full 95-item protocol-parity execution pass through REQ-095.
+  The last item made turn-scoped skill catalogs explicit: each turn now records
+  available and disabled skills, tool/resource/command requirements, prompt
+  injection state, and richer `skill.used` metadata for Turn Inspector.
+- Re-ran the hard V3 benchmark gate after the 95-item pass, run
+  `20260605011832`, using only AIALRA OpenCode with DeepSeek V4 Pro max on
+  `tier-regression-6`. Result: 6/6 completed, 5/6 non-empty patches, 4/6
+  official verified passes, 1/6 zero patch, 0 timeouts, 0 approval stalls, 6/6
+  turn terminal events, and patch quality average 72. Report:
+  `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260605011832.md`.
+- Kept `full-24` blocked. The previous accepted V3 gate was already 4/6
+  verified with 0/6 zero patch, so this recheck did not prove improvement. The
+  run did prove that completion, approval, timeout, and terminal reliability
+  stayed clean, but `scikit-learn__scikit-learn-13241` still produced a zero
+  patch and must remain the next engineering defect target.
+- Deployed version `0.0.0-dev-202606050150` to `opencode.aialra.online`.
+  `aialra-opencode-web.service`, `aialra-opencode-login.service`, and
+  `aialra-codex-exec-server.service` are active. Deployment smoke passed 11/11
+  login/proxy tests plus CLI attach/run help checks. The smoke script no longer
+  requires `rg`; it falls back to `grep` on hosts where ripgrep is absent.
+
 ## 2026-06-01
 
 - Investigated session `ses_17eb92136ffeJOvXUXmSZW5yF0` for the Chesskit

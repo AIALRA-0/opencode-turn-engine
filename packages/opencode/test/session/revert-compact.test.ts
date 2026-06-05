@@ -12,6 +12,8 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { PublicEventLog } from "../../src/session/public-event"
+import { TurnHistory } from "../../src/session/turn-history"
 
 void Log.init({ print: false })
 
@@ -97,6 +99,49 @@ const tokens = {
 }
 
 describe("revert + compact workflow", () => {
+  it.live(
+    "records thread rollback events and persistent history",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          PublicEventLog.clearForTest()
+          TurnHistory.clearForTest()
+          process.env.AIALRA_TURN_HISTORY_DIR = path.join(dir, "turn-history")
+          const session = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+
+          const info = yield* session.create({})
+          const firstUser = yield* user(info.id)
+          yield* text(info.id, firstUser.id, "first")
+          const secondUser = yield* user(info.id)
+          yield* text(info.id, secondUser.id, "second")
+
+          const reverted = yield* revert.revert({ sessionID: info.id, messageID: secondUser.id })
+          const events = PublicEventLog.list({ sessionID: info.id })
+          const history = TurnHistory.list({ sessionID: info.id, turnID: secondUser.id })
+
+          expect(reverted.revert?.messageID).toBe(secondUser.id)
+          expect(events.map((event) => event.type)).toEqual(
+            expect.arrayContaining(["thread.rollback.requested", "thread.rollback.applied"]),
+          )
+          expect(history.map((record) => record.type)).toEqual(
+            expect.arrayContaining(["turn.context.item", "turn.context.item"]),
+          )
+          expect(history.map((record) => record.data.phase)).toEqual(
+            expect.arrayContaining(["thread.rollback.requested", "thread.rollback.applied"]),
+          )
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              delete process.env.AIALRA_TURN_HISTORY_DIR
+              TurnHistory.clearForTest()
+              PublicEventLog.clearForTest()
+            }),
+          ),
+        ),
+    ),
+  )
+
   it.live(
     "should properly handle compact command after revert",
     provideTmpdirInstance(

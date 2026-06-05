@@ -87,9 +87,7 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     setStore("responding", perm.id)
     if (decision === "turn-command") permission.enableTurnCommand(perm)
     if (decision === "turn-all") permission.enableTurnAll(perm)
-    if (decision === "always-all") permission.enableAutoAccept(perm.sessionID, sdk.directory)
-    const response: "once" | "always" | "reject" =
-      decision === "reject" ? "reject" : decision === "always-command" ? "always" : ("once" as const)
+    const response: "once" | "always" | "reject" = decision === "reject" ? "reject" : "once"
     sdk.client.permission
       .respond({ sessionID: perm.sessionID, permissionID: perm.id, response, scope: decision } as Parameters<
         typeof sdk.client.permission.respond

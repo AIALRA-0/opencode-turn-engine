@@ -10,18 +10,21 @@
       "status": "no_improvement",
       "verifiedPassImproved": false,
       "zeroPatchDecreased": false,
-      "report": "aialra/turn-observability/real-benchmark-reports/real-benchmark-20260601030607.md",
-      "runID": "20260601030607",
+      "report": "aialra/turn-observability/real-benchmark-reports/real-benchmark-20260605011832.md",
+      "runID": "20260605011832",
       "target": "aialra-deepseek-v4-pro-max",
       "verifiedPass": "4/6",
-      "zeroPatch": "0/6",
+      "completed": "6/6",
+      "nonEmptyPatch": "5/6",
+      "zeroPatch": "1/6",
       "timeout": 0,
       "waitingApproval": 0,
-      "patchQualityAverage": 78,
+      "turnTerminal": "6/6",
+      "patchQualityAverage": 72,
       "baselineVerifiedPass": "4/6",
       "baselineZeroPatch": "0/6",
-      "baselinePatchQualityAverage": 77,
-      "decision": "full-24 remains blocked because verified pass did not improve and zero patch did not decrease"
+      "baselinePatchQualityAverage": 78,
+      "decision": "full-24 remains blocked because verified pass stayed 4/6 and zero patch worsened from 0/6 to 1/6; completion and terminal reliability stayed clean"
     }
   },
   "targets": [

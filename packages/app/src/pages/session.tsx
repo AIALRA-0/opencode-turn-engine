@@ -37,8 +37,10 @@ import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/
 import { useServerSync } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
+import { usePlatform } from "@/context/platform"
 import { usePrompt } from "@/context/prompt"
 import { useSDK } from "@/context/sdk"
+import { useServer } from "@/context/server"
 import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
@@ -57,6 +59,21 @@ import { useSessionLayout } from "@/pages/session/session-layout"
 import { syncSessionModel } from "@/pages/session/session-model-helpers"
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
+import {
+  authHeadersFromServer,
+  mergeSessionReactivityActions,
+  parseSsePublicEvents,
+  publicEventCursorKey,
+  sessionReactivityAction,
+} from "@/pages/session/session-reactivity"
+import {
+  shouldInvalidateVcsForFileWatcher,
+  summarizeVcsInvalidation,
+  vcsInvalidationReasonsForPublicEvents,
+  vcsQueryBaseKey,
+  vcsQueryKey,
+  type VcsInvalidationReason,
+} from "@/pages/session/session-vcs-cache"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { shouldUseV2NewSessionPage } from "@/pages/session/new-session-layout"
@@ -190,6 +207,8 @@ export default function Page() {
   const dialog = useDialog()
   const language = useLanguage()
   const sdk = useSDK()
+  const server = useServer()
+  const platform = usePlatform()
   const settings = useSettings()
   const prompt = usePrompt()
   const comments = useComments()
@@ -465,14 +484,26 @@ export default function Page() {
     if (store.changes === "git" || store.changes === "branch") return store.changes
   })
   const vcsKey = createMemo(
-    () => ["session-vcs", sdk.directory, sync.data.vcs?.branch ?? "", sync.data.vcs?.default_branch ?? ""] as const,
+    () =>
+      vcsQueryBaseKey({
+        directory: sdk.directory,
+        branch: sync.data.vcs?.branch,
+        defaultBranch: sync.data.vcs?.default_branch,
+      }),
   )
   const vcsQuery = createQuery(() => {
     const mode = vcsMode()
     const enabled = wantsReview() && sync.project?.vcs === "git"
 
     return {
-      queryKey: [...vcsKey(), mode] as const,
+      queryKey: mode
+        ? vcsQueryKey({
+            directory: sdk.directory,
+            branch: sync.data.vcs?.branch,
+            defaultBranch: sync.data.vcs?.default_branch,
+            mode,
+          })
+        : [...vcsKey(), "none"],
       enabled,
       staleTime: Number.POSITIVE_INFINITY,
       gcTime: 60 * 1000,
@@ -488,7 +519,87 @@ export default function Page() {
         : skipToken,
     }
   })
-  const refreshVcs = debounce(() => void queryClient.invalidateQueries({ queryKey: vcsKey() }), 100)
+  const refreshVcs = debounce((reasons?: VcsInvalidationReason[]) => {
+    console.debug("[session-vcs-cache] invalidating review diff cache", {
+      directory: sdk.directory,
+      reason: summarizeVcsInvalidation(reasons ?? ["manual"]),
+      reasons: reasons ?? ["manual"],
+    })
+    void queryClient.invalidateQueries({ queryKey: vcsKey() })
+  }, 100)
+  const refreshReactiveMessages = debounce((id: string) => void sync.session.sync(id, { force: true }), 120)
+  const refreshReactiveDiff = debounce((id: string) => {
+    if (!wantsReview()) return
+    void sync.session.diff(id, { force: true })
+  }, 120)
+  const refreshReactiveTodo = debounce((id: string) => void sync.session.todo(id, { force: true }), 180)
+
+  createEffect(() => {
+    const id = params.id
+    if (!id) return
+
+    const abort = new AbortController()
+    let stopped = false
+    let lastID = window.sessionStorage.getItem(publicEventCursorKey(id, "reactivity")) ?? undefined
+
+    const applyPublicEventActions = (events: ReturnType<typeof parseSsePublicEvents>) => {
+      const action = mergeSessionReactivityActions(
+        events.filter((event) => !event.sessionID || event.sessionID === id).map(sessionReactivityAction),
+      )
+      const vcsReasons = vcsInvalidationReasonsForPublicEvents(events)
+      if (action.refreshMessages || action.refreshStatus) refreshReactiveMessages(id)
+      if (action.refreshDiff) refreshReactiveDiff(id)
+      if (action.refreshVcs) refreshVcs(vcsReasons)
+      if (action.refreshTodos) refreshReactiveTodo(id)
+    }
+
+    const connect = async () => {
+      while (!stopped && !abort.signal.aborted) {
+        try {
+          const url = new URL(`/session/${id}/events/public`, sdk.url)
+          url.searchParams.set("directory", sdk.directory)
+          if (lastID) url.searchParams.set("lastEventID", lastID)
+          const headers: Record<string, string> = {
+            Accept: "text/event-stream",
+            ...authHeadersFromServer(server.current),
+          }
+          if (lastID) headers["Last-Event-ID"] = lastID
+          const response = await (platform.fetch ?? fetch)(url, { signal: abort.signal, headers })
+          if (!response.ok || !response.body) throw new Error(`公共事件流连接失败：HTTP ${response.status}`)
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ""
+          while (!stopped && !abort.signal.aborted) {
+            const result = await reader.read()
+            if (result.done) break
+            buffer += decoder.decode(result.value, { stream: true })
+            const cut = buffer.lastIndexOf("\n\n")
+            if (cut === -1) continue
+            const ready = buffer.slice(0, cut + 2)
+            buffer = buffer.slice(cut + 2)
+            const events = parseSsePublicEvents(ready)
+            for (const event of events) {
+              if (!event.id) continue
+              lastID = event.id
+              window.sessionStorage.setItem(publicEventCursorKey(id, "reactivity"), event.id)
+            }
+            applyPublicEventActions(events)
+          }
+        } catch (error) {
+          if (abort.signal.aborted || stopped) return
+          console.debug("[session-reactivity] public event stream reconnecting", error)
+          await new Promise((resolve) => setTimeout(resolve, 800))
+        }
+      }
+    }
+
+    void connect()
+    onCleanup(() => {
+      stopped = true
+      abort.abort()
+    })
+  })
+
   const reviewDiffs = () => {
     if (store.changes === "git" || store.changes === "branch")
       // avoids suspense
@@ -728,8 +839,8 @@ export default function Page() {
         ? (evt.details.properties as Record<string, unknown>)
         : undefined
     const file = typeof props?.file === "string" ? props.file : undefined
-    if (!file || file.startsWith(".git/")) return
-    refreshVcs()
+    if (!shouldInvalidateVcsForFileWatcher(file)) return
+    refreshVcs(["file_watcher"])
   })
   onCleanup(stopVcs)
 

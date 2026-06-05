@@ -150,6 +150,91 @@ describe("tool.grep", () => {
         ctx,
       )
       expect(result.metadata.matches).toBeGreaterThan(0)
+      expect(result.metadata.fileSearch).toEqual(
+        expect.objectContaining({
+          schema: "aialra.file_search.v1",
+          tool: "grep",
+          requested_pattern: "line",
+          search_cwd: test.directory,
+          backend: expect.objectContaining({
+            name: "ripgrep_search",
+            fallback_reason: expect.stringContaining("Codex exec-server has no fs/grep API"),
+          }),
+          counts: expect.objectContaining({
+            returned: 3,
+            matched_files: 1,
+          }),
+          grep: expect.objectContaining({
+            total_matches: 3,
+            returned_matches: 3,
+            context_lines: 0,
+          }),
+          results: [
+            expect.objectContaining({
+              path: path.join(test.directory, "test.txt"),
+              relative_path: "test.txt",
+            }),
+          ],
+        }),
+      )
+    }),
+  )
+
+  it.instance("honors max matches, context lines, hidden files, and ignore filters", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "a.ts"), "before\nneedle-one\nafter\n"))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "b.ts"), "needle-two\n"))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, ".hidden.ts"), "needle-hidden\n"))
+      yield* Effect.promise(() => fs.mkdir(path.join(test.directory, ".git")))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, ".git", "config.ts"), "needle-protected\n"))
+
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute(
+        {
+          pattern: "needle",
+          path: test.directory,
+          include: "*.ts",
+          maxMatches: 1,
+          contextLines: 1,
+          showHidden: false,
+          ignore: ["b.ts"],
+        },
+        ctx,
+      )
+
+      expect(result.output).toContain(path.join(test.directory, "a.ts"))
+      expect(result.output).toContain("Context 1: before")
+      expect(result.output).toContain("Line 2: needle-one")
+      expect(result.output).not.toContain("needle-two")
+      expect(result.output).not.toContain("needle-hidden")
+      expect(result.output).not.toContain("needle-protected")
+      expect(result.metadata.fileSearch).toEqual(
+        expect.objectContaining({
+          tool: "grep",
+          filters: expect.objectContaining({
+            show_hidden: false,
+            ignore: ["b.ts"],
+            protected_policy: "hide",
+          }),
+          counts: expect.objectContaining({
+            returned: 1,
+            matched_files: 1,
+          }),
+          grep: expect.objectContaining({
+            include: "*.ts",
+            context_lines: 1,
+            returned_matches: 1,
+          }),
+          truncation: expect.objectContaining({ truncated: false }),
+          results: [
+            expect.objectContaining({
+              relative_path: "a.ts",
+            }),
+          ],
+        }),
+      )
     }),
   )
 

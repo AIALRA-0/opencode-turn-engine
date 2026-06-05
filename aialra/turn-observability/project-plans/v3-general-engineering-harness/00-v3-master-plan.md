@@ -169,6 +169,42 @@ Result:
 full-24 remains blocked because verified pass did not improve and zero patch did not decrease
 ```
 
+## 2026-06-05 Post-95 Recheck
+
+After the 95-item protocol-parity work was completed, the hard gate was checked
+again before any benchmark started. The status file still had 16/16 targets at
+`完全完成`, so `tier-regression-6` was allowed.
+
+```text
+runID: 20260605011832
+target: AIALRA DeepSeek V4 Pro max
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260605011832.md
+completed: 6/6
+non-empty patch: 5/6
+verified pass: 4/6
+zero patch: 1/6
+patch quality average: 72
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+```
+
+Compared with the previous accepted V3 gate:
+
+```text
+previous verified pass: 4/6
+previous zero patch: 0/6
+previous patch quality average: 78
+```
+
+Result:
+
+```text
+full-24 remains blocked.
+Reason: verified pass did not improve, and zero patch worsened from 0/6 to 1/6.
+What did hold: all 6 turns completed, no run timed out, no approval got stuck, and every turn had a terminal event.
+```
+
 ## Documentation Requirements
 
 Every stage must update, as relevant:

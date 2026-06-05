@@ -23,6 +23,9 @@ export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "permiss
           reply: ctx.payload.reply,
           message: ctx.payload.message,
           scope: ctx.payload.scope,
+          reviewed_by: ctx.payload.reviewed_by,
+          review_reason: ctx.payload.review_reason,
+          overridden_by_constraints: ctx.payload.overridden_by_constraints,
         })
         .pipe(
           Effect.catchTag("Permission.NotFoundError", (error) =>

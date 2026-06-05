@@ -16,6 +16,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@/shell/shell"
 import { ShellID } from "./shell/id"
 import { SessionSecurity } from "@/session/security"
+import { CodexTurn } from "@/session/turn-context"
 
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
@@ -28,6 +29,9 @@ import { CodexExecServer } from "./codex-exec-server"
 import { AialraTurnTrace } from "@/session/turn-trace"
 import { EngineeringHarness } from "@/session/engineering"
 import { AbortAudit } from "@/session/abort-audit"
+import { ExecCommand, type ExecCommandBackend } from "@/session/exec-command"
+import { ExecApproval } from "@/session/exec-approval"
+import { ExecProcessRegistry, type ExecProcessRuntime, type ExecProcessStatus } from "@/session/exec-process-registry"
 
 export { Parameters } from "./shell/prompt"
 
@@ -273,8 +277,67 @@ function commandLooksNetworked(command: string) {
   return /\b(curl|wget|ping|dig|nslookup|npm\s+install|pnpm\s+install|yarn\s+(add|install)|bun\s+(add|install)|git\s+clone|ssh|scp|rsync|pip\s+install|uv\s+(pip\s+)?install)\b/i.test(command)
 }
 
+function commandNetworkTargets(command: string) {
+  const urls = Array.from(command.matchAll(/\bhttps?:\/\/[^\s'"`<>]+/gi))
+    .map((match) => match[0].replace(/[),.;]+$/, ""))
+    .filter((item, index, items) => items.indexOf(item) === index)
+  const hosts = Array.from(
+    command.matchAll(/\b(?:curl|wget|ping|dig|nslookup|ssh|scp|rsync)\s+(?:-[^\s]+\s+)*(?:[a-z0-9._%+-]+@)?([a-z0-9._-]+\.[a-z0-9._-]+|localhost|\d{1,3}(?:\.\d{1,3}){3})/gi),
+  )
+    .map((match) => `https://${match[1].replace(/[:/].*$/, "")}`)
+    .filter((item, index, items) => items.indexOf(item) === index)
+  return [...urls, ...hosts].filter((item) => {
+    try {
+      new URL(item)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
+function envPatternMatches(name: string, pattern: string) {
+  const key = name.toUpperCase()
+  const item = pattern.toUpperCase()
+  if (!item.includes("*")) return key === item
+  const start = item.startsWith("*") ? "" : item.slice(0, item.indexOf("*"))
+  const end = item.endsWith("*") ? "" : item.slice(item.lastIndexOf("*") + 1)
+  return key.startsWith(start) && key.endsWith(end)
+}
+
+function envMatches(name: string, patterns: string[]) {
+  return patterns.some((pattern) => envPatternMatches(name, pattern))
+}
+
+function safeDefaultEnv(cwd: string, source: NodeJS.ProcessEnv) {
+  return {
+    PATH: source.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    HOME: source.HOME ?? os.homedir(),
+    PWD: cwd,
+    TMPDIR: source.TMPDIR ?? os.tmpdir(),
+    LANG: source.LANG ?? "C.UTF-8",
+    TERM: source.TERM ?? "xterm-256color",
+  } satisfies NodeJS.ProcessEnv
+}
+
+function environmentID(ctx: Tool.Context) {
+  return ctx.turn?.selected_environment_id ?? "default"
+}
+
 function activeTurn(ctx: Tool.Context) {
   return ctx.turn ? SessionSecurity.applyToTurn(ctx.turn) : undefined
+}
+
+function redactedProxyURL(url: string | undefined) {
+  if (!url) return undefined
+  try {
+    const parsed = new URL(url)
+    if (parsed.username) parsed.username = "redacted"
+    if (parsed.password) parsed.password = "redacted"
+    return parsed.toString()
+  } catch {
+    return "redacted-invalid-proxy-url"
+  }
 }
 
 const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, options?: { skipShellPatterns?: boolean }) {
@@ -443,10 +506,94 @@ export const ShellTool = Tool.define(
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
         { env: {} },
       )
-      return {
+      const turn = activeTurn(ctx)
+      if (!turn) {
+        return {
+          ...process.env,
+          ...extra.env,
+        }
+      }
+
+      const policy = turn.shell_environment_policy
+      const source: NodeJS.ProcessEnv = {
         ...process.env,
         ...extra.env,
       }
+      const env: NodeJS.ProcessEnv = policy.mode === "inherit" ? { ...source } : {}
+      const inheritedKeys: string[] = []
+      const removedKeys: string[] = []
+
+      if (policy.mode === "clear") {
+        for (const key of Object.keys(source)) {
+          if (!envMatches(key, policy.allowlist)) continue
+          env[key] = source[key]
+          inheritedKeys.push(key)
+        }
+      }
+
+      if (policy.safe_defaults) {
+        Object.assign(env, safeDefaultEnv(cwd, source))
+      }
+
+      Object.assign(env, policy.per_environment[environmentID(ctx)] ?? {})
+      Object.assign(env, policy.overrides)
+
+      for (const key of Object.keys(env)) {
+        if (!envMatches(key, policy.denylist)) continue
+        if (envMatches(key, policy.allowlist)) continue
+        if (Object.prototype.hasOwnProperty.call(policy.overrides, key)) continue
+        delete env[key]
+        removedKeys.push(key)
+      }
+
+      const proxy = turn.network_proxy ?? CodexTurn.networkProxy({
+        networkPermissions: turn.network_permissions,
+        selectedEnvironmentID: turn.selected_environment_id,
+      })
+      const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+      const proxyRemovedKeys = proxyKeys.filter((key) => env[key] !== undefined)
+      for (const key of proxyKeys) delete env[key]
+      if (proxy.enforcement === "environment" && proxy.url) {
+        env.HTTP_PROXY = proxy.url
+        env.HTTPS_PROXY = proxy.url
+        env.ALL_PROXY = proxy.url
+        env.http_proxy = proxy.url
+        env.https_proxy = proxy.url
+        env.all_proxy = proxy.url
+        if (proxy.no_proxy.length) {
+          env.NO_PROXY = proxy.no_proxy.join(",")
+          env.no_proxy = proxy.no_proxy.join(",")
+        }
+      }
+
+      const redactedKeys = Object.keys(env).filter((key) => envMatches(key, policy.redact))
+      yield* AialraTurnTrace.emit({
+        phase: "shell.env.policy.applied",
+        turnID: turn.turnID,
+        sessionID: turn.sessionID,
+        messageID: ctx.messageID,
+        data: {
+          tool: "bash",
+          cwd,
+          environmentID: environmentID(ctx),
+          mode: policy.mode,
+          safeDefaults: policy.safe_defaults,
+          inheritedKeys: inheritedKeys.sort(),
+          removedKeys: removedKeys.sort(),
+          overrideKeys: Object.keys(policy.overrides).sort(),
+          perEnvironmentKeys: Object.keys(policy.per_environment[environmentID(ctx)] ?? {}).sort(),
+          redactedKeys: redactedKeys.sort(),
+          networkProxy: {
+            ...proxy,
+            url: redactedProxyURL(proxy.url),
+          },
+          proxyEnvKeys: proxy.enforcement === "environment" && proxy.url ? proxyKeys.sort() : [],
+          proxyRemovedKeys: proxyRemovedKeys.sort(),
+          outputKeys: Object.keys(env).sort(),
+          policyVersion: policy.version,
+        },
+      })
+      return env
     })
 
     const run = Effect.fn("ShellTool.run")(function* (
@@ -456,6 +603,14 @@ export const ShellTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
+        backgroundTerminalMaxTimeoutMs: number
+        yieldTimeMs?: number
+        requestedYieldTimeMs?: number
+        yieldTimeClamped?: boolean
+        yieldTimeMinMs?: number
+        yieldTimeMaxMs?: number
+        commandID: string
+        processID: string
         description: string
         sandbox?: ShellSandboxCommand
       },
@@ -504,6 +659,136 @@ export const ShellTool = Tool.define(
           description: input.description,
         },
       })
+      const commandID = input.commandID
+      const processID = input.processID
+      const argv = [input.shell, ...Shell.args(input.shell, input.command, input.cwd)]
+      let backend: ExecCommandBackend = CodexExecServer.enabledForContext(ctx) ? "codex_exec_server" : "node_bun"
+      const common = (nextBackend: ExecCommandBackend = backend) => ({
+        commandID,
+        backend: nextBackend,
+        command: input.command,
+        shell: input.shell,
+        argv,
+        cwd: input.cwd,
+        timeoutMs: input.timeout,
+        backgroundTerminalMaxTimeoutMs: input.backgroundTerminalMaxTimeoutMs,
+        yieldTimeMs: input.yieldTimeMs,
+        requestedYieldTimeMs: input.requestedYieldTimeMs,
+        yieldTimeClamped: input.yieldTimeClamped,
+        yieldTimeMinMs: input.yieldTimeMinMs,
+        yieldTimeMaxMs: input.yieldTimeMaxMs,
+        processID,
+        sandbox: input.sandbox
+          ? {
+              program: input.sandbox.program,
+              args_count: input.sandbox.args.length,
+              mode: input.sandbox.mode,
+            }
+          : undefined,
+      })
+      if (input.yieldTimeMs !== undefined && input.yieldTimeMs < input.timeout) {
+        const controls = ctx.turn?.engineering?.controls ?? EngineeringHarness.defaults()
+        yield* ExecProcessRegistry.assertLiveCapacity({
+          sessionID: ctx.sessionID,
+          turnID: ctx.turn?.turnID,
+          messageID: ctx.messageID,
+          toolCallID: ctx.callID,
+          processID,
+          commandID,
+          environmentID: environmentID(ctx),
+          limits: {
+            perSession: controls.maxLiveProcessesPerSession,
+            perTurn: controls.maxLiveProcessesPerTurn,
+            perEnvironment: controls.maxLiveProcessesPerEnvironment,
+          },
+        })
+      }
+      const startedAt = Date.now()
+      yield* ExecCommand.started(ctx, common())
+      let outputSeq = 0
+      let totalOutputBytes = 0
+
+      const recordChunk = Effect.fn("ShellTool.recordChunk")(function* (
+        stream: "stdout" | "stderr" | "combined",
+        text: string,
+        seq = outputSeq++,
+        nextBackend: ExecCommandBackend = backend,
+      ) {
+        const size = Buffer.byteLength(text, "utf-8")
+        totalOutputBytes += size
+        yield* ExecCommand.output(ctx, {
+          ...common(nextBackend),
+          stream,
+          seq,
+          text,
+          preview: preview(text),
+          cumulativeBytes: totalOutputBytes,
+        })
+        yield* AialraTurnTrace.emit({
+          phase: "command.output",
+          turnID: ctx.turn?.turnID,
+          sessionID: ctx.sessionID,
+          messageID: ctx.messageID,
+          data: {
+            stream,
+            seq,
+            chars: text.length,
+            byte_length: size,
+            cumulative_byte_length: totalOutputBytes,
+            preview: preview(text),
+          },
+        })
+        ExecProcessRegistry.output(processID, size)
+        list.push({ text, size })
+        used += size
+        while (used > keep && list.length > 1) {
+          const item = list.shift()
+          if (!item) break
+          used -= item.size
+          cut = true
+        }
+
+        last = preview(last + text)
+
+        if (file) {
+          sink?.write(text)
+          return yield* ctx.metadata({
+            metadata: {
+              output: last,
+              description: input.description,
+            },
+          })
+        }
+        full += text
+        if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
+          return yield* trunc.write(full).pipe(
+            Effect.andThen((next) =>
+              Effect.sync(() => {
+                file = next
+                cut = true
+                sink = createWriteStream(next, { flags: "a" })
+                full = ""
+                ExecProcessRegistry.addOutputRef(processID, { type: "shell_output_file", path: next })
+              }),
+            ),
+            Effect.andThen(
+              ctx.metadata({
+                metadata: {
+                  output: last,
+                  description: input.description,
+                },
+              }),
+            ),
+          )
+        }
+
+        return yield* ctx.metadata({
+          metadata: {
+            output: last,
+            description: input.description,
+          },
+        })
+      })
 
       const runWithChildProcess = Effect.scoped(
         Effect.gen(function* () {
@@ -513,67 +798,9 @@ export const ShellTool = Tool.define(
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-              Effect.gen(function* () {
-              yield* AialraTurnTrace.emit({
-                phase: "command.output",
-                turnID: ctx.turn?.turnID,
-                sessionID: ctx.sessionID,
-                messageID: ctx.messageID,
-                data: {
-                  stream: "combined",
-                  seq: list.length,
-                  chars: chunk.length,
-                  preview: preview(chunk),
-                },
-              })
-              const size = Buffer.byteLength(chunk, "utf-8")
-              list.push({ text: chunk, size })
-              used += size
-              while (used > keep && list.length > 1) {
-                const item = list.shift()
-                if (!item) break
-                used -= item.size
-                cut = true
-              }
-
-              last = preview(last + chunk)
-
-              if (file) {
-                sink?.write(chunk)
-              } else {
-                full += chunk
-                if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return yield* trunc.write(full).pipe(
-                    Effect.andThen((next) =>
-                      Effect.sync(() => {
-                        file = next
-                        cut = true
-                        sink = createWriteStream(next, { flags: "a" })
-                        full = ""
-                      }),
-                    ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                          description: input.description,
-                        },
-                      }),
-                    ),
-                  )
-                }
-              }
-
-              return yield* ctx.metadata({
-                metadata: {
-                  output: last,
-                  description: input.description,
-                },
-              })
-              }),
+              recordChunk("combined", chunk, undefined, "node_bun"),
             ),
           )
-
           const abort = Effect.callback<void>((resume) => {
             if (ctx.abort.aborted) return resume(Effect.void)
             const handler = () => resume(Effect.void)
@@ -602,57 +829,278 @@ export const ShellTool = Tool.define(
         }),
       ).pipe(Effect.orDie)
 
+      const runWithBunYield = Effect.promise(async () => {
+        const proc = input.sandbox
+          ? Bun.spawn([input.sandbox.program, ...input.sandbox.args], {
+              cwd: input.cwd,
+              env: input.env as Record<string, string>,
+              stdin: "pipe",
+              stdout: "pipe",
+              stderr: "pipe",
+            })
+          : Bun.spawn([input.shell, ...Shell.args(input.shell, input.command, input.cwd)], {
+              cwd: input.cwd,
+              env: input.env as Record<string, string>,
+              stdin: "pipe",
+              stdout: "pipe",
+              stderr: "pipe",
+            })
+        const stdin = proc.stdin
+        let stdinClosed = false
+        const closeStdin = async () => {
+          if (!stdin || stdinClosed) return
+          stdinClosed = true
+          await Promise.resolve(stdin.end()).catch(() => undefined)
+        }
+        const runtime: ExecProcessRuntime = {
+          pid: proc.pid,
+          writeStdin: async (text) => {
+            if (!stdin || stdinClosed) throw new Error("stdin is not writable for this process")
+            stdin.write(text)
+            await Promise.resolve(stdin.flush()).catch(() => undefined)
+          },
+          closeStdin,
+          interrupt: async () => {
+            proc.kill("SIGINT")
+            await proc.exited.catch(() => null)
+          },
+          abort: async () => {
+            proc.kill()
+            await proc.exited.catch(() => null)
+          },
+        }
+        const abort = new Promise<{ kind: "abort"; code: null }>((resolve) => {
+          if (ctx.abort.aborted) {
+            resolve({ kind: "abort", code: null })
+            return
+          }
+          const handler = () => resolve({ kind: "abort", code: null })
+          ctx.abort.addEventListener("abort", handler, { once: true })
+          proc.exited.finally(() => ctx.abort.removeEventListener("abort", handler))
+        })
+        const pump = async (stream: ReadableStream<Uint8Array> | null, name: "stdout" | "stderr") => {
+          if (!stream) return
+          const reader = stream.getReader()
+          const decoder = new TextDecoder()
+          while (true) {
+            const next = await reader.read()
+            if (next.done) return
+            const text = decoder.decode(next.value, { stream: true })
+            if (text) await Effect.runPromise(recordChunk(name, text, undefined, "node_bun"))
+          }
+        }
+        const pumps = [pump(proc.stdout, "stdout"), pump(proc.stderr, "stderr")]
+        const exited = proc.exited.then((code) => ({ kind: "exit" as const, code }))
+        const timeout = new Promise<{ kind: "timeout"; code: null }>((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout", code: null }), input.timeout + 100),
+        )
+        const backgroundTimeout = new Promise<{ kind: "background_timeout"; code: null }>((resolve) =>
+          setTimeout(() => resolve({ kind: "background_timeout", code: null }), input.backgroundTerminalMaxTimeoutMs + 100),
+        )
+        const yieldTime =
+          input.yieldTimeMs !== undefined && input.yieldTimeMs < input.timeout
+            ? new Promise<{ kind: "yield"; code: null }>((resolve) =>
+                setTimeout(() => resolve({ kind: "yield", code: null }), input.yieldTimeMs),
+              )
+            : undefined
+        const finishBackground = async () => {
+          const exit = await Promise.race([exited, abort, backgroundTimeout])
+          if (exit.kind === "abort") {
+            proc.kill()
+            await proc.exited.catch(() => null)
+          }
+          if (exit.kind === "background_timeout") {
+            proc.kill()
+            await proc.exited.catch(() => null)
+          }
+          await Promise.allSettled(pumps)
+          await closeStdin()
+          await Effect.runPromise(
+            Effect.all([
+              closeSink(),
+              TurnSandbox.cleanupShellSandboxCommand(input.sandbox),
+              ExecCommand.finished(ctx, {
+                ...common("node_bun"),
+                exitCode: exit.kind === "exit" ? exit.code : null,
+                timedOut: exit.kind === "background_timeout",
+                aborted: exit.kind === "abort",
+                outputChars: list.reduce((sum, item) => sum + item.size, 0),
+                truncated: cut,
+                durationMs: Math.max(0, Date.now() - startedAt),
+                outputPreview: last,
+                rawOutputRef: file ? { type: "shell_output_file", path: file } : undefined,
+                timeoutReason: exit.kind === "background_timeout" ? "background_terminal_max_timeout" : undefined,
+                abortReason: exit.kind === "abort" ? "abort_signal" : undefined,
+              }),
+              ExecProcessRegistry.finish(processID, {
+                status: exit.kind === "exit" ? "completed" : exit.kind === "background_timeout" ? "timeout" : "aborted",
+                exitCode: exit.kind === "exit" ? exit.code : null,
+                failure: exit.kind === "background_timeout" ? "background_terminal_max_timeout" : undefined,
+              }),
+            ], { concurrency: 1 }),
+          )
+        }
+        const first = await Promise.race(yieldTime ? [exited, abort, timeout, yieldTime] : [exited, abort, timeout])
+        if (first.kind === "yield") {
+          void finishBackground()
+          return { running: true, code: null, runtime }
+        }
+        if (first.kind === "abort") {
+          proc.kill()
+          await proc.exited.catch(() => null)
+          await Promise.allSettled(pumps)
+          await closeStdin()
+          aborted = true
+        }
+        if (first.kind === "timeout") {
+          proc.kill()
+          await proc.exited.catch(() => null)
+          await Promise.allSettled(pumps)
+          await closeStdin()
+          expired = true
+        }
+        if (first.kind === "exit") {
+          await Promise.allSettled(pumps)
+          await closeStdin()
+        }
+        await Effect.runPromise(
+          Effect.all([
+            closeSink(),
+            TurnSandbox.cleanupShellSandboxCommand(input.sandbox),
+          ], { concurrency: 1 }),
+        )
+        return { running: false, code: first.kind === "exit" ? first.code : null }
+      })
+
       const runWithCodexExecServer = Effect.gen(function* () {
         const result = yield* Effect.promise(() =>
           CodexExecServer.runProcess({
-            argv: [input.shell, ...Shell.args(input.shell, input.command, input.cwd)],
+            processID,
+            argv,
             cwd: input.cwd,
             env: CodexExecServer.jsonEnv(input.env),
             sandbox: input.sandbox,
             timeoutMs: input.timeout,
+            backgroundTimeoutMs: input.backgroundTerminalMaxTimeoutMs,
+            yieldTimeMs: input.yieldTimeMs,
             ctx,
             onOutput(chunk) {
-              void Effect.runPromise(
-                AialraTurnTrace.emit({
-                  phase: "command.output",
-                  turnID: ctx.turn?.turnID,
-                  sessionID: ctx.sessionID,
-                  messageID: ctx.messageID,
-                  data: {
-                    stream: chunk.stream,
-                    seq: chunk.seq,
-                    chars: chunk.text.length,
-                    preview: preview(chunk.text),
-                  },
-                }),
-              )
-              const size = Buffer.byteLength(chunk.text, "utf-8")
-              list.push({ text: chunk.text, size })
-              used += size
-              while (used > keep && list.length > 1) {
-                const item = list.shift()
-                if (!item) break
-                used -= item.size
-                cut = true
-              }
-              last = preview(last + chunk.text)
+              void Effect.runPromise(recordChunk(chunk.stream, chunk.text, chunk.seq, "codex_exec_server"))
+            },
+            onBackgroundFinish(result) {
+              const status: ExecProcessStatus = result.aborted
+                ? "aborted"
+                : result.timedOut
+                  ? "timeout"
+                  : result.exitCode === 0
+                    ? "completed"
+                    : "failed"
+              return Effect.runPromise(
+                Effect.all([
+                  closeSink(),
+                  TurnSandbox.cleanupShellSandboxCommand(input.sandbox),
+                  ExecCommand.finished(ctx, {
+                    ...common("codex_exec_server"),
+                    exitCode: result.exitCode,
+                    timedOut: result.timedOut,
+                    aborted: result.aborted,
+                    outputChars: list.reduce((sum, item) => sum + item.size, 0),
+                    truncated: cut,
+                    durationMs: result.durationMs,
+                    failure: result.failure,
+                    outputPreview: last,
+                    rawOutputRef: file ? { type: "shell_output_file", path: file } : undefined,
+                    timeoutReason: result.timedOut ? result.failure ?? "command_timeout" : undefined,
+                    abortReason: result.aborted ? result.failure ?? "abort_signal" : undefined,
+                  }),
+                  ExecProcessRegistry.finish(processID, {
+                    status,
+                    exitCode: result.exitCode,
+                    failure: result.failure,
+                  }),
+                ], { concurrency: 1 }),
+              ).then(() => undefined)
             },
           }),
-        ).pipe(Effect.ensuring(TurnSandbox.cleanupShellSandboxCommand(input.sandbox)))
+        )
 
         if (result.timedOut) expired = true
         if (result.aborted) aborted = true
+        if (result.running) return result
         if (result.failure && result.failure !== "timeout") {
           last = preview(last + `\n<exec_server_failure>${result.failure}</exec_server_failure>`)
         }
         return result.exitCode
       })
 
+      const returnYielded = Effect.fn("ShellTool.returnYielded")(function* (
+        nextBackend: ExecCommandBackend,
+        runtime?: ExecProcessRuntime,
+      ) {
+        const raw = list.map((item) => item.text).join("")
+        yield* ExecProcessRegistry.register({
+          process_id: processID,
+          command_id: commandID,
+          backend: nextBackend,
+          session_id: ctx.sessionID,
+          turn_id: ctx.turn?.turnID,
+          message_id: ctx.messageID,
+          tool_call_id: ctx.callID,
+          environment_id: ctx.turn?.selected_environment_id,
+          cwd: input.cwd,
+          command: input.command,
+          timeout_ms: input.timeout,
+          background_timeout_ms: input.backgroundTerminalMaxTimeoutMs,
+          yield_time_ms: input.yieldTimeMs,
+          output_chars: raw.length,
+          outputRefs: file ? [{ type: "shell_output_file", path: file }] : undefined,
+          runtime,
+        })
+        yield* ExecCommand.yielded(ctx, {
+          ...common(nextBackend),
+          outputChars: raw.length,
+          durationMs: Math.max(0, Date.now() - startedAt),
+        })
+        return {
+          title: input.description,
+          metadata: {
+            output: last || "(no output yet)",
+            exit: null as number | null,
+            running: true,
+            process_id: processID,
+            backend: nextBackend,
+            description: input.description,
+            truncated: cut,
+            requested_yield_time_ms: input.requestedYieldTimeMs,
+            effective_yield_time_ms: input.yieldTimeMs,
+            yield_time_clamped: input.yieldTimeClamped,
+          },
+          output:
+            (last || "(no output yet)") +
+            "\n\n<shell_metadata>\n" +
+            [
+              "Command is still running after foreground yield time",
+              `process_id=${processID}`,
+              `backend=${nextBackend}`,
+              `requested_yield_time_ms=${input.requestedYieldTimeMs ?? "default"}`,
+              `effective_yield_time_ms=${input.yieldTimeMs}`,
+            ].join("\n") +
+            "\n</shell_metadata>",
+        }
+      })
+
       let code: number | null
+      const shouldNodeBunYield = input.requestedYieldTimeMs !== undefined &&
+        input.yieldTimeMs !== undefined &&
+        input.yieldTimeMs < input.timeout
       if (CodexExecServer.enabledForContext(ctx)) {
         const execExit = yield* Effect.exit(runWithCodexExecServer)
         if (Exit.isSuccess(execExit)) {
-          code = execExit.value
+          const value = execExit.value
+          if (value && typeof value === "object" && value.running) {
+            return yield* returnYielded("codex_exec_server", value.runtime)
+          }
+          code = value && typeof value === "object" ? value.exitCode : value
         } else {
           yield* AialraTurnTrace.emit({
             phase: "exec_server.fallback",
@@ -663,10 +1111,25 @@ export const ShellTool = Tool.define(
               reason: Cause.pretty(execExit.cause),
             },
           })
-          code = yield* runWithChildProcess
+          yield* ExecCommand.fallback(ctx, {
+            ...common("node_bun"),
+            from: "codex_exec_server",
+            to: "node_bun",
+            reason: Cause.pretty(execExit.cause),
+          })
+          backend = "node_bun"
+          const fallbackResult = shouldNodeBunYield
+            ? yield* runWithBunYield
+            : { running: false, code: yield* runWithChildProcess }
+          if (fallbackResult.running) return yield* returnYielded("node_bun", fallbackResult.runtime)
+          code = fallbackResult.code
         }
       } else {
-        code = yield* runWithChildProcess
+        const result = shouldNodeBunYield
+          ? yield* runWithBunYield
+          : { running: false, code: yield* runWithChildProcess }
+        if (result.running) return yield* returnYielded("node_bun", result.runtime)
+        code = result.code
       }
 
       const meta: string[] = []
@@ -703,6 +1166,23 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
+      yield* Effect.all([
+        closeSink(),
+        TurnSandbox.cleanupShellSandboxCommand(input.sandbox),
+      ], { concurrency: 1 })
+      yield* ExecCommand.finished(ctx, {
+        ...common(backend),
+        exitCode: code,
+        timedOut: expired,
+        aborted,
+        outputChars: raw.length,
+        truncated: cut,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        outputPreview: last || preview(output),
+        rawOutputRef: file ? { type: "shell_output_file", path: file } : undefined,
+        timeoutReason: expired ? "command_timeout" : undefined,
+        abortReason: aborted ? abortMetadata?.reason ?? abortMetadata?.source ?? "abort_signal" : undefined,
+      })
       return {
         title: input.description,
         metadata: {
@@ -710,6 +1190,12 @@ export const ShellTool = Tool.define(
           exit: code,
           description: input.description,
           truncated: cut,
+          running: false,
+          process_id: processID,
+          backend,
+          requested_yield_time_ms: input.requestedYieldTimeMs,
+          effective_yield_time_ms: input.yieldTimeMs,
+          yield_time_clamped: input.yieldTimeClamped,
           abort: abortMetadata,
           ...(cut && file ? { outputPath: file } : {}),
         },
@@ -759,6 +1245,19 @@ export const ShellTool = Tool.define(
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
               const timeout = params.timeout ?? turn?.engineering?.controls.singleCommandTimeoutMs ?? defaultTimeoutMs
+              const backgroundTerminalMaxTimeoutMs =
+                turn?.engineering?.controls.backgroundTerminalMaxTimeoutMs ?? 300_000
+              const yieldTime = params.yield_time_ms !== undefined
+                ? ExecCommand.resolveYieldTime(params.yield_time_ms)
+                : undefined
+              const baseCommandID = ExecCommand.id(ctx)
+              const commandID =
+                baseCommandID === "exec_unknown"
+                  ? `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+                  : baseCommandID
+              const processID = `proc_${commandID}`
+              const requestedBackend: ExecCommandBackend = CodexExecServer.enabledForContext(ctx) ? "codex_exec_server" : "node_bun"
+              const argv = [shell, ...Shell.args(shell, params.command, cwd)]
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -768,6 +1267,18 @@ export const ShellTool = Tool.define(
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
                   if (turn?.command_policy === "ask") {
+                    const execApproval = yield* ExecApproval.requested(ctx, {
+                      commandID,
+                      processID,
+                      command: params.command,
+                      shell,
+                      argv,
+                      cwd,
+                      backend: requestedBackend,
+                      reason: "command_policy",
+                      description: params.description,
+                      patterns: [params.command],
+                    })
                     yield* ctx.ask({
                       permission: ShellID.ToolID,
                       patterns: [params.command],
@@ -775,6 +1286,7 @@ export const ShellTool = Tool.define(
                       metadata: {
                         reason: "command_policy",
                         description: params.description,
+                        exec_approval: execApproval,
                       },
                     })
                   }
@@ -782,7 +1294,121 @@ export const ShellTool = Tool.define(
                 }),
               )
               let networkAccessForCommand = false
-              if (turn?.network_policy === "ask" && commandLooksNetworked(params.command)) {
+              const commandNetworked = commandLooksNetworked(params.command)
+              const networkTargets = commandNetworked ? commandNetworkTargets(params.command) : []
+              const networkDecisions: Array<{
+                needsApproval: boolean
+                networkAccess: boolean
+                networkSandboxDecision?: unknown
+              }> = []
+              if (turn && commandNetworked) {
+                for (const target of networkTargets) {
+                  networkDecisions.push(
+                    yield* TurnSandbox.assertNetworkAccess(
+                      {
+                        ...ctx,
+                        extra: {
+                          ...ctx.extra,
+                          tool: "bash",
+                        },
+                      },
+                      target,
+                    ),
+                  )
+                }
+              }
+              if (turn && networkDecisions.some((item) => item.needsApproval)) {
+                const execApproval = yield* ExecApproval.requested(ctx, {
+                  commandID,
+                  processID,
+                  command: params.command,
+                  shell,
+                  argv,
+                  cwd,
+                  backend: requestedBackend,
+                  reason: "network_policy",
+                  description: params.description,
+                  patterns: networkTargets,
+                  networkTargets,
+                  networkDecisions,
+                })
+                yield* ctx.ask({
+                  permission: "network",
+                  patterns: networkTargets,
+                  always: networkTargets,
+                  metadata: {
+                    reason: "network_policy",
+                    description: params.description,
+                    decisions: networkDecisions,
+                    exec_approval: execApproval,
+                  },
+                })
+                networkAccessForCommand = true
+              } else if (networkDecisions.some((item) => item.networkAccess)) {
+                networkAccessForCommand = true
+              }
+              if (turn && commandNetworked && networkDecisions.length === 0) {
+                const proxy = turn.network_proxy ?? CodexTurn.networkProxy({
+                  networkPermissions: turn.network_permissions,
+                  selectedEnvironmentID: turn.selected_environment_id,
+                })
+                if (proxy.required && proxy.enforcement !== "environment") {
+                  yield* AialraTurnTrace.emit({
+                    phase: "network.proxy.unavailable",
+                    turnID: turn.turnID,
+                    sessionID: turn.sessionID,
+                    messageID: ctx.messageID,
+                    data: {
+                      tool: "bash",
+                      target: params.command.slice(0, 240),
+                      status: proxy.enforcement,
+                      reason: "命令看起来需要联网，但本轮要求 NetworkProxy 且没有可用代理地址，禁止直连",
+                      network_proxy: {
+                        ...proxy,
+                        url: redactedProxyURL(proxy.url),
+                      },
+                    },
+                  })
+                  return yield* Effect.die(
+                    new Error("NetworkProxy is required for this network command, but no usable proxy URL is configured"),
+                  )
+                }
+                if (proxy.enforcement === "environment") {
+                  yield* AialraTurnTrace.emit({
+                    phase: "network.proxy.applied",
+                    turnID: turn.turnID,
+                    sessionID: turn.sessionID,
+                    messageID: ctx.messageID,
+                    data: {
+                      tool: "bash",
+                      target: params.command.slice(0, 240),
+                      status: proxy.enforcement,
+                      reason: "命令看起来需要联网，本轮通过标准代理环境变量执行",
+                      network_proxy: {
+                        ...proxy,
+                        url: redactedProxyURL(proxy.url),
+                      },
+                    },
+                  })
+                  networkAccessForCommand = true
+                } else if (turn.network_policy === "on") {
+                  networkAccessForCommand = true
+                }
+              }
+              if (turn?.network_policy === "ask" && commandNetworked && networkDecisions.length === 0) {
+                const execApproval = yield* ExecApproval.requested(ctx, {
+                  commandID,
+                  processID,
+                  command: params.command,
+                  shell,
+                  argv,
+                  cwd,
+                  backend: requestedBackend,
+                  reason: "network_policy",
+                  description: params.description,
+                  patterns: [params.command],
+                  networkTargets: [params.command],
+                })
                 yield* ctx.ask({
                   permission: "network",
                   patterns: [params.command],
@@ -790,6 +1416,7 @@ export const ShellTool = Tool.define(
                   metadata: {
                     reason: "network_policy",
                     description: params.description,
+                    exec_approval: execApproval,
                   },
                 })
                 networkAccessForCommand = true
@@ -802,6 +1429,16 @@ export const ShellTool = Tool.define(
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
+                  backgroundTerminalMaxTimeoutMs,
+                  yieldTimeMs: yieldTime ? Math.min(yieldTime.effective_yield_time_ms, timeout) : undefined,
+                  requestedYieldTimeMs: yieldTime?.requested_yield_time_ms,
+                  yieldTimeClamped: yieldTime
+                    ? yieldTime.yield_time_clamped || yieldTime.effective_yield_time_ms > timeout
+                    : undefined,
+                  yieldTimeMinMs: yieldTime?.yield_time_min_ms,
+                  yieldTimeMaxMs: yieldTime?.yield_time_max_ms,
+                  commandID,
+                  processID,
                   description: params.description,
                   sandbox: yield* TurnSandbox.shellSandboxCommand(ctx, {
                     shell,

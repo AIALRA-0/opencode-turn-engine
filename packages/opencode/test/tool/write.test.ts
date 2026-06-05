@@ -65,6 +65,27 @@ describe("tool.write", () => {
 
         expect(result.output).toContain("Wrote file successfully")
         expect(result.metadata.exists).toBe(false)
+        expect(result.metadata.fileWrite).toEqual(
+          expect.objectContaining({
+            schema: "aialra.file_write.v1",
+            status: "completed",
+            requested_path: filepath,
+            resolved_path: filepath,
+            before: expect.objectContaining({ exists: false }),
+            after: expect.objectContaining({ exists: true, size: "Hello, World!".length }),
+            mutation: expect.objectContaining({
+              schema: "aialra.file_mutation.v1",
+              operation: "create",
+              applied: true,
+            }),
+          }),
+        )
+        expect(result.metadata.fileMutations).toEqual([
+          expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            operation: "create",
+          }),
+        ])
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
         expect(content).toBe("Hello, World!")
@@ -91,6 +112,31 @@ describe("tool.write", () => {
         expect(content).toBe("relative content")
       }),
     )
+
+    it.instance("previews file creation without writing during dry run", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "dry-run.txt")
+        const result = yield* run({ filePath: filepath, content: "preview", dryRun: true })
+
+        expect(result.output).toContain("Dry run")
+        expect(result.metadata.fileWrite).toEqual(
+          expect.objectContaining({
+            status: "preview",
+            policy: expect.objectContaining({ dry_run: true }),
+            before: expect.objectContaining({ exists: false }),
+            after: expect.objectContaining({ exists: false }),
+            desired: expect.objectContaining({ exists: true, size: "preview".length }),
+            mutation: expect.objectContaining({
+              operation: "preview",
+              applied: false,
+            }),
+          }),
+        )
+        const exit = yield* Effect.promise(() => fs.readFile(filepath, "utf-8")).pipe(Effect.exit)
+        expect(exit._tag).toBe("Failure")
+      }),
+    )
   })
 
   describe("existing file overwrite", () => {
@@ -103,9 +149,32 @@ describe("tool.write", () => {
 
         expect(result.output).toContain("Wrote file successfully")
         expect(result.metadata.exists).toBe(true)
+        expect(result.metadata.fileWrite).toEqual(
+          expect.objectContaining({
+            before: expect.objectContaining({ exists: true, size: "old content".length }),
+            after: expect.objectContaining({ exists: true, size: "new content".length }),
+            mutation: expect.objectContaining({
+              operation: "overwrite",
+              applied: true,
+            }),
+          }),
+        )
+        expect(result.metadata.fileWrite.before.sha256).not.toBe(result.metadata.fileWrite.after.sha256)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
         expect(content).toBe("new content")
+      }),
+    )
+
+    it.instance("refuses overwriting existing file when overwrite policy denies it", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "deny-overwrite.txt")
+        yield* Effect.promise(() => fs.writeFile(filepath, "old", "utf-8"))
+        const exit = yield* run({ filePath: filepath, content: "new", overwrite: "deny" }).pipe(Effect.exit)
+
+        expect(exit._tag).toBe("Failure")
+        expect(yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))).toBe("old")
       }),
     )
 

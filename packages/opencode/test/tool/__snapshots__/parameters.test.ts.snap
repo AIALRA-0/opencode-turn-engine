@@ -16,6 +16,35 @@ exports[`tool parameters JSON Schema (wire shape) apply_patch 1`] = `
 }
 `;
 
+exports[`tool parameters JSON Schema (wire shape) await_process 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "description": "Clear, concise description of why this process is being awaited",
+      "type": "string",
+    },
+    "poll_interval_ms": {
+      "description": "How often to check process status. Defaults to 250ms and is clamped to a safe range.",
+      "type": "number",
+    },
+    "process_id": {
+      "description": "The running process_id returned by the bash tool when yield_time_ms elapsed",
+      "type": "string",
+    },
+    "timeout_ms": {
+      "description": "Maximum time to wait for the process to reach a terminal state, capped by this turn's engineering controls.",
+      "type": "number",
+    },
+  },
+  "required": [
+    "process_id",
+    "description",
+  ],
+  "type": "object",
+}
+`;
+
 exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -52,9 +81,73 @@ Output: Creates directory 'foo'"
       "description": "The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.",
       "type": "string",
     },
+    "yield_time_ms": {
+      "description": "Optional foreground wait in milliseconds before returning a still-running process_id. Defaults to 10000ms and is clamped to 250-30000ms.",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
   },
   "required": [
     "command",
+    "description",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) cleanup_processes 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "description": "Clear, concise description of why these background processes are being cleaned.",
+      "type": "string",
+    },
+    "environment_id": {
+      "description": "Optional environment id filter.",
+      "type": "string",
+    },
+    "include_finished": {
+      "description": "When false, do not clean already-finished process records. Defaults to true.",
+      "type": "boolean",
+    },
+    "include_running": {
+      "description": "When true, terminate still-running processes selected by the filters before marking them cleaned.",
+      "type": "boolean",
+    },
+    "process_id": {
+      "description": "One process_id to clean up. Omit to clean by filters.",
+      "type": "string",
+    },
+    "process_ids": {
+      "description": "Multiple process_id values to clean up.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "statuses": {
+      "description": "Optional process statuses to clean. Defaults to all finished statuses unless include_running is true.",
+      "items": {
+        "enum": [
+          "running",
+          "completed",
+          "failed",
+          "timeout",
+          "aborted",
+        ],
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "turn_id": {
+      "description": "Optional turn id filter. Defaults to the current turn when available.",
+      "type": "string",
+    },
+  },
+  "required": [
     "description",
   ],
   "type": "object",
@@ -95,6 +188,21 @@ exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "followSymlinks": {
+      "description": "Follow symlinks while searching. Defaults to false.",
+      "type": "boolean",
+    },
+    "ignore": {
+      "description": "Additional glob patterns to exclude from the result set.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "maxResults": {
+      "description": "Maximum number of results to return. Defaults to 100 and is capped at 10000.",
+      "type": "number",
+    },
     "path": {
       "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
       "type": "string",
@@ -102,6 +210,22 @@ exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
     "pattern": {
       "description": "The glob pattern to match files against",
       "type": "string",
+    },
+    "protectedPolicy": {
+      "description": "How protected metadata paths such as .git, .agents, and .codex are handled. Defaults to hide.",
+      "enum": [
+        "hide",
+        "show_refused",
+      ],
+      "type": "string",
+    },
+    "showHidden": {
+      "description": "Whether hidden dotfiles are included. Defaults to true for backwards compatibility.",
+      "type": "boolean",
+    },
+    "timeoutMs": {
+      "description": "Optional ripgrep timeout in milliseconds.",
+      "type": "number",
     },
   },
   "required": [
@@ -115,9 +239,32 @@ exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "contextLines": {
+      "description": "Number of surrounding context lines to show around each match. Defaults to 0.",
+      "type": "number",
+    },
+    "followSymlinks": {
+      "description": "Follow symlinks while searching. Defaults to false.",
+      "type": "boolean",
+    },
+    "ignore": {
+      "description": "Additional glob patterns to exclude from the search.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
     "include": {
       "description": "File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")",
       "type": "string",
+    },
+    "maxLineChars": {
+      "description": "Maximum characters shown for each matched line. Defaults to 2000.",
+      "type": "number",
+    },
+    "maxMatches": {
+      "description": "Maximum number of matches to return. Defaults to 100 and is capped at 10000.",
+      "type": "number",
     },
     "path": {
       "description": "The directory to search in. Defaults to the current working directory.",
@@ -126,6 +273,22 @@ exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
     "pattern": {
       "description": "The regex pattern to search for in file contents",
       "type": "string",
+    },
+    "protectedPolicy": {
+      "description": "How protected metadata paths such as .git, .agents, and .codex are handled. Defaults to hide.",
+      "enum": [
+        "hide",
+        "show_refused",
+      ],
+      "type": "string",
+    },
+    "showHidden": {
+      "description": "Whether hidden dotfiles are included. Defaults to true for backwards compatibility.",
+      "type": "boolean",
+    },
+    "timeoutMs": {
+      "description": "Optional ripgrep timeout in milliseconds.",
+      "type": "number",
     },
   },
   "required": [
@@ -290,6 +453,24 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
       "maximum": 9007199254740991,
       "minimum": 0,
       "type": "integer",
+    },
+    "recursiveDepth": {
+      "description": "When reading a directory, recursively include child directories up to this depth. Defaults to 0.",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer",
+    },
+    "showHidden": {
+      "description": "When reading a directory, include hidden dot entries. Defaults to true.",
+      "type": "boolean",
+    },
+    "sort": {
+      "description": "When reading a directory, sort entries by name or by type then name. Defaults to name.",
+      "enum": [
+        "name",
+        "type_name",
+      ],
+      "type": "string",
     },
   },
   "required": [
@@ -477,14 +658,66 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
       "description": "The content to write to the file",
       "type": "string",
     },
+    "dryRun": {
+      "description": "Preview the write and return mutation metadata without changing the file. Defaults to false.",
+      "type": "boolean",
+    },
     "filePath": {
       "description": "The absolute path to the file to write (must be absolute, not relative)",
+      "type": "string",
+    },
+    "overwrite": {
+      "description": "Overwrite policy. allow permits create or replace, deny refuses existing files, if_absent only creates missing files.",
+      "enum": [
+        "allow",
+        "deny",
+        "if_absent",
+      ],
       "type": "string",
     },
   },
   "required": [
     "content",
     "filePath",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) write_stdin 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "append_newline": {
+      "description": "When true and control is text or omitted, append a newline after text.",
+      "type": "boolean",
+    },
+    "control": {
+      "description": "Optional controlled stdin action. text writes text, newline appends Enter, ctrl-c interrupts, eof closes stdin.",
+      "enum": [
+        "text",
+        "newline",
+        "ctrl-c",
+        "eof",
+      ],
+      "type": "string",
+    },
+    "description": {
+      "description": "Clear, concise description of why stdin is being written",
+      "type": "string",
+    },
+    "process_id": {
+      "description": "The running process_id returned by the bash tool when yield_time_ms elapsed",
+      "type": "string",
+    },
+    "text": {
+      "description": "Text to write to stdin. Use append_newline or control=newline when the process is waiting for Enter.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "process_id",
+    "description",
   ],
   "type": "object",
 }

@@ -1,12 +1,14 @@
 import { Bus } from "@/bus"
 import { PublicEventLog, type PublicEvent } from "@/session/public-event"
 import { Session } from "@/session/session"
+import { TurnHistory } from "@/session/turn-history"
 import type { SessionID } from "@/session/schema"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect } from "effect"
 import fs from "fs"
 import os from "os"
 import path from "path"
+import crypto from "crypto"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -165,6 +167,116 @@ function messagePartRecords(messages: ReadonlyArray<{ info: { id: string; role: 
   )
 }
 
+function rawBundleFilters(request: HttpServerRequest.HttpServerRequest) {
+  const params = new URL(request.url, "http://localhost").searchParams
+  return {
+    turnID: params.get("turnID") ?? undefined,
+    threadID: params.get("threadID") ?? undefined,
+    toolCallID: params.get("toolCallID") ?? undefined,
+    modelCallID: params.get("modelCallID") ?? undefined,
+  }
+}
+
+function filterPublicEvents(events: PublicEvent[], filters: ReturnType<typeof rawBundleFilters>) {
+  return events.filter((event) => {
+    if (filters.turnID && event.turnID !== filters.turnID) return false
+    if (filters.threadID && event.threadID !== filters.threadID) return false
+    if (filters.toolCallID) {
+      const toolCallID = event.toolCallID ?? String(event.data.tool_call_id ?? event.data.callID ?? "")
+      if (toolCallID !== filters.toolCallID) return false
+    }
+    if (filters.modelCallID) {
+      const modelCallID = String(event.data.model_call_id ?? event.data.modelCallID ?? "")
+      if (modelCallID !== filters.modelCallID) return false
+    }
+    return true
+  })
+}
+
+function sha256(input: unknown) {
+  return crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex")
+}
+
+function rawPayloadRecords(input: { sessionID: string; publicEvents: PublicEvent[] }) {
+  return input.publicEvents.filter((event) => event.rawRef).map((event) => {
+    const raw = PublicEventLog.readRaw({ sessionID: input.sessionID, eventID: event.id })
+    return {
+      eventID: event.id,
+      type: event.type,
+      payloadSchema: event.payloadSchema,
+      rawRef: event.rawRef,
+      redactionStatus: "redacted_by_public_event_store",
+      hash: sha256(raw ?? null),
+      raw,
+      normalizedMapping: {
+        source: event.source,
+        threadID: event.threadID,
+        turnID: event.turnID,
+        messageID: event.messageID,
+        toolCallID: event.toolCallID ?? (String(event.data.tool_call_id ?? event.data.callID ?? "") || undefined),
+        modelCallID: String(event.data.model_call_id ?? event.data.modelCallID ?? "") || undefined,
+        status: event.status,
+      },
+    }
+  })
+}
+
+function countBy<T extends string>(values: T[]) {
+  return values.reduce<Record<string, number>>((acc, value) => {
+    acc[value] = (acc[value] ?? 0) + 1
+    return acc
+  }, {})
+}
+
+function rawLabGroups(input: { publicEvents: PublicEvent[]; rawPayloads: ReturnType<typeof rawPayloadRecords> }) {
+  const turnIDs = input.publicEvents.flatMap((event) => (event.turnID ? [event.turnID] : []))
+  const modelCallIDs = input.rawPayloads.flatMap((record) =>
+    record.normalizedMapping.modelCallID ? [record.normalizedMapping.modelCallID] : [],
+  )
+  const toolCallIDs = input.publicEvents.flatMap((event) => {
+    const toolCallID = event.toolCallID ?? (String(event.data.tool_call_id ?? event.data.callID ?? "") || undefined)
+    return toolCallID ? [toolCallID] : []
+  })
+  return {
+    byTurn: Object.entries(countBy(turnIDs)).map(([turnID, eventCount]) => ({
+      turnID,
+      eventCount,
+      rawRefCount: input.rawPayloads.filter((record) => record.normalizedMapping.turnID === turnID).length,
+      types: Object.keys(countBy(input.publicEvents.filter((event) => event.turnID === turnID).map((event) => event.type))).sort(),
+    })),
+    byType: Object.entries(countBy(input.publicEvents.map((event) => event.type))).map(([type, eventCount]) => ({
+      type,
+      eventCount,
+      rawRefCount: input.rawPayloads.filter((record) => record.type === type).length,
+    })),
+    bySource: Object.entries(countBy(input.publicEvents.map((event) => event.source))).map(([source, eventCount]) => ({
+      source,
+      eventCount,
+    })),
+    modelCalls: Object.entries(countBy(modelCallIDs)).map(([modelCallID, rawRefCount]) => ({
+      modelCallID,
+      rawRefCount,
+      eventTypes: Object.keys(
+        countBy(
+          input.rawPayloads
+            .filter((record) => record.normalizedMapping.modelCallID === modelCallID)
+            .map((record) => record.type),
+        ),
+      ).sort(),
+    })),
+    toolCalls: Object.entries(countBy(toolCallIDs)).map(([toolCallID, eventCount]) => ({
+      toolCallID,
+      eventCount,
+      rawRefCount: input.rawPayloads.filter((record) => record.normalizedMapping.toolCallID === toolCallID).length,
+    })),
+  }
+}
+
+function filename(input: { sessionID: string; filters: ReturnType<typeof rawBundleFilters> }) {
+  const scope = input.filters.turnID ?? input.filters.threadID ?? input.filters.toolCallID ?? input.filters.modelCallID ?? "session"
+  return `aialra-raw-bundle-${input.sessionID}-${scope}.json`.replace(/[^a-zA-Z0-9._-]/g, "_")
+}
+
 export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) =>
   Effect.gen(function* () {
     const bus = yield* Bus.Service
@@ -226,10 +338,26 @@ export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) 
               .messages({ sessionID: ctx.params.sessionID as SessionID })
               .pipe(Effect.orElseSucceed(() => []))
             const publicEvents = PublicEventLog.list({ sessionID: ctx.params.sessionID }).slice(-1000)
+            const turnHistory = TurnHistory.list({ sessionID: ctx.params.sessionID })
+            const traceRecords = readTraceRecords(ctx.params.sessionID)
+            const parts = messagePartRecords(messages)
+            const rawPayloads = rawPayloadRecords({ sessionID: ctx.params.sessionID, publicEvents })
+            const groups = rawLabGroups({ publicEvents, rawPayloads })
             return HttpServerResponse.jsonUnsafe({
               schema: "aialra.raw_lab.v1",
               sessionID: ctx.params.sessionID,
               generatedAt: new Date().toISOString(),
+              summary: {
+                eventCount: publicEvents.length,
+                rawRefCount: rawPayloads.length,
+                turnCount: groups.byTurn.length,
+                modelCallCount: groups.modelCalls.length,
+                toolCallCount: groups.toolCalls.length,
+                traceRecordCount: traceRecords.length,
+                historyCount: turnHistory.length,
+                messageCount: messages.length,
+                partCount: parts.length,
+              },
               sources: {
                 modelRequestRaw: "通过 model.request.started / rawRef 查看",
                 providerStreamChunks: "通过 model.raw.chunk / rawRef 查看",
@@ -247,15 +375,100 @@ export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) 
                 lastEventID: publicEvents.at(-1)?.id,
                 note: "把 Last-Event-ID 设为某个 public event id，可以从该事件之后继续重放",
               },
+              groups,
               publicEvents,
+              turnHistory,
               rawRefs: publicEvents.filter((event) => event.rawRef).map((event) => ({
                 eventID: event.id,
                 type: event.type,
                 rawRef: event.rawRef,
               })),
+              rawPayloads,
+              normalizedMappings: rawPayloads.map((record) => ({
+                eventID: record.eventID,
+                type: record.type,
+                rawRef: record.rawRef,
+                hash: record.hash,
+                normalizedMapping: record.normalizedMapping,
+              })),
+              traceRecords,
+              messages,
+              parts,
+            })
+          } catch (error) {
+            return HttpServerResponse.jsonUnsafe(
+              { error: error instanceof Error ? error.message : String(error) },
+              { status: 500 },
+            )
+          }
+        }),
+      )
+      .handleRaw(
+        "sessionRawDownload",
+        Effect.fn("EventHttpApi.sessionRawDownload")(function* (ctx: {
+          params: { sessionID: string }
+          request: HttpServerRequest.HttpServerRequest
+        }) {
+          try {
+            const filters = rawBundleFilters(ctx.request)
+            const messages = yield* session
+              .messages({ sessionID: ctx.params.sessionID as SessionID })
+              .pipe(Effect.orElseSucceed(() => []))
+            const publicEvents = filterPublicEvents(
+              PublicEventLog.list({ sessionID: ctx.params.sessionID }).slice(-5000),
+              filters,
+            )
+            const rawPayloads = rawPayloadRecords({ sessionID: ctx.params.sessionID, publicEvents })
+            const history = TurnHistory.list({ sessionID: ctx.params.sessionID }).filter((record) => {
+              if (filters.turnID && record.turnID !== filters.turnID) return false
+              if (filters.threadID && record.turnID !== filters.threadID) return false
+              return true
+            })
+            const bundle = {
+              schema: "aialra.raw_bundle.v1",
+              manifest: {
+                schema: "aialra.raw_bundle_manifest.v1",
+                sessionID: ctx.params.sessionID,
+                generatedAt: new Date().toISOString(),
+                filters,
+                hashAlgorithm: "sha256",
+                hash: "",
+                eventCount: publicEvents.length,
+                rawPayloadCount: rawPayloads.length,
+                historyCount: history.length,
+                traceRecordCount: readTraceRecords(ctx.params.sessionID).length,
+                messageCount: messages.length,
+                partCount: messagePartRecords(messages).length,
+                redactionStatus: "safe_public_events_plus_redacted_raw_payloads",
+              },
+              sources: {
+                publicEvents: "publicEvents[]",
+                rawPayloads: "rawPayloads[]",
+                turnHistory: "turnHistory[]",
+                traceRecords: "traceRecords[]",
+                dbMessages: "messages[]",
+                dbParts: "parts[]",
+              },
+              publicEvents,
+              rawPayloads,
+              groups: rawLabGroups({ publicEvents, rawPayloads }),
+              turnHistory: history,
               traceRecords: readTraceRecords(ctx.params.sessionID),
               messages,
               parts: messagePartRecords(messages),
+            }
+            const body = JSON.stringify(
+              { ...bundle, manifest: { ...bundle.manifest, hash: sha256({ ...bundle, manifest: { ...bundle.manifest, hash: "" } }) } },
+              null,
+              2,
+            )
+            return HttpServerResponse.raw(body, {
+              headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Disposition": `attachment; filename="${filename({ sessionID: ctx.params.sessionID, filters })}"`,
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+              },
             })
           } catch (error) {
             return HttpServerResponse.jsonUnsafe(

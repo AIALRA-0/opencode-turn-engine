@@ -60,6 +60,32 @@ Reason: verified pass did not improve and zero patch did not decrease.
 What did improve: patch quality average moved from 77 to 78, and the run stayed clean with no timeout or approval stuck cases.
 ```
 
+Post-95 recheck was run on 2026-06-05 after the full 95-item protocol-parity
+plan reached its local completion state:
+
+```text
+runID: 20260605011832
+target: AIALRA OpenCode / DeepSeek V4 Pro max
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260605011832.md
+completed: 6/6
+non-empty patch: 5/6
+verified pass: 4/6
+zero patch: 1/6
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+patch quality average: 72
+```
+
+Decision:
+
+```text
+full-24 remains blocked.
+Reason: verified pass stayed 4/6, and zero patch worsened from 0/6 to 1/6.
+What did hold: completion reliability stayed strong, with no timeouts, no approval stalls, and 6/6 terminal events.
+Main remaining engineering defect: scikit-learn__scikit-learn-13241 still ended with zero patch, so zero-patch recovery is implemented but not strong enough for every high-ambiguity task.
+```
+
 Current 16-item acceptance state:
 
 | # | Target | Status | What this means in plain language |

@@ -27,7 +27,12 @@ export function SessionPermissionDock(props: {
     title: string
     variant: "ghost" | "secondary" | "primary"
   }> = [
-    { decision: "reject", label: "拒绝", title: "拒绝这次审批请求", variant: "ghost" },
+    {
+      decision: "reject",
+      label: "拒绝",
+      title: "拒绝这次审批请求；兼容当前 OpenCode 行为时，会同时取消同一会话里仍在等待的审批",
+      variant: "ghost",
+    },
     { decision: "once-command", label: "仅本次", title: "仅允许这一次本命令", variant: "secondary" },
     {
       decision: "turn-command",

@@ -11,6 +11,7 @@ import { Bus } from "../../src/bus"
 import { Truncate } from "@/tool/truncate"
 import { TestInstance } from "../fixture/fixture"
 import { SessionID, MessageID } from "../../src/session/schema"
+import { PublicEventLog } from "../../src/session/public-event"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(
@@ -50,6 +51,7 @@ type AskInput = {
       deletions: number
       movePath?: string
     }>
+    apply_patch_approval?: unknown
   }
 }
 
@@ -121,6 +123,7 @@ describe("tool.apply_patch freeform", () => {
         const deletePath = path.join(test.directory, "delete.txt")
         yield* writeText(modifyPath, "line1\nline2\n")
         yield* writeText(deletePath, "obsolete\n")
+        PublicEventLog.clearForTest()
 
         const patchText =
           "*** Begin Patch\n*** Add File: nested/new.txt\n+created\n*** Delete File: delete.txt\n*** Update File: modify.txt\n@@\n-line2\n+changed\n*** End Patch"
@@ -137,10 +140,101 @@ describe("tool.apply_patch freeform", () => {
           expect(result.output).not.toContain("\\")
         }
         expect(result.metadata.diff).toContain("Index:")
+        expect(result.metadata.fileWrite).toEqual(
+          expect.objectContaining({
+            schema: "aialra.file_write.v1",
+            tool: "apply_patch",
+            status: "completed",
+            patch_intent: expect.objectContaining({
+              hunk_count: 3,
+              affected_files: expect.arrayContaining([
+                expect.objectContaining({ requested_path: "nested/new.txt", operation: "create", applied: true }),
+                expect.objectContaining({ requested_path: "delete.txt", operation: "delete", applied: true }),
+                expect.objectContaining({ requested_path: "modify.txt", operation: "overwrite", applied: true }),
+              ]),
+            }),
+            mutation: expect.objectContaining({
+              schema: "aialra.file_mutation.v1",
+              tool: "apply_patch",
+              applied: true,
+            }),
+          }),
+        )
+        expect(result.metadata.fileMutations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              schema: "aialra.file_mutation.v1",
+              tool: "apply_patch",
+              operation: "create",
+              requested_path: "nested/new.txt",
+              before: expect.objectContaining({ exists: false }),
+              after: expect.objectContaining({ exists: true }),
+            }),
+            expect.objectContaining({
+              schema: "aialra.file_mutation.v1",
+              tool: "apply_patch",
+              operation: "delete",
+              requested_path: "delete.txt",
+              before: expect.objectContaining({ exists: true }),
+              after: expect.objectContaining({ exists: false }),
+            }),
+            expect.objectContaining({
+              schema: "aialra.file_mutation.v1",
+              tool: "apply_patch",
+              operation: "overwrite",
+              requested_path: "modify.txt",
+              before: expect.objectContaining({ exists: true }),
+              after: expect.objectContaining({ exists: true }),
+            }),
+          ]),
+        )
         expect(calls.length).toBe(1)
 
         // Verify permission metadata includes files array for UI rendering
         const permissionCall = calls[0]
+        expect(permissionCall.metadata.apply_patch_approval).toEqual(
+          expect.objectContaining({
+            schema: "aialra.apply_patch_approval_request.v1",
+            patch_sha256: expect.any(String),
+            hunk_count: 3,
+            risk_level: "medium",
+            affected_files: expect.arrayContaining([
+              expect.objectContaining({
+                requested_path: "nested/new.txt",
+                operation: "create",
+                additions: 1,
+                protected_path_checked: true,
+                symlink_realpath_checked: true,
+              }),
+              expect.objectContaining({
+                requested_path: "delete.txt",
+                operation: "delete",
+                deletions: expect.any(Number),
+              }),
+              expect.objectContaining({
+                requested_path: "modify.txt",
+                operation: "overwrite",
+              }),
+            ]),
+            turn_diff_preview: expect.objectContaining({
+              files_changed: 3,
+              patch_chars: patchText.length,
+            }),
+            final_decision: expect.objectContaining({ status: "pending" }),
+          }),
+        )
+        expect(PublicEventLog.list({ sessionID: "ses_test" })).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "apply_patch.approval.requested",
+              status: "requested",
+              data: expect.objectContaining({
+                schema: "aialra.apply_patch_approval_request.v1",
+                hunk_count: 3,
+              }),
+            }),
+          ]),
+        )
         expect(permissionCall.metadata.files).toHaveLength(3)
         expect(permissionCall.metadata.files.map((f) => f.type).sort()).toEqual(["add", "delete", "update"])
 
@@ -172,7 +266,7 @@ describe("tool.apply_patch freeform", () => {
         const patchText =
           "*** Begin Patch\n*** Update File: old/name.txt\n*** Move to: renamed/dir/name.txt\n@@\n-old content\n+new content\n*** End Patch"
 
-        yield* execute({ patchText }, ctx)
+        const result = yield* execute({ patchText }, ctx)
 
         expect(calls.length).toBe(1)
         const permissionCall = calls[0]
@@ -184,6 +278,17 @@ describe("tool.apply_patch freeform", () => {
         expect(moveFile.movePath).toBe(path.join(test.directory, "renamed/dir/name.txt"))
         expect(moveFile.patch).toContain("-old content")
         expect(moveFile.patch).toContain("+new content")
+        expect(result.metadata.fileMutations).toEqual([
+          expect.objectContaining({
+            schema: "aialra.file_mutation.v1",
+            tool: "apply_patch",
+            operation: "move",
+            requested_path: "renamed/dir/name.txt",
+            resolved_path: path.join(test.directory, "renamed/dir/name.txt"),
+            before: expect.objectContaining({ exists: true }),
+            after: expect.objectContaining({ exists: true }),
+          }),
+        ])
       }),
     { git: true },
   )

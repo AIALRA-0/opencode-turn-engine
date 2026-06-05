@@ -1,0 +1,673 @@
+{
+  "generatedAt": "2026-06-04T08:12:30.575Z",
+  "sourcePath": "/srv/aialra/state/root-home/.codex/attachments/4cb13e94-ac41-478c-9b14-a3466c7e21ee/pasted-text.txt",
+  "sourceSha256": "d1e6a8394ff8c461ae2b58f6b4abb80976e6e4fe99c03699dd23019c38d14380",
+  "count": 95,
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "number": 1,
+      "title": "正式 turn 生命周期对齐",
+      "domain": "turn-protocol",
+      "body": "正式 turn 生命周期对齐：AIALRA 必须确保一次用户 prompt 被完整包装成正式 turn，并全量对齐 Codex 的 TurnStarted / TurnComplete / TurnAborted。需要检查当前 turn.started / turn.completed / turn.aborted 是否存在状态缺漏、重复结束、异常路径未落账、abort 后仍 completed 等问题。所有 turn 生命周期事件必须写入 history、trace，并完整展示到 inspector 中，让用户能看到每个 turn 的开始时间、结束时间、终态、失败原因、abort 来源和关联事件数量。"
+    },
+    {
+      "id": "REQ-002",
+      "number": 2,
+      "title": "UserTurn 输入结构对齐 Op",
+      "domain": "turn-protocol",
+      "body": "UserTurn 输入结构对齐 Op::UserInput：AIALRA 的 UserTurn 必须完全对齐 Codex 的 Op::UserInput，即 Codex 具备的输入组成 AIALRA 只能多不能少。需要逐项补齐 items、text/image/file 输入、environment 选择、schema、thread_settings、per-turn override、metadata、extension data 等结构，并把旧 prompt string 入口升级为结构化 UserTurn。验收标准是：任意一次用户输入都能被序列化为完整 UserTurn，并可恢复、可 replay、可在 inspector 中查看原始结构。"
+    },
+    {
+      "id": "REQ-003",
+      "number": 3,
+      "title": "TurnContextItem 持久化",
+      "domain": "turn-protocol",
+      "body": "TurnContextItem 持久化：AIALRA 必须补全 TurnContextItem 的 history persistence，不能只存在于 trace 或 public event。所有 turn 执行过程中产生的上下文项，例如 selected environment、cwd、权限、网络状态、模型配置、tool result、context compaction、runtime warning、用户补充信息，都必须写入可恢复历史。验收标准是：重启后 resume、replay、audit 时仍能还原当时 turn 的关键上下文，而不是只能看到当时的直播事件。"
+    },
+    {
+      "id": "REQ-004",
+      "number": 4,
+      "title": "Per-turn thread settings override",
+      "domain": "turn-protocol",
+      "body": "Per-turn thread settings override：AIALRA 必须支持每个 turn 单独提交 settings override，而不是只能修改 session 全局配置。每个 turn 都应该能覆盖模型、provider、reasoning effort、permission profile、sandbox、network、cwd、selected environment、approval policy、service tier 等设置。实现时必须区分 requested override、resolved override、effective runtime config，并在 inspector 中展示“这一轮请求了什么配置，最终实际生效了什么配置”。验收标准是：同一 session 内连续两个 turn 可以使用不同模型、不同网络权限、不同 cwd、不同 permission profile，且互不污染。"
+    },
+    {
+      "id": "REQ-005",
+      "number": 5,
+      "title": "ThreadRollback",
+      "domain": "turn-protocol",
+      "body": "ThreadRollback：AIALRA 必须全量补全 ThreadRollback。系统需要支持回滚到某个历史 turn，将其后的 turn 从当前活动 thread 中撤销，或从该历史点创建新分支继续执行。实现必须处理 history、message tree、tool outputs、file mutations、context compacted summaries、inspector timeline 的一致性。验收标准是：用户可以选择某个 turn 回滚，后续上下文、UI、replay 状态都回到该点；如果支持分支，必须清楚显示 branch 来源和分叉点。"
+    },
+    {
+      "id": "REQ-006",
+      "number": 6,
+      "title": "ContextCompacted 标准事件与可视化",
+      "domain": "turn-protocol",
+      "body": "ContextCompacted 标准事件与可视化：AIALRA 必须在上下文被压缩时发出 Codex 风格的标准 ContextCompacted 事件，明确记录哪些内容被 compact、压缩前后 token/size、压缩生成的新摘要、压缩策略、触发原因和关联 turn。不能只显示“上下文变小了”，必须让用户在 inspector 中看到具体被压缩内容和生成摘要。如果压缩结果是文本摘要，应支持用户查看、二次编辑、清除、重新生成或标记为不可用；如果是高度抽象结构，也必须可视化其结构和来源。验收标准是：context compaction 能被 UI、日志、replay、debug 全量追踪。"
+    },
+    {
+      "id": "REQ-007",
+      "number": 7,
+      "title": "SessionConfigured",
+      "domain": "turn-protocol",
+      "body": "SessionConfigured：AIALRA 必须在 session 启动时广播正式 SessionConfigured 事件，相当于给每次运行开头贴一张配置清单。事件必须包含模型、provider、reasoning effort、service tier、approval policy、reviewer、permission profile、active permission profile、cwd、selected environment cwd、network、sandbox、shell env policy、rollout、tool registry、skill catalog、extension data 等关键配置。验收标准是：之后查看日志时，能明确知道这次运行到底使用了什么模型、什么权限、什么网络状态、什么环境和什么工具能力。"
+    },
+    {
+      "id": "REQ-008",
+      "number": 8,
+      "title": "cwd 迁移到 environment cwd",
+      "domain": "runtime-config",
+      "body": "cwd 迁移到 environment cwd：AIALRA 必须 P0 迁移所有执行逻辑到 selected environment cwd，不再依赖老式全局 cwd。所有 shell、file edit、read file、search、tool execution、approval prompt、history、inspector 展示都必须使用 resolved environment cwd。旧 cwd 字段可以保留兼容，但必须标注 deprecated，并且不能作为真实执行来源。验收标准是：local、docker、remote、多 workspace 场景下，工具执行目录和 inspector 展示目录完全一致。"
+    },
+    {
+      "id": "REQ-009",
+      "number": 9,
+      "title": "Environment runtime",
+      "domain": "runtime-config",
+      "body": "Environment runtime：AIALRA 必须全量补全 environment runtime，支持 local、remote、container、workspace、external runtime 等真实运行环境描述。每个 turn 必须先 resolve 可用 environments，再选中 active environment，并记录其 cwd、shell、文件系统能力、网络能力、sandbox、连接状态、runtime id、错误状态。验收标准是：agent 可以处理远端执行、容器执行、多 repo、多 workspace，并且每次工具调用都能追溯到具体 environment。"
+    },
+    {
+      "id": "REQ-010",
+      "number": 10,
+      "title": "Approval constraints",
+      "domain": "permission-sandbox",
+      "body": "Approval constraints：AIALRA 必须 P0 补全 constraints，否则权限系统只是“弹窗批准”，不是完整安全模型。constraints 必须能表达禁止读写路径、禁止仓库外写入、禁止访问密钥、禁止访问内网、禁止未知域名、禁止危险 shell、禁止环境变量泄露等硬规则。实现时必须先检查 constraints，再决定是否进入 approval；违反硬约束的操作必须直接拒绝，不能靠用户点击批准绕过。验收标准是：approval policy 和 constraints 分层清楚，inspector 能显示某次工具调用被允许、询问或拒绝的具体原因。"
+    },
+    {
+      "id": "REQ-011",
+      "number": 11,
+      "title": "Approvals reviewer 系统",
+      "domain": "permission-sandbox",
+      "body": "Approvals reviewer 系统：AIALRA 必须把审批人从 current_user 扩展成 reviewer 系统，支持 user、auto_review、guardian、policy_engine、external_reviewer 等角色。每次 approval 都必须记录 requested_by、reviewed_by、review_result、review_reason、review_time、overridden_by_constraints。这样以后做企业版、自动审查、托管沙盒时不会被 current_user 单字段卡死。验收标准是：同一个危险操作可以由不同 reviewer 策略处理，并且 inspector 能显示是谁批准或拒绝了它。"
+    },
+    {
+      "id": "REQ-012",
+      "number": 12,
+      "title": "Permission profile 正式协议化",
+      "domain": "permission-sandbox",
+      "body": "Permission profile 正式协议化：AIALRA 必须 P0 统一 permission_profile，让权限档位成为正式协议，而不是散落在 UI、backend、sandbox、tool gate 里的布尔值。需要支持 managed、read_only、workspace、full、custom、external、disabled 等 profile，并区分 requested_permission_profile 和 active_permission_profile。所有工具执行必须以 active_permission_profile + constraints 为准。UI 必须直观显示当前权限档位、可做什么、不可做什么、为什么被降级或拒绝。验收标准是：权限档位切换、per-turn override、approval prompt、sandbox 执行结果完全一致。"
+    },
+    {
+      "id": "REQ-013",
+      "number": 13,
+      "title": "细粒度 network policy",
+      "domain": "permission-sandbox",
+      "body": "细粒度 network policy：AIALRA 必须 P0 将 network 从 off/on/ask 简单开关升级为细粒度网络权限系统。需要支持 sandbox network policy、network proxy、domain allowlist、domain denylist、private IP block、per-turn network override、tool-specific network permission。每次联网工具调用必须记录目标域名、是否命中 allow/deny、是否经过 proxy、是否需要审批。验收标准是：可以实现“只允许 github.com 和 pypi.org，禁止未知域名和内网地址”这种策略，并在 inspector 中清楚展示判定过程。"
+    },
+    {
+      "id": "REQ-014",
+      "number": 14,
+      "title": "ShellEnvironmentPolicy",
+      "domain": "permission-sandbox",
+      "body": "ShellEnvironmentPolicy：AIALRA 必须全量实现正式 env 安全层，避免 shell 直接继承 process env 导致 API key、token、SSH agent、云服务密钥泄露。ShellEnvironmentPolicy 必须支持 allowlist、denylist、redaction、override、clear by default、safe PATH/HOME 注入、per-environment env。所有 shell 工具执行前必须根据 policy 构造安全环境变量。验收标准是：OPENAI_API_KEY、GITHUB_TOKEN、AWS_SECRET_ACCESS_KEY、SSH_AUTH_SOCK 等敏感变量默认不可被工具读取，除非被显式安全允许。"
+    },
+    {
+      "id": "REQ-015",
+      "number": 15,
+      "title": "ModelInfo 完整化",
+      "domain": "runtime-config",
+      "body": "ModelInfo 完整化：AIALRA 必须补全完整 ModelInfo，不再只靠 provider/model/variant 猜能力。ModelInfo 应包含 provider、model id、display name、context length、tool support、structured output support、reasoning support、image/file input support、streaming support、service tier support、cost metadata、fallback behavior、provider-specific capabilities。验收标准是：UI、runtime、tool selection、schema output、reasoning effort 都能根据 ModelInfo 显式判断，而不是写硬编码模型名。"
+    },
+    {
+      "id": "REQ-016",
+      "number": 16,
+      "title": "Thinking selector 与 requested/effective effort",
+      "domain": "runtime-config",
+      "body": "Thinking selector 与 requested/effective effort：AIALRA 必须合并 OpenCode 最新 thinking selector，同时补齐 requested_effort、effective_effort、provider fallback。用户选择 low/medium/high/xhigh 或其他 thinking 档位后，系统必须记录用户请求值、provider 支持情况、实际生效值、fallback 原因。所有这些信息必须透明展示，不能靠猜。验收标准是：不同 provider 不支持某个 effort 时，AIALRA 能明确降级并在 inspector 中说明，而不是静默失败或伪装生效。"
+    },
+    {
+      "id": "REQ-017",
+      "number": 17,
+      "title": "Reasoning summary 标准事件/字段",
+      "domain": "tool-runtime",
+      "body": "Reasoning summary 标准事件/字段：AIALRA 必须把 reasoning summary 做成标准事件和标准字段，而不是 raw 文本拼接展示。需要支持 summary enabled/disabled、summary level、auto collapse、per-turn reasoning summary、tool-linked reasoning summary。UI 应默认折叠展示，但允许用户展开查看“模型做了哪些步骤”的摘要。验收标准是：reasoning summary 可以进入 history、trace、inspector，并能与对应 turn 和工具调用关联。"
+    },
+    {
+      "id": "REQ-018",
+      "number": 18,
+      "title": "Service tier 完整接口",
+      "domain": "runtime-config",
+      "body": "Service tier 完整接口：AIALRA 必须为多 provider、多模型实现完整 service_tier 接口，即使不同模型和 provider 的 service tier 不同，也要统一抽象。需要支持 requested_service_tier、effective_service_tier、provider mapping、unsupported fallback、成本/速度/后台任务调度影响。验收标准是：用户和系统都能知道本次调用使用的是普通、优先、flex、batch 或其他档位，并能在日志中追踪成本/延迟相关决策。"
+    },
+    {
+      "id": "REQ-019",
+      "number": 19,
+      "title": "Dynamic tools",
+      "domain": "permission-sandbox",
+      "body": "Dynamic tools：AIALRA 必须支持 per-turn dynamic tools。每个 turn 运行时，工具集合应该能根据权限、environment、skill、provider、task type、policy 动态注入、裁剪、启用、禁用，而不是固定不变。实现时需要明确 tool registry、tool availability resolver、tool permission resolver、tool schema projector。验收标准是：同一 session 中不同 turn 可以拥有不同工具集合，并在 inspector 中显示本轮可用工具、禁用工具、禁用原因和实际调用工具。"
+    },
+    {
+      "id": "REQ-020",
+      "number": 20,
+      "title": "Per-turn skill catalog",
+      "domain": "tool-runtime",
+      "body": "Per-turn skill catalog：AIALRA 必须把 skill 从“有一个 skill tool”升级成“每轮 turn 都有明确 skill catalog”。每个 turn 开始时应记录本轮可用 skills、实际使用 skills、关联 tools、MCP 资源、命令、外部调用资源。最终报告时，用户应能看到这一轮使用了哪些工具、命令、skill、MCP 或其他资源，而不是全部隐藏在对话内部。验收标准是：inspector 中可以按 turn 查看 skill catalog、tool usage、MCP usage、resource usage，方便未来 Hermes 或更高阶架构接入和优化。"
+    },
+    {
+      "id": "REQ-021",
+      "number": 21,
+      "title": "Extension data",
+      "domain": "turn-protocol",
+      "body": "Extension data：AIALRA 必须全量支持 extension data，给插件、UI、企业系统、外部集成留下稳定扩展位置。每个核心 schema 或任务字段，除了固定结构外，都应该允许受控的额外扩展信息，例如 ui_state、enterprise_policy_id、plugin_data、benchmark_case_id、external_trace_id、custom_metadata。extension data 必须有命名空间，避免污染核心协议。验收标准是：系统每个环节既有稳定 schema，又能支持紧急扩展，而不需要破坏协议兼容性。"
+    },
+    {
+      "id": "REQ-022",
+      "number": 22,
+      "title": "合并 OpenCode v2 工具底座",
+      "domain": "permission-sandbox",
+      "body": "合并 OpenCode v2 工具底座：AIALRA 必须优先合并 OpenCode v2 工具底座，包括 packages/core/src/tool-*、session/runner、tool-output-store、file-mutation 等关键模块。后续再逐步向 Codex 的执行器和调度器升级对齐。实现策略应是 OpenCode v2 foundation 做底盘，AIALRA gates/audit/permission 做安全层，Codex protocol 做最终对齐目标。验收标准是：旧工具栈不再作为主路径，所有工具执行都进入新 foundation。"
+    },
+    {
+      "id": "REQ-023",
+      "number": 23,
+      "title": "Native runtime 统一",
+      "domain": "tool-runtime",
+      "body": "Native runtime 统一：AIALRA 必须统一 native runtime，避免 OpenCode AI SDK、native runtime、AIALRA 自定义执行逻辑混跑。建议以 OpenCode 最新 @opencode-ai/llm native runtime 为底座，并在 AIALRA 内部统一转成 Codex 风格的 message item、tool call item、tool result item、turn item。AI SDK 可以保留为 provider adapter，但不能继续作为核心 runtime 状态机。验收标准是：不同 provider 的 tool call、streaming、abort、result settlement 行为进入 AIALRA 后都统一成同一种内部协议。"
+    },
+    {
+      "id": "REQ-024",
+      "number": 24,
+      "title": "Tool pre/post lifecycle hook",
+      "domain": "runtime-config",
+      "body": "Tool pre/post lifecycle hook：AIALRA 必须把工具执行前后的逻辑统一成正式 lifecycle hook。pre-hook 必须处理权限检查、constraints、cwd/environment、network policy、approval、trace、UI event；post-hook 必须处理 output store、truncation、rawRef、exit code、error、duration、file mutation、history、settlement、UI projector。所有工具都必须强制经过 lifecycle，不能 shell、file edit、plugin 各自绕路。验收标准是：任意工具调用都能看到完整 requested、started、completed/failed/aborted 生命周期。"
+    },
+    {
+      "id": "REQ-025",
+      "number": 25,
+      "title": "Tool abort 与 shell cancel race",
+      "domain": "tool-runtime",
+      "body": "Tool abort 与 shell cancel race：AIALRA 必须 P0 合并 OpenCode 最新 shell cancel race 修复，并把 abort 作为工具生命周期的一等状态。用户 abort turn 时，当前 running tool 必须收到 cancel signal，shell 主进程和子进程必须被终止，tool 状态必须稳定 settle 为 aborted，不能同时 completed。abort 必须幂等：已 completed 的工具不能被后来的 abort 覆盖，已 aborted 的工具不能重复 settle。验收标准是：长时间命令、Docker build、benchmark、测试进程在 abort 后不会残留后台进程，UI、history、trace 状态一致。"
+    },
+    {
+      "id": "REQ-026",
+      "number": 26,
+      "title": "Tool output store",
+      "domain": "tool-runtime",
+      "body": "Tool output store：AIALRA 必须接入正式 tool-output-store，统一保存工具完整输出。给模型的输出必须是截断版、摘要版或 rollout 版，完整 raw output 必须通过 outputRef/rawRef 持久保存，供 UI 展开、debug、replay、benchmark 复盘使用。迁移时必须统一旧 rawRef 格式，不允许多套输出引用并存。验收标准是：超长 npm test、Docker build、SWE-bench harness 日志不会污染上下文，也不会丢失完整原始输出。"
+    },
+    {
+      "id": "REQ-027",
+      "number": 27,
+      "title": "Tool result settlement",
+      "domain": "tool-runtime",
+      "body": "Tool result settlement：AIALRA 必须把 processor settle 升级为统一工具结果落账系统，对齐 Codex item completed 思路，并吸收 OpenCode v2 projector/message updater。每个 tool call 必须有唯一 id，结束后生成唯一 result item，包含 status、exit code、visible output、raw output ref、error、duration、file mutations。该 result 必须同步写入模型上下文、history、trace、UI message projector、turn state。验收标准是：不会出现工具实际完成但 UI 还在 running、模型没收到结果、history 缺 result、abort/completed 互相覆盖的问题。"
+    },
+    {
+      "id": "REQ-028",
+      "number": 28,
+      "title": "Provider-executed tools",
+      "domain": "tool-runtime",
+      "body": "Provider-executed tools：AIALRA 必须把 provider-executed tools 也纳入统一 tool item 体系。OpenAI、Anthropic 或其他 provider 自己执行的 web search、file search、code interpreter、hosted tool，返回后必须包装成 provider_tool_call/provider_tool_result，并进入同一个 output store、history、trace、settlement、UI projector。区别只能是 executor 来源不同，不能变成审计和 UI 的旁路。验收标准是：本地工具和 provider 工具在 inspector 中以统一形式展示，且都能被 replay、audit、统计。"
+    },
+    {
+      "id": "REQ-029",
+      "number": 29,
+      "title": "Tool result settlement",
+      "domain": "tool-runtime",
+      "body": "Tool result settlement：AIALRA 必须把当前 processor settle 升级为统一的工具结果落账系统，对齐 Codex 的 item completed 语义，并吸收 OpenCode 最新 v2 projector / message updater 的状态投影机制。每一次 tool call 都必须有唯一 tool_call_id，工具结束后必须生成唯一 tool_result item，明确包含 status、exit_code、visible_output、raw_output_ref、error、duration、started_at、completed_at、file_mutations、environment_id、turn_id 等字段。该 result 不能只更新 processor 内部状态，而必须同步写入模型上下文、history、trace/public event、inspector UI、message projector 和 turn state。AIALRA 必须保证 completed、failed、aborted 三类终态互斥且幂等，不能出现工具实际完成但 UI 仍显示 running、模型没收到结果、history 缺 result、abort 后又被 completed 覆盖、重复 settle 等状态错乱。验收标准是：任意 shell、file edit、search、MCP、provider tool 执行完成后，都能在 inspector 中看到完整 tool lifecycle 和最终 result，并且 replay/resume 时能恢复完全一致的工具结果状态。"
+    },
+    {
+      "id": "REQ-030",
+      "number": 30,
+      "title": "Provider-executed tools",
+      "domain": "tool-runtime",
+      "body": "Provider-executed tools：AIALRA 必须全量支持 provider-executed tools，并将其纳入统一 tool item / tool result 体系，而不是作为 provider response 的特殊旁路处理。Codex protocol 已经支持由模型服务商执行 hosted tools，例如 web search、file search、code interpreter、hosted retrieval、provider-side function tool 等；AIALRA 当前只有部分支持，必须补齐 provider_tool_call、provider_tool_result、provider execution metadata、output store、history persistence、trace event、UI projector 和 audit 记录。实现时，本地 ToolExecutor 执行的工具和 provider 执行的工具在内部协议中必须形态一致，区别只能体现在 executor_type = local / provider / external，而不能变成两套审计、两套 UI、两套 settlement。所有 provider-executed tool 的结果必须进入 tool-output-store，支持 raw output ref、visible output truncation、replay、resume、inspector 展示和最终报告统计。验收标准是：OpenAI、Anthropic 或其他 provider 返回的 hosted tool 调用，都能像本地 shell 工具一样被展示、落账、审计、回放，并且能在最终 1:1 对照表中明确说明 provider tool 的支持范围、缺口和测试结果。"
+    },
+    {
+      "id": "REQ-031",
+      "number": 31,
+      "title": "Read file",
+      "domain": "runtime-config",
+      "body": "Read file：AIALRA 必须将 read file 全量迁移到 environment FS 体系，不能再让工具直接绕过 environment、permission profile、TurnContext 门禁或 Codex FS adapter 去读本地文件。每一次文件读取都必须基于 selected environment cwd 和 resolved path 执行，先经过 path normalize、canonical realpath、permission profile、constraints、protected path、symlink escape 检查，再由统一 FS adapter 返回内容。实现时需要吸收 OpenCode 最新 core tool/read 的设计，把 read file 做成标准 tool item，并记录 file_path、resolved_path、environment_id、turn_id、read_range、truncation、raw_ref、permission_decision、denied_reason 等信息。验收标准是：任意 read file 都能在 inspector 中看到来源 environment、实际读取路径、权限判定、是否截断、读取内容摘要，并且 replay/resume 时能恢复一致的 read result。"
+    },
+    {
+      "id": "REQ-032",
+      "number": 32,
+      "title": "ReadDirectory",
+      "domain": "runtime-config",
+      "body": "ReadDirectory：AIALRA 必须将 readDirectory / list directory 全量接入 environment FS，而不是依赖老式 directory/workspace 推导或直接 filesystem list。目录读取必须以 selected environment cwd 为根，经过 TurnContext 门禁、Codex FS adapter、permission profile、constraints、protected path、symlink escape 检查后才能执行。需要对齐 OpenCode 最新 core filesystem/list，支持分页、排序、隐藏文件策略、最大返回数量、递归深度限制、文件类型标记、symlink 标记、protected entry 标记。验收标准是：用户和模型都能清楚看到某次 directory list 列的是哪个 environment 下的哪个路径、哪些条目被隐藏或拒绝、拒绝原因是什么，并且 UI inspector、history、trace 中都有完整记录。"
+    },
+    {
+      "id": "REQ-033",
+      "number": 33,
+      "title": "Write file",
+      "domain": "permission-sandbox",
+      "body": "Write file：AIALRA 必须将 write 全量迁移到 environment FS + file mutation 体系，所有写入都必须经过 TurnContext 门禁、Codex FS adapter、permission profile、constraints、protected path、symlink escape 和 approval 检查，不能出现工具直接写文件的旁路。实现时需要吸收 OpenCode 最新 core write / file mutation 机制，写入前记录 old file metadata，写入后记录 new file metadata，并生成 file_mutation item。写操作必须支持 atomic write、create file、overwrite policy、encoding policy、dry-run/preview、失败回滚或失败记录。验收标准是：任意 write 都能在 inspector 中看到写入前后路径、大小、hash、是否新建、是否覆盖、权限判定、approval 结果、file mutation，并且 TurnDiff 能基于这些 mutation 生成本轮 diff。"
+    },
+    {
+      "id": "REQ-034",
+      "number": 34,
+      "title": "Edit file",
+      "domain": "permission-sandbox",
+      "body": "Edit file：AIALRA 必须将 edit 做成标准 patch/file mutation 工具，而不是简单受控读写拼接。edit 执行前必须读取目标文件的当前版本，校验 patch 或 edit 指令是否能唯一匹配，经过 environment FS、TurnContext gate、permission profile、constraints、protected path、symlink escape 检查后才能修改。实现时需要对齐 OpenCode 最新 core edit，并在 AIALRA 中统一记录 edit intent、old snippet、new snippet、applied range、conflict reason、file_mutation、diff preview。验收标准是：模糊匹配、文件变化冲突、protected path、越权路径、symlink escape 都会被拒绝或要求重新确认；成功 edit 后 inspector 能展示修改前后片段、最终 diff、关联 tool_call_id 和 turn_id。"
+    },
+    {
+      "id": "REQ-035",
+      "number": 35,
+      "title": "Apply patch",
+      "domain": "runtime-config",
+      "body": "Apply patch：AIALRA 必须全量拦截 apply_patch，使其通过 environment FS 和统一工具底座执行，不能让 shell 或外部命令绕过 AIALRA 的路径门禁直接修改文件。apply_patch 必须解析 patch 中的每个文件路径，逐一执行 normalize、realpath、environment cwd、permission profile、constraints、protected path、symlink escape 检查，再通过 Codex FS adapter 或 OpenCode core apply-patch 应用修改。应用前必须生成 preview，应用后必须生成 file_mutation 和 TurnDiff 数据。验收标准是：patch 中任何一个文件越界、命中 protected path、symlink escape、权限不足或上下文不匹配时，都必须明确失败并显示具体原因；成功时 inspector 能展示 patch、受影响文件、每个 hunk 的应用结果和最终 diff。"
+    },
+    {
+      "id": "REQ-036",
+      "number": 36,
+      "title": "Glob",
+      "domain": "runtime-config",
+      "body": "Glob：AIALRA 必须把 glob 当成 runtime/tool 能力，而不是直接暴露一个同名 fs API。glob 必须基于 selected environment cwd 执行，并经过 TurnContext 门禁、permission profile、constraints、protected path、symlink escape 规则；底层可以使用 OpenCode core glob / ripgrep 或 ripgrep fallback，但返回结果必须统一成 AIALRA tool result。glob 必须支持最大结果数、ignore 规则、hidden 文件策略、protected path 策略、timeout、binary/large path 限制。验收标准是：glob 的每次调用都能在 inspector 中看到 pattern、cwd、environment_id、实际后端、结果数量、被过滤数量、过滤原因和是否截断。"
+    },
+    {
+      "id": "REQ-037",
+      "number": 37,
+      "title": "Grep",
+      "domain": "runtime-config",
+      "body": "Grep：AIALRA 必须把 grep 做成受控 runtime/tool，而不是直接 shell rg 或直接文件系统扫描。grep 必须基于 selected environment cwd，经过 TurnContext gate、permission profile、constraints、protected path、symlink escape 和 network/shell policy 相关检查；底层可以对齐 OpenCode core grep / ripgrep fallback，但所有输出必须进入 tool-output-store，并生成标准 tool result。grep 必须支持 timeout、max matches、context lines、binary file handling、large file handling、ignore rules、hidden/protected file filtering。验收标准是：grep 不会扫描被禁止路径，不会通过 symlink 越界，不会把超长结果塞爆上下文；inspector 能展示查询词、扫描范围、命中文件、过滤原因、截断状态和 raw_output_ref。"
+    },
+    {
+      "id": "REQ-038",
+      "number": 38,
+      "title": "Symlink escape",
+      "domain": "tool-runtime",
+      "body": "Symlink escape：AIALRA 当前已有 canonical realpath 检查，这项必须保留并升级为所有 environment FS 操作的统一安全底线。所有 read、readDirectory、write、edit、apply_patch、glob、grep、file mutation、TurnDiff 计算都必须在执行前做 canonical realpath 校验，确保 symlink、relative path、hardlink、junction、case-insensitive path 等方式不能逃出 workspace/environment root 或绕过 protected path。实现时必须防止 TOCTOU 竞态：检查路径和实际打开/写入路径不能分离成可被替换的窗口。验收标准是：构造 symlink 指向 workspace 外部、指向 ~/.ssh、指向 .git 或 protected path 时，所有工具都必须拒绝，并在 inspector 中明确显示 symlink escape 被拦截。"
+    },
+    {
+      "id": "REQ-039",
+      "number": 39,
+      "title": "Protected path",
+      "domain": "permission-sandbox",
+      "body": "Protected path：AIALRA 必须把 protected path 从零散保护升级为 permission profile 的正式组成部分，至少覆盖 .git、.agents、.codex、密钥文件、配置凭据、系统目录、history 数据库、tool-output-store 内部文件等敏感路径。protected path 规则必须支持不同 permission_profile 下的读写差异，例如 read_only 可读部分元数据但不能写，workspace 可写普通文件但不能写 .git，full 也不能默认覆盖安全底线，custom 可以显式扩展规则。验收标准是：任何 read/write/edit/apply_patch/glob/grep 命中 protected path 时，都必须根据规则允许、隐藏、脱敏、拒绝或请求 approval，并且 inspector 显示命中的 protected rule、profile、decision 和 reason。"
+    },
+    {
+      "id": "REQ-040",
+      "number": 40,
+      "title": "TurnDiff",
+      "domain": "permission-sandbox",
+      "body": "TurnDiff：AIALRA 必须 P0 补全 Codex 风格 TurnDiffEvent，不能只在 benchmark 场景里临时跑 git diff。每个 turn 结束时，系统必须基于 file mutation store、environment FS、apply_patch/edit/write 记录生成本轮 TurnDiff，明确展示本轮新增、修改、删除、重命名的文件，以及每个文件的 diff、mutation 来源、tool_call_id、environment_id、permission decision。TurnDiffEvent 必须写入 history、trace/public event，并完整展示到 inspector，支持用户按 turn 查看“这一轮到底改了什么”。验收标准是：即使没有 git 仓库，AIALRA 也能基于 file mutation 生成 TurnDiff；即使有 git，也不能只依赖全局 git diff 混淆多轮修改；replay/resume 后仍能恢复每个 turn 的独立 diff。"
+    },
+    {
+      "id": "REQ-041",
+      "number": 41,
+      "title": "Unified exec_command",
+      "domain": "runtime-config",
+      "body": "Unified exec_command：AIALRA 必须 P0 将当前 bash 优先、Codex exec-server 辅助、按单次 timeout 等待的执行方式升级为统一 exec_command 体系，对齐 Codex 的 unified exec 语义。所有 shell 命令都必须进入同一个 exec runtime，而不是普通 shell tool、bash adapter、exec-server 各自分叉执行。exec_command 必须绑定 turn_id、tool_call_id、environment_id、cwd、permission_profile、network_policy、shell_env_policy、approval decision、timeout、yield_time_ms、process_id 等字段，并进入统一 tool lifecycle、tool-output-store、history、trace 和 inspector。验收标准是：任意命令执行都能在 inspector 中看到它属于哪个 turn、在哪个 environment cwd 下运行、使用了什么 shell/env/network/permission、是否仍在运行、是否可继续读取或中止，并且本地 shell、Codex exec-server、未来 remote exec 都走同一个内部协议。"
+    },
+    {
+      "id": "REQ-042",
+      "number": 42,
+      "title": "yield_time_ms",
+      "domain": "observability-ui",
+      "body": "yield_time_ms：AIALRA 必须 P0 补齐模型可控的 yield_time_ms，不能只靠单次 timeout 阻塞等待命令结束。yield_time_ms 的语义必须对齐 Codex：命令启动后最多等待一小段时间返回当前输出，如果命令未结束，则返回 running 状态和 process_id，让模型或 UI 后续继续读取。默认值建议对齐 Codex 的 10000ms，并限制有效范围，例如 250–30000ms，避免 0ms 过度轮询或超长阻塞。验收标准是：模型可以请求短等待、默认等待或较长等待；长命令不会把整个 turn 卡死；inspector 能显示本次 exec 的 requested_yield_time_ms、effective_yield_time_ms、是否超出范围被 clamp、返回时命令是 completed 还是 still running。"
+    },
+    {
+      "id": "REQ-043",
+      "number": 43,
+      "title": "Running process id",
+      "domain": "tool-runtime",
+      "body": "Running process id：AIALRA 必须 P0 在命令未完成时向模型、UI、history 和 inspector 返回正式 process_id，不能只让 adapter 内部持有 live process。process_id 必须成为 unified exec 协议的一等字段，用于后续读取输出、写入 stdin、中止进程、清理后台终端、统计 live process。process_id 必须绑定 turn_id、tool_call_id、environment_id、command、started_at、last_interaction_at、status，并进入 process registry。验收标准是：执行长命令时，首次 exec_command 返回 running + process_id；用户和模型都能在 inspector 中看到该进程仍然活着，并能基于 process_id 继续读、写、abort 或 cleanup。"
+    },
+    {
+      "id": "REQ-044",
+      "number": 44,
+      "title": "write_stdin",
+      "domain": "permission-sandbox",
+      "body": "write_stdin：AIALRA 必须 P0 补全 write_stdin，使模型和 UI 能对同一个仍在运行的 process_id 继续写入 stdin，而不是每次只能新开一个命令。write_stdin 必须经过 process registry 校验、permission profile、constraints、TerminalInteractionEvent 记录，并支持写入普通文本、换行、Ctrl-C/EOF 等受控控制序列。实现时必须避免把 stdin 写到错误进程、已结束进程或其他 turn 的进程中，并且所有 stdin 输入都必须进入 history、trace 和 inspector。验收标准是：交互式命令、REPL、测试 watcher、需要确认输入的脚本都可以通过同一个 process_id 继续交互；inspector 能清楚显示每次 stdin 写入的时间、来源、目标进程和写入内容摘要。"
+    },
+    {
+      "id": "REQ-045",
+      "number": 45,
+      "title": "TerminalInteractionEvent",
+      "domain": "tool-runtime",
+      "body": "TerminalInteractionEvent：AIALRA 必须 P0 补全 Codex 风格 TerminalInteractionEvent，不能只用部分 command.output 事件表达终端交互。TerminalInteractionEvent 应覆盖 exec started、stdout delta、stderr delta、stdin write、process still running、process end、abort、cleanup、timeout、error 等交互阶段，并全部绑定 process_id、tool_call_id、turn_id、environment_id。UI inspector 必须能按进程时间线展示完整终端交互，而不是只看到零散输出。验收标准是：一次长命令从启动、输出、继续等待、stdin 输入、结束或 abort 的全过程，都能在 history、trace、public event 和 inspector 中按顺序重放。"
+    },
+    {
+      "id": "REQ-046",
+      "number": 46,
+      "title": "ExecCommandOutputDelta",
+      "domain": "tool-runtime",
+      "body": "ExecCommandOutputDelta：AIALRA 必须 P0 将 command.output 从文本 preview/rawRef 的部分实现升级为标准 ExecCommandOutputDelta，支持 stdout/stderr raw bytes 或等价无损分片、stream sequence number、timestamp、channel、byte length、truncation marker、raw_output_ref。stdout 和 stderr 必须分通道记录，不能混成不可恢复的单一文本；给模型看的可以是截断 preview，但完整输出必须进入 tool-output-store。验收标准是：长输出命令能持续产生 delta，UI 能流式显示，history/replay 能按顺序恢复，模型不会被超长输出撑爆上下文，用户仍能通过 raw output 查看完整 stdout/stderr。"
+    },
+    {
+      "id": "REQ-047",
+      "number": 47,
+      "title": "ExecCommandEnd",
+      "domain": "tool-runtime",
+      "body": "ExecCommandEnd：AIALRA 必须将当前 command.finished 升级为标准 ExecCommandEnd，并对齐 Codex 的 exit、duration、status 语义。每个 exec process 结束时必须生成唯一终态事件，包含 process_id、tool_call_id、turn_id、exit_code、signal、status、started_at、ended_at、duration_ms、output_summary、raw_output_ref、error、timeout_reason、abort_reason。ExecCommandEnd 必须进入 tool result settlement，并保证 completed、failed、timeout、aborted、cleaned_up 等终态互斥且幂等。验收标准是：任意命令结束后，UI、history、trace、tool result、turn state 都显示同一个终态，不会出现命令已退出但 inspector 仍显示 running，或 abort 后又 completed 覆盖的问题。"
+    },
+    {
+      "id": "REQ-048",
+      "number": 48,
+      "title": "UnifiedExecProcessManager",
+      "domain": "runtime-config",
+      "body": "UnifiedExecProcessManager：AIALRA 必须 P0 实现 UnifiedExecProcessManager 或等价的 live process registry，用来保存、查询、交互、中止和清理所有尚未结束的 exec process。当前缺少持久 process registry，导致 adapter 内部持有进程但模型/UI 不可见，也无法跨事件继续操作。新的 process manager 必须记录 process_id、environment_id、cwd、command、pid/pty id、status、started_at、last_output_at、last_interaction_at、owner turn、tool_call_id、timeout、background flag、output refs，并提供 read、write_stdin、abort、cleanup、list_live_processes 接口。验收标准是：长命令返回后不会丢失进程控制权；刷新 UI、继续 turn 或恢复 session 时，仍能看到 live process 的状态和可执行操作。"
+    },
+    {
+      "id": "REQ-049",
+      "number": 49,
+      "title": "Max background terminal timeout",
+      "domain": "tool-runtime",
+      "body": "Max background terminal timeout：AIALRA 必须 P0 从单一 singleCommandTimeoutMs 升级为 background_terminal_max_timeout 配置，对齐 Codex 默认 300000ms 且可配置的后台终端超时语义。前台命令的 yield_time_ms、单次 tool call timeout、后台进程最大存活时间必须分开管理，不能混成一个 timeout。后台进程超过最大时间后，系统必须自动发出 timeout/cleanup 事件并终止进程，同时写入 history、trace、inspector 和 process registry。验收标准是：长命令可以先返回 running，不会因为 yield 到期被误杀；但真正超出 background max timeout 后会被稳定清理，并能在 inspector 中看到超时原因和配置来源。"
+    },
+    {
+      "id": "REQ-050",
+      "number": 50,
+      "title": "Awaiter agent",
+      "domain": "agent-quality",
+      "body": "Awaiter agent：AIALRA 必须 P1 实现内置 awaiter agent 或等价等待机制，用于等待长时间后台进程完成，而不是让主模型反复轮询或被长命令阻塞。awaiter 应能根据 process_id 订阅输出和终态，在最长约 1 小时或配置时间内等待命令完成，并在完成、失败、超时、abort 时把结果回填到主 turn 或后续通知中。awaiter 必须使用 UnifiedExecProcessManager 和 TerminalInteractionEvent，不得绕过统一 exec runtime。验收标准是：运行长测试、Docker build、benchmark、server startup 时，AIALRA 能把等待任务交给 awaiter，UI 显示正在等待的进程、等待时长、最新输出和最终结果，而不是主对话卡死。"
+    },
+    {
+      "id": "REQ-051",
+      "number": 51,
+      "title": "Max live process",
+      "domain": "observability-ui",
+      "body": "Max live process：AIALRA 必须 P1 增加 max live process 限制，建议对齐 Codex 的 64 或提供可配置默认值，防止模型或用户无意间创建过多后台终端。UnifiedExecProcessManager 在启动新进程前必须检查当前 live process 数量、per-session 限制、per-turn 限制、per-environment 限制，并在超过限制时拒绝启动或要求用户清理。验收标准是：连续启动大量长命令时，AIALRA 不会无限创建后台进程；inspector 能显示当前 live process 数量、上限、每个进程占用来源，并提供清理入口。"
+    },
+    {
+      "id": "REQ-052",
+      "number": 52,
+      "title": "Cleanup background terminals",
+      "domain": "observability-ui",
+      "body": "Cleanup background terminals：AIALRA 必须 P1 补全 CleanBackgroundTerminals 或等价清理机制，用于手动或自动清理后台终端。清理必须支持按 process_id、按 turn、按 environment、按 session、按超时状态、按已结束状态批量处理，并对每个被清理进程生成 cleanup event。清理时必须区分已结束进程的 registry 移除、仍运行进程的 graceful terminate、强制 kill、失败重试和残留记录。验收标准是：用户可以在 inspector 中看到所有后台终端并一键清理；session 结束、rollback、environment disconnect、超时触发时，AIALRA 能自动清理相关进程，并在 history/trace 中留下可审计记录。"
+    },
+    {
+      "id": "REQ-053",
+      "number": 53,
+      "title": "Permission profile 统一表达",
+      "domain": "turn-protocol",
+      "body": "Permission profile 统一表达：AIALRA 必须在 sandbox 层 P0 统一 permission profile 表达，不能让 UI、tool gate、sandbox helper、network policy、FS policy 各自维护一套权限语义。AIALRA 当前已有部分 permission profile，但必须进一步对齐 Codex 的正式权限表达，并吸收 OpenCode permission ruleset 的规则化思路，把 managed、read_only、workspace、full、custom、external、disabled 等档位映射到明确的 sandbox enforcement 行为。每次 turn 启动时必须解析 requested_permission_profile、active_permission_profile、constraints、FS policy、network policy、shell env policy，并把最终生效的 sandbox 配置写入 SessionConfigured、TurnContextItem、history、trace 和 inspector。验收标准是：用户在 inspector 中看到的权限档位、实际 shell/file/network 的执行限制、approval 弹窗和 sandbox 拒绝原因完全一致，不能出现 UI 显示 full 但 sandbox 只读，或 UI 显示 workspace 但工具绕过写外部路径的情况。"
+    },
+    {
+      "id": "REQ-054",
+      "number": 54,
+      "title": "Split FS policy",
+      "domain": "runtime-config",
+      "body": "Split FS policy：AIALRA 必须 P0 补全 Codex 风格 FileSystemSandboxPolicy，不能只靠自定义 entries 临时拼出文件系统限制。FS policy 必须拆分表达 readable roots、writable roots、creatable roots、readonly mounts、tmp dirs、protected paths、deny paths、allowed file schemes、symlink policy、realpath policy、create policy、delete policy，并且这些规则必须由 selected environment cwd 和 active permission profile 统一解析。实现时需要保证 read、readDirectory、write、edit、apply_patch、glob、grep、TurnDiff、file mutation 都从同一份 FS policy 取权限结果，而不是各自判断。验收标准是：同一个路径在不同 permission profile 下的 read/write/create/delete 行为可预测、可解释、可审计；inspector 能显示每次文件操作命中的 FS policy 规则、最终 decision、拒绝原因和相关 profile。"
+    },
+    {
+      "id": "REQ-055",
+      "number": 55,
+      "title": "Network sandbox policy",
+      "domain": "permission-sandbox",
+      "body": "Network sandbox policy：AIALRA 必须 P0 将 sandbox 层 network policy 从 off/on/ask 升级为正式 network sandbox policy，不能只在高层记录“是否允许联网”。network policy 必须表达 network disabled、ask before access、allowlist、denylist、private IP block、localhost policy、proxy required、per-tool network permission、per-turn network override、DNS/HTTP 层审计等能力，并和 permission profile、constraints、reviewer 系统联动。所有可能联网的 shell、provider tool、MCP、package install、curl/wget/git/npm/pip 等执行路径都必须经过 network sandbox policy 判定。验收标准是：AIALRA 能实现“本轮只允许 github.com 和 pypi.org，禁止内网、localhost、未知域名，并且首次访问需要 approval”的策略；inspector 必须展示目标域名/IP、命中的 allow/deny 规则、是否经过 proxy、是否被 sandbox 拒绝或放行。"
+    },
+    {
+      "id": "REQ-056",
+      "number": 56,
+      "title": "NetworkProxy",
+      "domain": "permission-sandbox",
+      "body": "NetworkProxy：AIALRA 必须 P1 补全 NetworkProxy 支持，对齐 Codex 的网络代理层设计，避免网络访问只靠进程环境变量或工具自觉遵守。NetworkProxy 应作为 sandbox network policy 的执行组件，支持统一代理配置、域名审计、请求记录、deny/allow enforcement、可选内容脱敏、per-environment proxy、per-turn proxy override，并能与 network allowlist/denylist 联动。实现时，shell 命令、provider-side network adapter、MCP、git/npm/pip 等常见联网路径应尽量通过统一 proxy 或被明确标记为无法代理并进入限制策略。验收标准是：开启 proxy-required 后，未走 proxy 的网络访问会被拒绝或记录为策略违规；inspector 能显示本轮是否使用 NetworkProxy、代理地址、命中规则、请求摘要和拒绝原因。"
+    },
+    {
+      "id": "REQ-057",
+      "number": 57,
+      "title": "Linux helper",
+      "domain": "runtime-config",
+      "body": "Linux helper：AIALRA 必须 P0 完善 Linux sandbox helper 路线，对齐 Codex 的 codex_linux_sandbox_exe 思路，并把当前 bwrap、环境探测、部分 helper 方案统一成明确的 LinuxSandboxHelper。helper 必须负责应用 FS policy、network policy、no_new_privs、seccomp、环境变量清理、cwd/environment 映射、进程生命周期、stdout/stderr 捕获和退出状态回传，而不是只靠 bash adapter 或用户态 gate。实现时必须支持能力探测：bwrap 可用性、user namespace、Landlock、seccomp、unshare、mount 权限、容器环境限制，并根据探测结果选择 enforce mode 或 degraded mode。验收标准是：在 Linux 上执行 shell/file 工具时，inspector 能显示实际使用的 sandbox backend、启用的限制、降级原因、helper 版本和执行结果；如果 helper 不可用，AIALRA 必须明确降级并限制高风险权限，不能静默变成无沙箱。"
+    },
+    {
+      "id": "REQ-058",
+      "number": 58,
+      "title": "Landlock",
+      "domain": "turn-protocol",
+      "body": "Landlock：AIALRA 必须 P1 将当前 Landlock PoC/探测升级为可选 enforce 路径，而不是只检测不真正执行限制。Landlock 应作为 Linux FS sandbox 的一层能力，用于限制进程对文件系统的 read/write/create/remove/execute 权限，并与 FileSystemSandboxPolicy、permission profile、protected path、symlink realpath 检查联动。实现时必须清楚区分 legacy/helper mode、Landlock enforce mode、unsupported mode，并把实际 mode 写入 SessionConfigured、TurnContextItem、trace 和 inspector。验收标准是：在支持 Landlock 的 Linux kernel 上，AIALRA 能用 Landlock 阻止越权路径读写；在不支持的系统上，AIALRA 会明确报告 unsupported/degraded，并用 bwrap/helper 或用户态 gate 补偿，而不是假装 Landlock 生效。"
+    },
+    {
+      "id": "REQ-059",
+      "number": 59,
+      "title": "no_new_privs/seccomp",
+      "domain": "permission-sandbox",
+      "body": "no_new_privs/seccomp：AIALRA 必须补全 no_new_privs 和 seccomp 的 sandbox enforcement 路径，对齐 Codex helper 路线，不能只做部分探测。no_new_privs 应默认用于阻止子进程通过 setuid、file capabilities 等方式提权；seccomp 应提供可配置 syscall 过滤策略，至少能限制高风险系统调用、namespace 操作、mount、ptrace、keyring、raw socket 等危险能力。实现时必须将 no_new_privs/seccomp 状态纳入 Linux helper capability report，并写入 inspector、history 和 trace。验收标准是：执行 shell 命令时，AIALRA 能显示 no_new_privs 是否启用、seccomp profile 是否启用、命中的拒绝原因；如果系统不支持或策略降级，必须明确展示 degraded 状态和风险，不得把探测结果当成 enforcement 结果。"
+    },
+    {
+      "id": "REQ-060",
+      "number": 60,
+      "title": "Windows sandbox",
+      "domain": "turn-protocol",
+      "body": "Windows sandbox：AIALRA 当前不做 Windows sandbox，但必须把该项明确标记为 unsupported / out of scope，不能在 UI、配置或文档中暗示 Windows 已有同等级 sandbox 能力。实现上应添加 capability detection 和 platform guard：当运行在 Windows 或目标 environment 是 Windows 时，AIALRA 必须显示 Windows sandbox = unsupported，并自动禁用或降级高风险 permission profile，例如 full/custom 网络和文件写入策略需要额外警告或强制 approval。验收标准是：Windows 环境下不会误报 Codex 同款 sandbox 支持；inspector、SessionConfigured、environment capability report 都会明确显示 unsupported，并列出当前实际可用的替代限制和风险。"
+    },
+    {
+      "id": "REQ-061",
+      "number": 61,
+      "title": "macOS seatbelt",
+      "domain": "turn-protocol",
+      "body": "macOS seatbelt：AIALRA 当前不做 macOS seatbelt，但必须明确标记为 unsupported / out of scope，不能把 Linux helper、bwrap、Landlock 的能力错误迁移到 macOS 展示。实现上应添加 macOS platform capability report，说明 seatbelt sandbox 未实现，并在 macOS environment 下自动采用用户态 gate、permission profile、protected path、approval、network policy 等可用的降级保护，同时清楚标记这些不是 Codex 同款 seatbelt enforcement。验收标准是：macOS 上的 inspector 和 SessionConfigured 必须显示 seatbelt = unsupported，sandbox backend = degraded/user-space gate，并且所有高风险操作都必须有清晰 warning、approval 和 audit 记录。"
+    },
+    {
+      "id": "REQ-062",
+      "number": 62,
+      "title": "Protected-create",
+      "domain": "permission-sandbox",
+      "body": "Protected-create：AIALRA 必须 P1 补全 protected-create 语义，防止 agent 通过“新建文件/目录”绕过 protected path 和 FS policy。当前 AIALRA 只有部分保护，必须升级为系统化 create policy：在 .git、.agents、.codex、history 数据库、tool-output-store、密钥目录、系统目录、sandbox 内部目录等 protected roots 下，默认禁止 create、mkdir、rename、copy、move、symlink、hardlink，除非 custom permission profile 明确允许且通过 constraints/reviewer。protected-create 必须同时覆盖 write、edit、apply_patch、shell redirection、mkdir、touch、git 命令副作用和 file mutation 记录。验收标准是：agent 不能通过 `mkdir .git/hooks`、`echo > .codex/config`、`ln -s ~/.ssh workspace/key`、`apply_patch` 新增 protected 文件等方式绕过保护；inspector 必须显示 create 操作命中的 protected-create rule、decision、reviewer 和拒绝原因。"
+    },
+    {
+      "id": "REQ-063",
+      "number": 63,
+      "title": "Exec approval",
+      "domain": "runtime-config",
+      "body": "Exec approval：AIALRA 必须将当前 approval.requested / approval.resolved 升级为 Codex 风格 ExecApprovalRequest，专门用于 shell / exec_command / long-running terminal 的审批。每一次 exec approval 都必须明确记录 command、argv、cwd、environment_id、permission_profile、network_policy、shell_env_policy、risk_level、constraints_result、requested_by、reviewer、approval_scope、expires_at 和 final_decision，不能只是弹一个“是否允许执行”的泛化提示。该审批结果必须写入 history、trace、TerminalInteractionEvent、tool lifecycle、inspector UI，并与 process_id、tool_call_id、turn_id 绑定。验收标准是：任意 shell 命令执行前，AIALRA 都能清楚说明为什么需要审批、审批允许的是哪条命令、在哪个 environment 下生效、是否允许一次还是持续允许，并且 replay/resume 时能恢复完整审批记录。"
+    },
+    {
+      "id": "REQ-064",
+      "number": 64,
+      "title": "Apply patch approval",
+      "domain": "permission-sandbox",
+      "body": "Apply patch approval：AIALRA 必须补全 Codex 风格 ApplyPatchApprovalRequest，不能只把 apply_patch 当成普通 edit permission。apply patch 审批必须在真正修改文件前生成 patch preview，列出所有受影响文件、每个 hunk、create/delete/rename/write 类型、protected path 命中情况、symlink realpath 检查结果、TurnDiff preview、file_mutation preview 和风险等级。审批通过后只能应用被审批的那份 patch，patch 内容、目标路径或 environment 发生变化时必须重新审批。验收标准是：用户在 inspector 中能看到“这次 patch 将改哪些文件、怎么改、为什么需要批准、最终是否执行成功”，并且审批结果、patch preview、最终 TurnDiff 都进入 history 和 trace。"
+    },
+    {
+      "id": "REQ-065",
+      "number": 65,
+      "title": "request_permissions tool",
+      "domain": "runtime-config",
+      "body": "request_permissions tool：AIALRA 必须实现 Codex 同款 request_permissions tool，让模型在遇到权限不足时能结构化请求提升权限，而不是只能失败或让用户手动切 UI。该 tool 必须支持请求 exec、file read/write、apply_patch、network、environment、service tier、long-running process、provider tool 等权限，并明确 requested_permission_profile、requested_network_policy、requested_paths、requested_domains、requested_environment_id、reason、duration、scope。request_permissions 不能绕过 constraints、guardian、reviewer 或 permission profile，只能发起审批流程。验收标准是：模型可以在需要联网、写 protected-adjacent 文件、运行长命令、切换 full access 等场景发起标准权限请求；UI inspector 能显示请求原因、请求范围、审批人、最终 grant 和生效范围。"
+    },
+    {
+      "id": "REQ-066",
+      "number": 66,
+      "title": "Guardian assessment",
+      "domain": "permission-sandbox",
+      "body": "Guardian assessment：AIALRA 必须补全 guardian assessment，用于对高风险审批请求进行独立安全评估，而不是所有请求都直接交给用户按钮处理。guardian 应在 exec、apply_patch、network、protected path、provider-executed tools、external connector、full access、custom permission profile 等高风险场景中运行，输出 risk_level、policy_findings、blocked_reasons、required_reviewer、suggested_decision 和 user_visible_explanation。guardian assessment 必须先于最终 approval resolution 写入 history、trace 和 inspector，并能阻止违反硬 constraints 的请求进入普通批准流程。验收标准是：危险命令、未知域名联网、读密钥、写 .git/.codex、越权 environment 等操作会先出现 guardian 评估结果，用户能看到风险解释，系统能明确区分“可由用户批准”和“guardian 直接拒绝”。"
+    },
+    {
+      "id": "REQ-067",
+      "number": 67,
+      "title": "Auto review",
+      "domain": "permission-sandbox",
+      "body": "Auto review：AIALRA 必须实现 auto_review 配置，支持对低风险、重复、规则明确的请求自动批准或自动拒绝，避免所有操作都打断用户。auto_review 应支持按 tool type、command pattern、path pattern、domain、environment_id、permission_profile、risk_level、project policy、time window 配置规则，并输出 auto_review_result、matched_rule、confidence、reason、fallback_reviewer。auto_review 不得绕过 constraints 和 guardian；当规则不明确、风险过高或命中 protected path 时必须升级给 user/guardian/external reviewer。验收标准是：安全的 read-only 命令、已允许路径内的普通 grep/glob、已白名单域名访问可以自动通过；高风险写入、未知网络、shell destructive command 会自动拒绝或升级审批；所有自动决策都能在 inspector 中看到匹配规则和原因。"
+    },
+    {
+      "id": "REQ-068",
+      "number": 68,
+      "title": "Reviewer override",
+      "domain": "permission-sandbox",
+      "body": "Reviewer override：AIALRA 必须补全 reviewer override，支持 connector-level、environment-level、project-level、enterprise-level 的审批人覆盖规则。不同来源的资源不应该都由 current_user 单独审批，例如企业 connector、remote environment、托管 sandbox、生产仓库、外部 MCP server 可以要求 auto_review、guardian、policy_engine 或 external_reviewer。实现时必须定义 reviewer resolution 顺序：per-request reviewer、environment override、connector override、project policy、session default、current user fallback，并把最终 reviewer 写入 approval request。验收标准是：同一条命令在 local environment 可以由 user 批准，在 enterprise connector environment 中必须由 policy_engine 或 guardian 审批；inspector 能显示 reviewer 是如何被解析出来的，以及哪些 override 生效。"
+    },
+    {
+      "id": "REQ-069",
+      "number": 69,
+      "title": "Environment-aware grants",
+      "domain": "runtime-config",
+      "body": "Environment-aware grants：AIALRA 必须实现 environment id keyed grants，所有 approval grant 都必须绑定 environment_id，不能把一个环境下批准的权限泄漏到另一个环境。grant scope 至少应支持 turn、session、environment、tool、command pattern、path、domain、permission profile、expiration time，并记录 granted_by、reviewer、reason、constraints_snapshot。比如用户允许本地 repo 下运行 `npm test`，不等于允许 remote production environment 运行同样命令；允许某个 container 访问 github.com，也不等于允许 host shell 联网。验收标准是：切换 environment、cwd、permission profile、network policy 后，旧 grant 不会错误复用；inspector 能按 environment 查看当前 grants、来源、作用范围、过期状态和撤销入口。"
+    },
+    {
+      "id": "REQ-070",
+      "number": 70,
+      "title": "Six-button approval UI",
+      "domain": "permission-sandbox",
+      "body": "Six-button approval UI：AIALRA 必须保留并标准化现有 six-button UI，将其映射到正式 approval decision / grant scope，而不是作为只影响前端的临时按钮。虽然 Codex 没有同款 six-button UI，OpenCode 只有 once/always/reject 这类简化选择，但 AIALRA 可以保留更强交互能力；关键是每个按钮都必须落成协议字段，例如 allow once、allow for this turn、allow for this session、allow for this environment、deny once、deny and remember / revoke-like policy。按钮产生的结果必须写入 ApprovalResolved、grant registry、history、trace、inspector，并与 reviewer、constraints、environment_id、tool_call_id 绑定。验收标准是：用户点任意按钮后，系统能明确展示该决定的生效范围、过期条件、是否可撤销、是否被 constraints 限制；后续同类请求是否自动通过或继续询问，必须和按钮语义完全一致。"
+    },
+    {
+      "id": "REQ-071",
+      "number": 71,
+      "title": "Typed protocol events",
+      "domain": "turn-protocol",
+      "body": "Typed protocol events：AIALRA 必须将当前自定义 public event 升级为正式 typed protocol events，对齐 Codex 的 typed event 体系，并兼容 OpenCode event / v2 bridge 的事件桥接方向。所有核心事件都必须有稳定 type、version、schema、turn_id、thread_id、session_id、timestamp、source、payload、extension_data，不能只靠自由 JSON 或字符串 event name。实现时需要把 turn、tool、exec、approval、sandbox、raw、reasoning、context compaction、diff、UI inspector 等事件统一纳入 typed protocol event registry，并生成公共 schema 文档。验收标准是：任何事件都能被类型安全解析、持久化、replay、rollout、inspector 展示和外部订阅；旧 public event 可以通过 adapter 兼容，但新路径必须走 typed protocol events。"
+    },
+    {
+      "id": "REQ-072",
+      "number": 72,
+      "title": "Raw response item",
+      "domain": "turn-protocol",
+      "body": "Raw response item：AIALRA 必须补齐 Codex 风格 raw response item，不能只保留部分 model.raw.chunk。模型 provider 返回的原始 response item、stream chunk、tool call fragment、reasoning fragment、output fragment、usage、finish reason、provider metadata，都必须以 raw response item 形式进入 raw store、history、trace 和 Raw Lab。实现时必须区分 normalized item 和 raw item：normalized item 给 AIALRA runtime 使用，raw item 保留 provider 原貌用于审计和 debug。验收标准是：用户可以在 Raw Lab 中按 turn、model call、provider、chunk sequence 查看原始响应；replay/debug 时能判断问题来自 provider 原始输出、adapter 转换，还是 AIALRA runtime 处理。"
+    },
+    {
+      "id": "REQ-073",
+      "number": 73,
+      "title": "Item started/completed",
+      "domain": "turn-protocol",
+      "body": "Item started/completed：AIALRA 必须补全 Codex 风格 item started / item completed 事件，让每个 message item、reasoning item、tool call item、tool result item、exec item、approval item、raw item 都有清晰生命周期。当前 AIALRA 缺少统一 item 生命周期，容易导致 UI、history、model context、tool settlement 状态不一致。实现时必须给每个 item 分配 item_id，记录 started_at、completed_at、status、parent_item_id、turn_id、source、error、duration，并保证 completed、failed、aborted 等终态互斥且幂等。验收标准是：inspector 可以按 item 时间线展示一次 turn 内所有 item 的开始、完成、失败、中止；replay/resume 后 item 状态不丢失、不重复、不互相覆盖。"
+    },
+    {
+      "id": "REQ-074",
+      "number": 74,
+      "title": "Reasoning raw",
+      "domain": "runtime-config",
+      "body": "Reasoning raw：AIALRA 必须补齐 reasoning raw 的标准承载方式，对齐 Codex 的 AgentReasoningRawContent，并兼容 OpenCode 最新 thinking / reasoning 输出。不同 provider 返回的 reasoning、thinking、summary、hidden/raw reasoning fragment 必须通过统一 adapter 进入 reasoning_raw item，同时根据安全策略决定哪些可展示、哪些只存审计、哪些需要脱敏。AIALRA 不能继续依赖 provider-specific raw 拼接展示，而应该将 reasoning raw、reasoning summary、reasoning output delta 分层存储。验收标准是：支持 reasoning 的 provider 能在 Raw Lab 和 inspector 中看到结构化 reasoning raw 来源、provider 类型、chunk sequence、展示策略；不支持 reasoning 的 provider 必须明确标记 unsupported，而不是显示空白伪装成功。"
+    },
+    {
+      "id": "REQ-075",
+      "number": 75,
+      "title": "Output delta bytes",
+      "domain": "tool-runtime",
+      "body": "Output delta bytes：AIALRA 必须将 output delta 从 preview/text rawRef 升级为 Codex 风格 base64 bytes 或等价无损 bytes delta 表达，确保 stdout、stderr、model output、tool output、provider raw chunk 都能无损流式记录。文本 preview 可以用于 UI 展示，但底层 raw delta 必须保留 channel、sequence、byte_length、encoding、base64_payload、timestamp、raw_output_ref、truncation_marker。实现时必须避免 UTF-8 半字符截断、stdout/stderr 混流、二进制输出损坏、长输出丢失。验收标准是：任意流式输出都能在 Raw Lab 中下载或重放为原始 bytes，同时 UI 可以展示安全截断 preview；history/replay 看到的输出顺序与真实执行顺序一致。"
+    },
+    {
+      "id": "REQ-076",
+      "number": 76,
+      "title": "Raw download",
+      "domain": "turn-protocol",
+      "body": "Raw download：AIALRA 必须把 Raw Lab 的 raw download 能力升级为正式 rollout/history 支持，而不是只做调试页面功能。所有 raw response item、tool output、exec delta、reasoning raw、approval record、sandbox report、TurnDiff、context compaction artifact 都必须有可追踪 raw_ref，并支持按 turn、session、thread、tool_call、model_call 下载。下载必须包含 manifest、schema version、hash、redaction status、provider metadata、AIALRA normalized mapping，方便离线审计和 bug 复现。验收标准是：用户可以从 inspector 或 Raw Lab 下载某个 turn 的完整 raw bundle，并用该 bundle 复盘模型输出、工具输出、事件顺序和 runtime 决策。"
+    },
+    {
+      "id": "REQ-077",
+      "number": 77,
+      "title": "Last-Event-ID",
+      "domain": "turn-protocol",
+      "body": "Last-Event-ID：AIALRA 必须标准化 Last-Event-ID 续传机制，对齐 Codex app-server / rollout 方向，并兼容 OpenCode v2 sync。所有 streaming event、public event、typed protocol event、raw chunk、tool delta 都必须分配单调递增或可排序 event_id，并支持客户端通过 Last-Event-ID 从断点恢复。实现时需要处理重复投递、乱序、断线重连、事件压缩、历史回放和实时订阅切换。验收标准是：前端刷新、网络断开、desktop handoff、远程 app-server 连接恢复后，AIALRA 能从上一次 event_id 继续同步，不重复、不漏事件；inspector 的时间线和 Raw Lab 的 raw chunk 都能通过 event_id 对齐。"
+    },
+    {
+      "id": "REQ-078",
+      "number": 78,
+      "title": "Public schema docs",
+      "domain": "turn-protocol",
+      "body": "Public schema docs：AIALRA 必须将当前 docs 升级为完整 public schema docs，对齐 Codex Rust schema 的严谨性，并吸收 OpenCode OpenAPI / v2 docs 的可集成风格。所有 typed protocol events、UserTurn、TurnContextItem、SessionConfigured、approval、sandbox policy、tool item、exec item、raw item、reasoning item、TurnDiff、extension data 都必须有 schema、字段说明、版本策略、兼容策略、示例 payload 和迁移说明。验收标准是：第三方 UI、插件、MCP、企业 connector、benchmark harness 可以只依赖 public schema docs 正确解析 AIALRA 事件和历史；任何 schema 变更都必须有版本号和 backward compatibility 说明。"
+    },
+    {
+      "id": "REQ-079",
+      "number": 79,
+      "title": "Turn Inspector",
+      "domain": "turn-protocol",
+      "body": "Turn Inspector：AIALRA 必须继续强化 Turn Inspector，把它作为所有 turn/runtime/tool/raw/approval/sandbox 信息的统一可视化入口。虽然 Codex 没有同款产品形态，但 Codex 的事件体系可展示，AIALRA 应该利用自身已有 inspector 优势，把 TurnStarted/Completed/Aborted、UserTurn、TurnContextItem、SessionConfigured、tool lifecycle、exec process、approval、sandbox decision、TurnDiff、context compaction、raw refs、skill catalog 全部按 turn 展示。验收标准是：用户点开任意 turn，都能看到这一轮输入是什么、配置是什么、用了什么模型、跑了哪些工具、改了哪些文件、哪些权限被批准或拒绝、原始输出在哪里、最终状态是什么。"
+    },
+    {
+      "id": "REQ-080",
+      "number": 80,
+      "title": "Sandbox Control Center",
+      "domain": "turn-protocol",
+      "body": "Sandbox Control Center：AIALRA 必须继续强化 Sandbox Control Center，并将其从 UI 控件升级为真实 runtime config 的可视化和控制中心。虽然 Codex 没有同款产品形态，AIALRA 已有该产品层优势，但必须确保 Control Center 展示和实际 active_permission_profile、FileSystemSandboxPolicy、network policy、ShellEnvironmentPolicy、Linux helper backend、approval constraints 完全一致。用户在这里修改的权限、网络、cwd、environment、profile、reviewer、grant scope 必须进入 per-turn override 或 session config，并写入 SessionConfigured / TurnContextItem。验收标准是：Sandbox Control Center 不是“看起来改了”，而是能改变实际 sandbox enforcement；inspector 能追踪每次配置变更何时生效、影响哪些 turn、最终 active 值是什么。"
+    },
+    {
+      "id": "REQ-081",
+      "number": 81,
+      "title": "Raw Lab",
+      "domain": "turn-protocol",
+      "body": "Raw Lab：AIALRA 必须继续强化 Raw Lab，把它从调试工具升级为 raw protocol / raw output / raw response 的正式产品层。虽然 Codex 没有同款 Raw Lab UI，但 Codex 有 raw response item、rollout/history 能力，AIALRA 应该把 model raw chunk、reasoning raw、tool output raw bytes、exec delta、approval raw record、sandbox report、event stream、Last-Event-ID 对齐信息全部集中展示。Raw Lab 必须支持过滤、搜索、按 turn 分组、按 provider/model call 分组、下载 raw bundle、查看 normalized mapping。验收标准是：遇到 provider 解析错误、工具输出丢失、streaming 断线、UI 状态错乱时，Raw Lab 能提供足够原始证据定位问题，而不是只能看文字 preview。"
+    },
+    {
+      "id": "REQ-082",
+      "number": 82,
+      "title": "v2 thinking selector",
+      "domain": "turn-protocol",
+      "body": "v2 thinking selector：AIALRA 必须补全 UI 层 v2 thinking selector，对齐 Codex reasoning effort shortcuts，并合并 OpenCode 最新 v2 thinking level selector。当前 AIALRA 有模型推理字段但 UI 不完整，必须在 UI 中清楚展示 requested effort、effective effort、provider support、fallback reason、service tier 影响、cost/latency 影响。thinking selector 不能只是前端字段，而必须写入 UserTurn / thread_settings override / ModelInfo / model call metadata / inspector。验收标准是：用户切换 thinking level 后，本轮实际模型调用使用对应设置；如果 provider 不支持，UI 明确显示降级原因；最终 turn inspector 能显示这一轮请求的 thinking 档位和实际生效档位。"
+    },
+    {
+      "id": "REQ-083",
+      "number": 83,
+      "title": "App desktop handoff",
+      "domain": "turn-protocol",
+      "body": "App desktop handoff：AIALRA 必须补齐 app desktop handoff 方向，对齐 Codex 最新 /app desktop handoff 的产品能力，使 web/app-server/desktop/本地 runtime 之间可以安全交接 session、thread、turn、event stream 和 environment 控制权。handoff 必须携带 session_id、thread_id、last_event_id、selected environment、active permission profile、grants、raw sync state、process registry state，并经过权限确认。验收标准是：用户可以从浏览器切到桌面端继续同一个 turn 或 thread，事件不丢、raw 不丢、live process 状态明确；如果某些 live process 或 environment 不能 handoff，系统必须在 inspector 中明确标记 unsupported/degraded。"
+    },
+    {
+      "id": "REQ-084",
+      "number": 84,
+      "title": "Session review reactivity",
+      "domain": "permission-sandbox",
+      "body": "Session review reactivity：AIALRA 必须吸收 OpenCode 最新 session review reactivity 修复，更新当前旧状态，保证 session review 页面或 inspector 在事件到达、tool result settlement、approval resolved、raw chunk streaming、TurnDiff 生成后能及时响应。UI 不应该依赖手动刷新才能看到状态变化，也不能出现 backend 已完成但 review 仍显示旧状态。实现时需要明确 event subscription、Last-Event-ID resume、projector update、message updater、state cache invalidation 规则。验收标准是：长命令输出、approval 决策、文件 diff、context compaction、tool end 等状态变化在 UI 中实时更新；断线重连后不会丢失或重复显示事件。"
+    },
+    {
+      "id": "REQ-085",
+      "number": 85,
+      "title": "VCS query cache",
+      "domain": "tool-runtime",
+      "body": "VCS query cache：AIALRA 必须合并 OpenCode 最新 VCS query cache 修复，更新当前旧实现，避免 git status、git diff、branch、file dirty state、TurnDiff 查询在大仓库或频繁工具调用下造成性能问题或陈旧结果。VCS query cache 必须和 file mutation store、TurnDiffEvent、tool result settlement 联动，工具修改文件后能精准 invalidate 相关缓存，而不是全局乱清或永远不清。验收标准是：频繁 edit/apply_patch/write 后，UI 展示的 git 状态和 TurnDiff 及时准确；benchmark 或大 repo 中不会因为重复 git query 造成明显卡顿；inspector 能显示 VCS cache hit/miss 和 invalidation 来源。"
+    },
+    {
+      "id": "REQ-086",
+      "number": 86,
+      "title": "Persistent end-to-end prompt",
+      "domain": "observability-ui",
+      "body": "Persistent end-to-end prompt：AIALRA 必须维护持久端到端 agent prompt，对齐 Codex system prompt 的全局约束能力，同时保留 AIALRA 的模型 prompt + EngineeringRun 设计，并兼容 OpenCode 各模型 prompt。该 prompt 必须覆盖工程执行原则、工具使用规则、验证要求、安全约束、上下文反查、计划先行、失败处理、最终报告格式，并且能按 model/provider/skill/turn override 组合生成。验收标准是：每次 EngineeringRun 或普通 turn 都能记录实际使用的 effective prompt version、组成来源、hash、model-specific diff，并在 inspector/Raw Lab 中可查看或审计；prompt 更新不会静默改变历史 run 的可复现性。"
+    },
+    {
+      "id": "REQ-087",
+      "number": 87,
+      "title": "Verification encouragement",
+      "domain": "observability-ui",
+      "body": "Verification encouragement：AIALRA 必须把 prompt 级 verification encouragement 升级为 runtime 级 verification loop，对齐 Codex prompt 强约束，并强化现有 EngineeringRun verification loop。模型不能只被“鼓励测试”，而必须在计划中声明验证路径，在执行后尽可能运行测试、lint、typecheck、benchmark、diff review 或最小可行验证。验证行为、失败原因、跳过原因都必须写入 turn final report、history、trace 和 inspector。验收标准是：每个工程修改类 turn 都会产生 VerificationPlan、VerificationRun、VerificationResult；如果没有运行测试，必须明确说明无法运行的具体原因，而不是简单说未测试。"
+    },
+    {
+      "id": "REQ-088",
+      "number": 88,
+      "title": "Zero patch gate",
+      "domain": "tool-runtime",
+      "body": "Zero patch gate：AIALRA 必须保留并标准化 zero patch gate，防止 agent 声称完成工程任务但没有产生任何有效代码或文件修改。虽然 Codex/OpenCode 没有同名机制，AIALRA 的 zero patch gate 应作为工程质量保护层继续存在，并与 TurnDiff、file mutation store、tool result settlement、final report 联动。当任务要求实现/修复/修改代码而 TurnDiff 为空时，系统必须阻止成功完成或要求模型解释并重新执行。验收标准是：工程任务没有 patch 时不能被标记为 completed；inspector 和最终报告必须显示 zero patch gate 是否触发、为什么触发、模型如何补救。"
+    },
+    {
+      "id": "REQ-089",
+      "number": 89,
+      "title": "Stop gate",
+      "domain": "permission-sandbox",
+      "body": "Stop gate：AIALRA 必须保留并标准化 stop gate，防止 agent 在未完成计划、未验证、工具仍在运行、approval 未解决、TurnDiff 未生成、raw output 未落账时提前结束。stop gate 应检查 turn state、live process、pending approvals、unsettled tool results、verification result、context compaction、final output schema，并给出可解释阻止原因。虽然 Codex/OpenCode 没有同名机制，但这是 AIALRA 的工程收敛优势。验收标准是：模型尝试提前 final 时，如果仍有 running process、pending tool、未结算 output、未执行必要验证，AIALRA 会阻止或要求继续处理；inspector 显示 stop gate 检查结果。"
+    },
+    {
+      "id": "REQ-090",
+      "number": 90,
+      "title": "Repeated tool checkpoint",
+      "domain": "tool-runtime",
+      "body": "Repeated tool checkpoint：AIALRA 必须保留并强化 repeated tool checkpoint，对齐 OpenCode 的 DOOM_LOOP_THRESHOLD 3 思路，防止模型在同一工具、同一命令、同一搜索、同一失败路径上无限循环。AIALRA 当前已有 repeated tool checkpoint，必须将其标准化为 agent workflow guard，记录 repeated pattern、tool name、arguments similarity、failure similarity、threshold、intervention suggestion。触发后系统应要求模型总结已尝试路径、改变策略、请求用户信息或停止。验收标准是：连续三次或配置次数重复运行无进展工具时，AIALRA 能自动生成 checkpoint，并在 inspector/final report 中显示循环检测原因和后续处理。"
+    },
+    {
+      "id": "REQ-091",
+      "number": 91,
+      "title": "Patch quality scoring",
+      "domain": "observability-ui",
+      "body": "Patch quality scoring：AIALRA 必须继续发展 patch quality scoring，将当前 benchmark 评分能力扩展到普通工程 turn。每个代码修改完成后，系统应基于 TurnDiff、test result、lint/typecheck、file mutation、risk profile、patch size、protected path、是否过拟合、是否仅改测试、是否破坏 public API 等因素生成 patch quality score。虽然 Codex/OpenCode 没有同名功能，AIALRA 应将其作为工程质量层，帮助用户判断 patch 是否可信。验收标准是：最终报告和 inspector 显示 patch quality score、评分理由、风险项、验证覆盖；benchmark run 中该评分可与官方 harness 结果对照。"
+    },
+    {
+      "id": "REQ-092",
+      "number": 92,
+      "title": "Deployment gate",
+      "domain": "permission-sandbox",
+      "body": "Deployment gate：AIALRA 必须保留并完善 deployment gate，防止 agent 在未验证、未审计、未确认环境和权限的情况下执行部署、发布、推送、上传、生产变更等高风险操作。deployment gate 应识别 npm publish、docker push、kubectl、terraform apply、git push、cloud deploy、ssh production、database migration 等命令，并要求额外 approval、guardian assessment、environment-aware grant、dry-run 或 explicit confirmation。虽然 Codex/OpenCode 没有同名机制，AIALRA 应将其作为安全上线保护层。验收标准是：任何疑似部署命令都会触发 deployment gate；inspector 显示命中的部署规则、风险说明、审批人、是否 dry-run、最终是否执行。"
+    },
+    {
+      "id": "REQ-093",
+      "number": 93,
+      "title": "Benchmark tiers",
+      "domain": "agent-quality",
+      "body": "Benchmark tiers：AIALRA 必须继续完善 benchmark tiers，把现有 benchmark 能力标准化为多层验证体系。不同任务应能选择 smoke、unit、integration、official harness、SWE-bench、full regression、performance、security 等验证 tier，并记录 requested tier、effective tier、运行命令、耗时、结果、失败原因、成本。虽然 Codex/OpenCode 没有同名 benchmark tier，但 AIALRA 需要用它支撑工程质量和 agent 对比评测。验收标准是：每个 EngineeringRun 可以明确选择验证层级；最终报告和 1:1 对照表能显示实际跑了哪个 tier、通过哪些、失败哪些、哪些因为资源或权限跳过。"
+    },
+    {
+      "id": "REQ-094",
+      "number": 94,
+      "title": "Multi-agent v2",
+      "domain": "permission-sandbox",
+      "body": "Multi-agent v2：AIALRA 必须补齐 multi-agent v2 能力，对齐 Codex 最新 multi-agent v2 方向。系统应支持 planner、implementer、reviewer、tester、awaiter、guardian、summarizer 等角色分工，并通过 shared turn context、typed events、tool permissions、history persistence、raw store、skill catalog 协调。multi-agent 不能只是多个模型并发聊天，而必须有明确任务分配、权限隔离、结果汇总、冲突解决、最终 settlement。验收标准是：一个复杂工程任务可以由 planner 生成计划、implementer 改代码、tester 验证、reviewer 审查、guardian 检查风险，所有 agent 行为都能在 inspector 中按角色和 turn 展示，并可审计、回放。"
+    },
+    {
+      "id": "REQ-095",
+      "number": 95,
+      "title": "Skills per-turn",
+      "domain": "tool-runtime",
+      "body": "Skills per-turn：AIALRA 必须补齐完整 per-turn skills，对齐 Codex skills per-turn，并吸收 OpenCode skill foundation。每个 turn 开始时必须解析可用 skill catalog，记录 skill_id、version、source、适用条件、关联工具、MCP 资源、权限需求、prompt 注入内容、实际使用情况。skills 不能隐藏在模型 prompt 或单一 skill tool 中，而必须成为 turn runtime 的显式组成部分，并显示在 inspector 和最终报告里。验收标准是：用户可以看到本轮用了哪些 skills、为什么启用、调用了哪些工具和资源、哪些 skill 被禁用及原因；未来 Hermes 或更高阶架构可以基于 per-turn skill catalog 做调度和优化。"
+    }
+  ]
+}

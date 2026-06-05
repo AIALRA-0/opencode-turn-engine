@@ -27,6 +27,8 @@ import type { CodexRetryConfig, TurnContext } from "./turn-context"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { AialraTurnTrace } from "./turn-trace"
+import { buildEffectivePromptManifest, effectivePromptRaw } from "./prompt-manifest"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -114,6 +116,48 @@ const live: Layer.Layer<
         flags,
         isWorkflow,
         turn: input.turn,
+      })
+      const effectivePrompt = buildEffectivePromptManifest({
+        user: input.user,
+        sessionID: input.sessionID,
+        model: input.model,
+        agent: input.agent,
+        prepared,
+        requestedSystem: input.system,
+        toolChoice: input.toolChoice,
+        isWorkflow,
+        small: input.small,
+        turn: input.turn,
+      })
+      yield* AialraTurnTrace.emit({
+        phase: "prompt.effective.resolved",
+        turnID: input.turn?.turnID ?? input.user.id,
+        sessionID: input.sessionID,
+        messageID: input.user.id,
+        data: {
+          schema: effectivePrompt.schema,
+          version: effectivePrompt.version,
+          prompt_hash: effectivePrompt.hashes.manifest,
+          system_hash: effectivePrompt.hashes.system,
+          messages_hash: effectivePrompt.hashes.messages,
+          source_count: effectivePrompt.sourceCount,
+          sources: effectivePrompt.sources,
+          providerID: effectivePrompt.providerID,
+          modelID: effectivePrompt.modelID,
+          variant: effectivePrompt.variant,
+          effective_system_count: effectivePrompt.counts.effectiveSystemCount,
+          model_message_count: effectivePrompt.counts.modelMessageCount,
+          tool_count: effectivePrompt.counts.toolCount,
+          model_specific_diff: effectivePrompt.modelSpecificDiff,
+          raw_payload: effectivePromptRaw({ manifest: effectivePrompt, prepared }),
+        },
+        extension_data: {
+          aialra: {
+            effective_prompt_schema: effectivePrompt.schema,
+            effective_prompt_version: effectivePrompt.version,
+            effective_prompt_hash: effectivePrompt.hashes.manifest,
+          },
+        },
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
@@ -221,6 +265,7 @@ const live: Layer.Layer<
 
       // Runtime seam: native is an opt-in adapter over @opencode-ai/llm. It
       // either returns a ready LLMEvent stream or a concrete fallback reason.
+      let runtimeSelected = false
       if (flags.experimentalNativeLlm) {
         const native = LLMNativeRuntime.stream({
           model: input.model,
@@ -239,6 +284,18 @@ const live: Layer.Layer<
           abort: input.abort,
         })
         if (native.type === "supported") {
+          yield* AialraTurnTrace.emit({
+            phase: "runtime.provider.selected",
+            turnID: input.turn?.turnID ?? input.user.id,
+            sessionID: input.sessionID,
+            messageID: input.user.id,
+            data: {
+              runtime: "native",
+              providerID: input.model.providerID,
+              modelID: input.model.id,
+              api: input.model.api.npm,
+            },
+          })
           yield* Effect.logInfo("llm runtime selected").pipe(
             Effect.annotateLogs({
               "llm.runtime": "native",
@@ -251,6 +308,21 @@ const live: Layer.Layer<
             stream: native.stream,
           }
         }
+        yield* AialraTurnTrace.emit({
+          phase: "runtime.provider.selected",
+          turnID: input.turn?.turnID ?? input.user.id,
+          sessionID: input.sessionID,
+          messageID: input.user.id,
+          data: {
+            runtime: "ai-sdk",
+            fallbackFrom: "native",
+            reason: native.reason,
+            providerID: input.model.providerID,
+            modelID: input.model.id,
+            api: input.model.api.npm,
+          },
+        })
+        runtimeSelected = true
         yield* Effect.logInfo("llm runtime selected").pipe(
           Effect.annotateLogs({
             "llm.runtime": "ai-sdk",
@@ -262,6 +334,21 @@ const live: Layer.Layer<
         l.info("native runtime unavailable; falling back to ai-sdk", { reason: native.reason })
       }
 
+      if (!runtimeSelected) {
+        yield* AialraTurnTrace.emit({
+          phase: "runtime.provider.selected",
+          turnID: input.turn?.turnID ?? input.user.id,
+          sessionID: input.sessionID,
+          messageID: input.user.id,
+          data: {
+            runtime: "ai-sdk",
+            providerID: input.model.providerID,
+            modelID: input.model.id,
+            api: input.model.api.npm,
+            experimentalNativeLlm: flags.experimentalNativeLlm,
+          },
+        })
+      }
       yield* Effect.logInfo("llm runtime selected").pipe(
         Effect.annotateLogs({
           "llm.runtime": "ai-sdk",

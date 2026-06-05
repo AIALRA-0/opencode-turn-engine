@@ -18,6 +18,7 @@ import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
 import * as Log from "@opencode-ai/core/util/log"
 import { EffectBridge } from "@/effect/bridge"
+import { ToolFoundation } from "./tool-foundation"
 
 const log = Log.create({ service: "session.tools" })
 
@@ -38,6 +39,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const registry = yield* ToolRegistry.Service
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
+  const foundation = yield* ToolFoundation.Service
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -66,6 +68,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         .ask({
           ...req,
           sessionID: input.session.id,
+          requested_by: "assistant_tool",
+          requested_at: new Date().toISOString(),
+          approval_reviewer: { role: "user", id: "current_user", label: "User，当前用户", source: "default" },
+          overridden_by_constraints: false,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
           ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
         })
@@ -90,7 +96,16 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
               { args },
             )
-            const result = yield* item.execute(args, ctx)
+            const result = yield* foundation.execute({
+              sessionID: ctx.sessionID,
+              messageID: ctx.messageID,
+              turn: ctx.turn,
+              tool: item.id,
+              callID: ctx.callID,
+              source: "opencode_registry",
+              input: args,
+              run: item.execute(args, ctx),
+            })
             const output = {
               ...result,
               attachments: result.attachments?.map((attachment) => ({
@@ -131,19 +146,28 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
             { args },
           )
-          const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.gen(function* () {
-            yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
-            return yield* Effect.promise(() => execute(args, opts))
-          }).pipe(
-            Effect.withSpan("Tool.execute", {
-              attributes: {
-                "tool.name": key,
-                "tool.call_id": opts.toolCallId,
-                "session.id": ctx.sessionID,
-                "message.id": input.processor.message.id,
-              },
-            }),
-          )
+          const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* foundation.execute({
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            turn: ctx.turn,
+            tool: key,
+            callID: ctx.callID,
+            source: "mcp_registry",
+            input: args,
+            run: Effect.gen(function* () {
+              yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
+              return yield* Effect.promise(() => execute(args, opts))
+            }).pipe(
+              Effect.withSpan("Tool.execute", {
+                attributes: {
+                  "tool.name": key,
+                  "tool.call_id": opts.toolCallId,
+                  "session.id": ctx.sessionID,
+                  "message.id": input.processor.message.id,
+                },
+              }),
+            ),
+          })
           yield* plugin.trigger(
             "tool.execute.after",
             { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
@@ -202,6 +226,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     tools[key] = item
   }
 
+  yield* foundation.resolve({ sessionID: input.session.id, turn: undefined, toolCount: Object.keys(tools).length })
   return tools
 })
 

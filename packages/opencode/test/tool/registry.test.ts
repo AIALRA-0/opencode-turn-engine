@@ -137,6 +137,24 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("exposes await_process for yielded shell processes", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).toContain("await_process")
+    }),
+  )
+
+  it.instance("exposes cleanup_processes for background process cleanup", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).toContain("cleanup_processes")
+    }),
+  )
+
   it.instance("hides task background parameter unless experimental background subagents are enabled", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
