@@ -915,9 +915,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID, args },
                   output,
                 )
-                if (options.abortSignal?.aborted) {
-                  yield* input.processor.completeToolCall(options.toolCallId, output)
-                }
+                yield* input.processor.completeToolCall(options.toolCallId, output)
                 return output
               }),
             )
@@ -1025,9 +1023,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 })),
                 content: result.content,
               }
-              if (opts.abortSignal?.aborted) {
-                yield* input.processor.completeToolCall(opts.toolCallId, output)
-              }
+              yield* input.processor.completeToolCall(opts.toolCallId, output)
               return output
             }),
           )

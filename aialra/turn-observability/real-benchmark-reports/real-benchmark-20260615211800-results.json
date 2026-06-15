@@ -1,0 +1,981 @@
+[
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "django__django-12754",
+    "datasetKey": "swe-bench-verified",
+    "repo": "django/django",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/django__django-12754/worktree",
+    "sessionID": "ses_132e4a610ffeeNTjktj4SJgd2s",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 5321,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 271903,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "gateDecisions": [
+      {
+        "id": "pev_mqfpjhp4_i5d4_726aa23f",
+        "type": "engineering.stop_gate.checked",
+        "status": "passed",
+        "severity": "info",
+        "summary": "final 前检查没有发现必须阻止的问题",
+        "turnID": "msg_ecd1b5a2a001iSBxnU8mwNzDST",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "pass",
+            "reason": "验证已通过并开启通过即停止"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      }
+    ],
+    "toolCallCount": 29,
+    "eventCount": 5000,
+    "finalText": "",
+    "terminalErrorCategory": "",
+    "error": "",
+    "changedFiles": [
+      "django/db/migrations/autodetector.py",
+      "tests/migrations/test_autodetector.py"
+    ],
+    "patchBytes": 3164,
+    "diffStat": "django/db/migrations/autodetector.py  | 12 ++++++++++++\n tests/migrations/test_autodetector.py | 22 ++++++++++++++++++++++\n 2 files changed, 34 insertions(+)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": true,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/django__django-12754/official-harness/aialra-deepseek-v4-pro-max-django__django-12754.20260615211800-aialra-deepseek-v4-pro-max-django__django-12754-initial.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-django__django-12754.20260615211800-aialra-deepseek-v4-pro-max-django__django-12754-initial.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-06-15 23:11:09,309 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:11:09,310 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:11:09,348 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Verified/91aa3ed51b709be6457e12d00300a6a596d4c6a3/README.md \"HTTP/1.1 200 OK\"\n2026-06-15 23:11:09,673 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/91aa3ed51b709be6457e12d00300a6a596d4c6a3/SWE-bench_Verified.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:11:10,082 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Verified/SWE-bench/SWE-bench_Verified.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:11:10,342 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Verified/revision/91aa3ed51b709be6457e12d00300a6a596d4c6a3 \"HTTP/1.1 200 OK\"\n2026-06-15 23:11:10,514 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/91aa3ed51b709be6457e12d00300a6a596d4c6a3/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:11:10,709 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Verified \"HTTP/1.1 200 OK\"\n2026-06-15 23:11:10,900 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Verified/tree/91aa3ed51b709be6457e12d00300a6a596d4c6a3/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:11:11,022 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Verified/tree/91aa3ed51b709be6457e12d00300a6a596d4c6a3?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:11:11,185 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/91aa3ed5"
+    },
+    "repairRounds": 0,
+    "repairs": [],
+    "patchQuality": {
+      "score": 95,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 2,
+      "testFileCount": 1,
+      "patchBytes": 3164,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证通过 +35",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "包含测试文件 1 个 +10",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  },
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "pytest-dev__pytest-7168",
+    "datasetKey": "swe-bench-lite",
+    "repo": "pytest-dev/pytest",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/pytest-dev__pytest-7168/worktree",
+    "sessionID": "ses_132db4359ffeZaGSLGoprQnQpD",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 5534,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 97911,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "gateDecisions": [
+      {
+        "id": "pev_mqfps86p_ia3q_ae15be6d",
+        "type": "engineering.stop_gate.checked",
+        "status": "continue",
+        "severity": "warning",
+        "summary": "本轮工程任务还没有可识别验证结果",
+        "turnID": "msg_ecd24bd03001Jw66Wp72IkofYh",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "continue",
+            "reason": "本轮工程任务还没有可识别验证结果"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfps86r_ia3t_67b1a501",
+        "type": "engineering.verification.repair_requested",
+        "status": "continued",
+        "severity": "warning",
+        "summary": "模型准备结束，但还没有运行可识别验证命令",
+        "turnID": "msg_ecd24bd03001Jw66Wp72IkofYh",
+        "reason": "stop_gate_verification",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfpsfcg_ib4i_c8e7f417",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 bash",
+        "turnID": "msg_ecd24bd03001Jw66Wp72IkofYh",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfpsjgw_ibpn_3c09b3c6",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 read",
+        "turnID": "msg_ecd24bd03001Jw66Wp72IkofYh",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfpspfa_ickv_68beac79",
+        "type": "engineering.stop_gate.checked",
+        "status": "passed",
+        "severity": "info",
+        "summary": "final 前检查没有发现必须阻止的问题",
+        "turnID": "msg_ecd24bd03001Jw66Wp72IkofYh",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "pass",
+            "reason": "验证已通过并开启通过即停止"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      }
+    ],
+    "toolCallCount": 8,
+    "eventCount": 5000,
+    "finalText": "## Summary\n\n**Root cause:** In `src/_pytest/_io/saferepr.py:23`, the `_format_repr_exception` function accessed `obj.__class__.__name__`, which triggers `__getattribute__`. When a class has a broken `__getattribute__` (which raises), this causes an unhandled exception during error formatting, producing an `INTERNALERROR` instead of a proper test failure report.\n\n**Changed file:** `src/_pytest/_io/saferepr.py:23` — changed `obj.__class__.__name__` to `type(obj).__name__`\n\n**Why this is correct:** `type(obj)` bypasses `__getattribute__`, so it doesn't trigger the broken method. This is consistent with the existing pattern already used in `_try_repr_or_str` on line 12 of the same file.\n\n**Validation:** The existing `testing/io/test_saferepr.py` tests all pass with this change.",
+    "terminalErrorCategory": "",
+    "error": "",
+    "changedFiles": [
+      "src/_pytest/_io/saferepr.py"
+    ],
+    "patchBytes": 546,
+    "diffStat": "src/_pytest/_io/saferepr.py | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": true,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/pytest-dev__pytest-7168/official-harness/aialra-deepseek-v4-pro-max-pytest-dev__pytest-7168.20260615211800-aialra-deepseek-v4-pro-max-pytest-dev__pytest-7168-initial.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-pytest-dev__pytest-7168.20260615211800-aialra-deepseek-v4-pro-max-pytest-dev__pytest-7168-initial.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-06-15 23:18:28,192 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\n2026-06-15 23:18:28,216 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Lite/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/README.md \"HTTP/1.1 200 OK\"\n2026-06-15 23:18:28,541 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:18:28,894 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Lite/SWE-bench/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:18:29,276 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/revision/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e \"HTTP/1.1 200 OK\"\n2026-06-15 23:18:29,409 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:18:29,675 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-06-15 23:18:29,873 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:18:29,985 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:18:30,140 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/dataset_infos.json \"HTTP/1.1 404 Not Found\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:18:30,147 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher"
+    },
+    "repairRounds": 0,
+    "repairs": [],
+    "patchQuality": {
+      "score": 85,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 1,
+      "testFileCount": 0,
+      "patchBytes": 546,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证通过 +35",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "未包含测试文件 +0",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  },
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "scikit-learn__scikit-learn-14092",
+    "datasetKey": "swe-bench-lite",
+    "repo": "scikit-learn/scikit-learn",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/scikit-learn__scikit-learn-14092/worktree",
+    "sessionID": "ses_132d566d0ffesDQllgqvnHds67",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 5913,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 226575,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "gateDecisions": [
+      {
+        "id": "pev_mqfq33ky_iudy_b0ccb364",
+        "type": "engineering.stop_gate.activated",
+        "status": "active",
+        "severity": "info",
+        "summary": "验证通过后不再允许继续工具调用",
+        "turnID": "msg_ecd2a99c7001GWx7JjkLp3SLAK"
+      },
+      {
+        "id": "pev_mqfq37kb_iuhs_5c91248a",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 read",
+        "turnID": "msg_ecd2a99c7001GWx7JjkLp3SLAK",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfq3oxk_iyw9_ed90b2bb",
+        "type": "engineering.stop_gate.checked",
+        "status": "passed",
+        "severity": "info",
+        "summary": "final 前检查没有发现必须阻止的问题",
+        "turnID": "msg_ecd2a99c7001GWx7JjkLp3SLAK",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "pass",
+            "reason": "验证已通过并开启通过即停止"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      }
+    ],
+    "toolCallCount": 19,
+    "eventCount": 5000,
+    "finalText": "## 总结\n\n**根本原因:** `sklearn/neighbors/nca.py` 中的 `_validate_params` 方法在调用 `check_scalar` 时使用了严格的 Python 类型（`int`、`float`）。在 GridSearchCV 中，参数值可能是 numpy 标量类型（例如来自 `np.arange()` 的 `np.int64`），或者是期望 `float` 类型时传入的 Python `int`。`check_scalar` 内部使用了 `isinstance(x, target_type)` 进行类型检查，这会导致以下情况失败：\n- `np.int64(3)` vs `int` → `False`\n- `1` (int) vs `float` → `False`\n\n**修复方案:** 在 `_validate_params` 中将 `check_scalar` 的类型参数改为 `numbers` 模块中的抽象基类：\n- `int` → `numbers.Integral`（同时接受 `int`、`np.int64`、`np.int32` 等）\n- `float` → `numbers.Real`（同时接受 `float`、`int`、`np.float64` 等）\n\n同时添加了 `import numbers`。\n\n**修改文件:** `sklearn/neighbors/nca.py`\n- 第 13 行: 新增 `import numbers`\n- 第 303 行: `n_components` 的 `check_scalar` 将 `int` 改为 `numbers.Integral`\n- 第 322 行: `max_iter` 的 `check_scalar` 将 `int` 改为 `numbers.Integral`\n- 第 323 行: `tol` 的 `check_scalar` 将 `float` 改为 `numbers.Real`\n- 第 324 行: `verbose` 的 `check_scalar` 将 `int` 改为 `numbers.Integral`",
+    "terminalErrorCategory": "",
+    "error": "",
+    "changedFiles": [
+      "sklearn/neighbors/nca.py"
+    ],
+    "patchBytes": 1483,
+    "diffStat": "sklearn/neighbors/nca.py | 9 +++++----\n 1 file changed, 5 insertions(+), 4 deletions(-)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": true,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/scikit-learn__scikit-learn-14092/official-harness/aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-14092.20260615211800-aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-14092-initial.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-14092.20260615211800-aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-14092-initial.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-06-15 23:27:03,081 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\n2026-06-15 23:27:03,098 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Lite/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/README.md \"HTTP/1.1 200 OK\"\n2026-06-15 23:27:03,238 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:27:03,238 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:27:03,619 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Lite/SWE-bench/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:27:04,097 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/revision/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e \"HTTP/1.1 200 OK\"\n2026-06-15 23:27:04,215 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:27:04,426 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-06-15 23:27:04,670 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:27:04,791 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:27:04,920 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d3"
+    },
+    "repairRounds": 0,
+    "repairs": [],
+    "patchQuality": {
+      "score": 85,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 1,
+      "testFileCount": 0,
+      "patchBytes": 1483,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证通过 +35",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "未包含测试文件 +0",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  },
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "pylint-dev__pylint-7228",
+    "datasetKey": "swe-bench-lite",
+    "repo": "pylint-dev/pylint",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/pylint-dev__pylint-7228/worktree",
+    "sessionID": "ses_132cd33a0ffeVTlo0CkaSNLk9N",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 5390,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 417769,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "gateDecisions": [
+      {
+        "id": "pev_mqfqf2xa_kc8y_650e3c28",
+        "type": "engineering.stop_gate.checked",
+        "status": "continue",
+        "severity": "warning",
+        "summary": "本轮工程任务还没有可识别验证结果",
+        "turnID": "msg_ecd32ccbe001753n1kv4375Q9j",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "continue",
+            "reason": "本轮工程任务还没有可识别验证结果"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqf2xc_kc91_91a328d3",
+        "type": "engineering.verification.repair_requested",
+        "status": "continued",
+        "severity": "warning",
+        "summary": "模型准备结束，但还没有运行可识别验证命令",
+        "turnID": "msg_ecd32ccbe001753n1kv4375Q9j",
+        "reason": "stop_gate_verification",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqg18q_kgg9_845d26ca",
+        "type": "engineering.stop_gate.activated",
+        "status": "active",
+        "severity": "info",
+        "summary": "验证通过后不再允许继续工具调用",
+        "turnID": "msg_ecd32ccbe001753n1kv4375Q9j"
+      },
+      {
+        "id": "pev_mqfqg8w8_kgzc_a0e061e3",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 bash",
+        "turnID": "msg_ecd32ccbe001753n1kv4375Q9j",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqgedv_khly_a892e4a0",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 bash",
+        "turnID": "msg_ecd32ccbe001753n1kv4375Q9j",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqguaq_kkex_2d4e9f38",
+        "type": "engineering.stop_gate.checked",
+        "status": "passed",
+        "severity": "info",
+        "summary": "final 前检查没有发现必须阻止的问题",
+        "turnID": "msg_ecd32ccbe001753n1kv4375Q9j",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "pass",
+            "reason": "验证已通过并开启通过即停止"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqq2tm_lgoh_11fb88be",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 bash",
+        "turnID": "msg_ecd3c6356001q4DE6jw3L0sB2h",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqq348_lgyu_951e561b",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 bash",
+        "turnID": "msg_ecd3c6356001q4DE6jw3L0sB2h",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqqjw2_lpsc_bad44462",
+        "type": "engineering.stop_gate.checked",
+        "status": "passed",
+        "severity": "info",
+        "summary": "final 前检查没有发现必须阻止的问题",
+        "turnID": "msg_ecd3c6356001q4DE6jw3L0sB2h",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "pass",
+            "reason": "验证已通过并开启通过即停止"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      }
+    ],
+    "toolCallCount": 32,
+    "eventCount": 5000,
+    "finalText": "## Repair Round 1 Report\n\n### Changes Made\n**File:** `pylint/config/arguments_manager.py`\n\nAdded `try/except re.error` blocks in two methods:\n\n1. **`_parse_configuration_file`** (line ~255): Wraps `parse_known_args` to catch `re.error`, prints `\"Error parsing configuration file: {e}\"` to stderr, calls `sys.exit(32)`.\n\n2. **`_parse_command_line_configuration`** (line ~275): Same pattern for command-line argument parsing.\n\n### Verification Result\n**FAILED** — `Instances resolved: 0, Instances unresolved: 1`\n\n### Likely Root Cause of Failure\n\nThe most probable issue is that `sys.exit(32)` inside the except block raises `SystemExit`, but the test harness catches `SystemExit`. After the except block, the code references `parsed_args` which is never assigned when `re.error` is caught — this would cause a `NameError`:\n\n```python\ntry:\n    self.config, parsed_args = ...  # parsed_args only defined here\nexcept re.error:\n    sys.exit(32)                    # SystemExit may be caught by test harness\nunrecognized_options = []           # then this code runs with parsed_args undefined\nfor opt in parsed_args:              # NameError!\n```\n\n### Recommended Fix\n\nMove the unrecognized-options check inside the try block so it only executes on success:\n\n```python\ndef _parse_configuration_file(self, arguments: list[str]) -> None:\n    try:\n        self.config, parsed_args = self._arg_parser.parse_known_args(\n            arguments, self.config\n        )\n        unrecognized_options: list[str] = []\n        for opt in parsed_args:\n            if opt.startswith(\"--\"):\n                unrecognized_options.append(opt[2:])\n        if unrecognized_options:\n            raise _UnrecognizedOptionError(options=unrecognized_options)\n    except re.error as e:\n        print(f\"Error parsing configuration fi",
+    "terminalErrorCategory": "",
+    "error": "",
+    "changedFiles": [
+      "pylint/config/arguments_manager.py"
+    ],
+    "patchBytes": 1552,
+    "diffStat": "pylint/config/arguments_manager.py | 20 ++++++++++++++------\n 1 file changed, 14 insertions(+), 6 deletions(-)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": false,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/pylint-dev__pylint-7228/official-harness-repair-1/aialra-deepseek-v4-pro-max-pylint-dev__pylint-7228.20260615211800-aialra-deepseek-v4-pro-max-pylint-dev__pylint-7228-repair-1.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 0\nInstances unresolved: 1\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-pylint-dev__pylint-7228.20260615211800-aialra-deepseek-v4-pro-max-pylint-dev__pylint-7228-repair-1.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-06-15 23:44:39,314 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:44:39,315 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:44:39,353 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Lite/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/README.md \"HTTP/1.1 200 OK\"\n2026-06-15 23:44:39,482 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:44:39,905 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Lite/SWE-bench/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:44:40,092 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/revision/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e \"HTTP/1.1 200 OK\"\n2026-06-15 23:44:40,210 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:44:40,386 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-06-15 23:44:40,506 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:44:40,621 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:44:40,752 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/dataset_"
+    },
+    "repairRounds": 1,
+    "repairs": [
+      {
+        "round": 1,
+        "beforePassed": false,
+        "repairOk": true,
+        "repairTimedOut": false,
+        "repairWaitingApproval": false,
+        "repairWaitingQuestion": false,
+        "repairDurationMs": 123152,
+        "repairToolCallCount": 32
+      }
+    ],
+    "patchQuality": {
+      "score": 50,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 1,
+      "testFileCount": 0,
+      "patchBytes": 1552,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证未通过 +0",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "未包含测试文件 +0",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  },
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "scikit-learn__scikit-learn-13241",
+    "datasetKey": "swe-bench-lite",
+    "repo": "scikit-learn/scikit-learn",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/scikit-learn__scikit-learn-13241/worktree",
+    "sessionID": "ses_132be8910ffetgI5deOYKOd9XL",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 5300,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 131987,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "gateDecisions": [
+      {
+        "id": "pev_mqfqxmfp_m9u6_0b2dd286",
+        "type": "engineering.stop_gate.activated",
+        "status": "active",
+        "severity": "info",
+        "summary": "验证通过后不再允许继续工具调用",
+        "turnID": "msg_ecd41791a001ZmhDePT1YHwRo4"
+      },
+      {
+        "id": "pev_mqfqxpk5_ma97_9a6abe99",
+        "type": "engineering.stop_gate.blocked_tool",
+        "status": "blocked",
+        "severity": "warning",
+        "summary": "验证已通过，阻止继续调用 bash",
+        "turnID": "msg_ecd41791a001ZmhDePT1YHwRo4",
+        "reason": "verification_passed",
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      },
+      {
+        "id": "pev_mqfqxud8_mbqf_df125b62",
+        "type": "engineering.stop_gate.checked",
+        "status": "passed",
+        "severity": "info",
+        "summary": "final 前检查没有发现必须阻止的问题",
+        "turnID": "msg_ecd41791a001ZmhDePT1YHwRo4",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "pass",
+            "reason": "验证已通过并开启通过即停止"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      }
+    ],
+    "toolCallCount": 10,
+    "eventCount": 5000,
+    "finalText": "## Summary\n\n**Root cause**: In `sklearn/decomposition/kernel_pca.py:181-223`, `KernelPCA._fit_transform()` computes eigenvectors via `eigsh` (ARPACK) which uses a random `v0` initialization vector. This causes arbitrary sign flips in the eigenvectors across different runs. Unlike `PCA` which normalizes signs with `svd_flip` (`sklearn/decomposition/pca.py:516`), `KernelPCA` had no such normalization.\n\n**Fix**: Added sign normalization to the eigenvectors in `_fit_transform()` after sorting, ensuring the element with the largest absolute value in each eigenvector column is always positive. This mirrors the `svd_flip` logic used elsewhere in sklearn.\n\n**Changed file**: `sklearn/decomposition/kernel_pca.py:217-219` — added 3 lines of inline sign flipping logic:\n\n```python\nmax_abs_cols = np.argmax(np.abs(self.alphas_), axis=0)\nsigns = np.sign(self.alphas_[max_abs_cols, range(self.alphas_.shape[1])])\nself.alphas_ *= signs\n```\n\n**Verification**: Tests pass (`pytest sklearn/decomposition/tests/test_kernel_pca.py`).",
+    "terminalErrorCategory": "",
+    "error": "",
+    "changedFiles": [
+      "sklearn/decomposition/kernel_pca.py"
+    ],
+    "patchBytes": 829,
+    "diffStat": "sklearn/decomposition/kernel_pca.py | 5 +++++\n 1 file changed, 5 insertions(+)",
+    "verification": {
+      "mode": "official",
+      "attempted": true,
+      "passed": true,
+      "completed": true,
+      "timedOut": false,
+      "code": 0,
+      "reportFile": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/scikit-learn__scikit-learn-13241/official-harness/aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241.20260615211800-aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241-initial.json",
+      "output": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241.20260615211800-aialra-deepseek-v4-pro-max-scikit-learn__scikit-learn-13241-initial.json\n\n<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-06-15 23:50:22,266 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\n2026-06-15 23:50:22,288 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/SWE-bench/SWE-bench_Lite/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/README.md \"HTTP/1.1 200 OK\"\n2026-06-15 23:50:22,402 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:50:22,403 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-06-15 23:50:22,790 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/SWE-bench/SWE-bench_Lite/SWE-bench/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:50:23,124 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/revision/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e \"HTTP/1.1 200 OK\"\n2026-06-15 23:50:23,257 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-06-15 23:50:23,483 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=SWE-bench/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-06-15 23:50:23,668 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:50:23,818 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/SWE-bench/SWE-bench_Lite/tree/69611d31007e1c6731db8bd5b5c3f2d33f5bab6e?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-06-15 23:50:23,948 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/resolve/69611d31007e1c6731db8bd5b5c3f2d3"
+    },
+    "repairRounds": 0,
+    "repairs": [],
+    "patchQuality": {
+      "score": 85,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 1,
+      "testFileCount": 0,
+      "patchBytes": 829,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证通过 +35",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "未包含测试文件 +0",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  },
+  {
+    "target": "aialra-deepseek-v4-pro-max",
+    "targetName": "AIALRA OpenCode / DeepSeek V4 Pro max",
+    "targetModel": "deepseek/deepseek-v4-pro / variant=max / effort=max",
+    "caseID": "instance_element-hq__element-web-5e8488c2838ff4268f39db4a8cca7d74eecf5a7e-vnan",
+    "datasetKey": "swe-bench-pro",
+    "repo": "element-hq/element-web",
+    "cwd": "/srv/aialra/turn-harness-target/real-bench-runs/20260615211800/aialra-deepseek-v4-pro-max/instance_element-hq__element-web-5e8488c2838ff4268f39db4a8cca7d74eecf5a7e-vnan/worktree",
+    "sessionID": "ses_132b92974ffe3epmEkqYlnxjUZ",
+    "ok": true,
+    "timedOut": false,
+    "timeoutReason": "",
+    "progressAwareTimeout": false,
+    "emergencyStopped": false,
+    "lastProgressAgeMs": 5400,
+    "waitingApproval": false,
+    "waitingQuestion": false,
+    "durationMs": 1663151,
+    "hasTurnTerminal": true,
+    "terminalAnomalies": [],
+    "gateDecisions": [
+      {
+        "id": "pev_mqfs2egq_v5fr_ca6abd6c",
+        "type": "engineering.stop_gate.checked",
+        "status": "blocked",
+        "severity": "error",
+        "summary": "已经多次要求验证，但仍没有可识别验证结果",
+        "turnID": "msg_ecd46d6f7001pu3r1Pi7KbYVI7",
+        "checks": [
+          {
+            "name": "live_process",
+            "status": "pass",
+            "reason": "没有发现本 turn 的 running 后台进程",
+            "count": 0
+          },
+          {
+            "name": "verification",
+            "status": "blocked",
+            "reason": "已经多次要求验证，但仍没有可识别验证结果"
+          },
+          {
+            "name": "zero_patch",
+            "status": "pass",
+            "reason": "已检测到工作区改动"
+          },
+          {
+            "name": "pending_approval",
+            "status": "unknown",
+            "reason": "当前 stop gate 不能直接读取所有审批弹窗状态，审批状态以 approval.requested/resolved 事件为准"
+          },
+          {
+            "name": "tool_result_settlement",
+            "status": "unknown",
+            "reason": "工具结果由 tool.lifecycle/tool.result.settled 事件保证收口，当前检查只记录可观察状态"
+          },
+          {
+            "name": "raw_output",
+            "status": "unknown",
+            "reason": "raw output 落账由 rawRef/TurnHistory 事件证明，当前检查不重新扫描 raw 存储"
+          },
+          {
+            "name": "final_schema",
+            "status": "unknown",
+            "reason": "结构化输出 schema 由模型循环单独校验，当前检查只记录该约束存在"
+          }
+        ],
+        "recovery": 0,
+        "zeroPatchExhausted": false
+      }
+    ],
+    "toolCallCount": 54,
+    "eventCount": 5000,
+    "finalText": "",
+    "terminalErrorCategory": "",
+    "error": "",
+    "changedFiles": [
+      "src/DeviceListener.ts",
+      "test/DeviceListener-test.ts"
+    ],
+    "patchBytes": 25257,
+    "diffStat": "src/DeviceListener.ts       | 101 ++++++++++-----------\n test/DeviceListener-test.ts | 208 +++++++++++++++-----------------------------\n 2 files changed, 123 insertions(+), 186 deletions(-)",
+    "verification": {
+      "mode": "local-test-patch",
+      "attempted": false,
+      "diffCheckPass": true,
+      "testPatchApplied": false,
+      "command": "",
+      "output": "error: patch failed: test/DeviceListener-test.ts:80\nerror: test/DeviceListener-test.ts: patch does not apply\n"
+    },
+    "repairRounds": 0,
+    "repairs": [],
+    "patchQuality": {
+      "score": 60,
+      "hasPatch": true,
+      "zeroPatch": false,
+      "changedFileCount": 2,
+      "testFileCount": 1,
+      "patchBytes": 25257,
+      "hugePatch": false,
+      "tinyPatch": false,
+      "generatedChurn": [],
+      "terminalAnomalies": [],
+      "reasons": [
+        "验证未通过 +0",
+        "存在非空补丁 +15",
+        "改动文件看起来和源码相关 +15",
+        "包含测试文件 1 个 +10",
+        "补丁大小合理 +10",
+        "未发现明显生成物或锁文件噪声 +5",
+        "终态干净 +5",
+        "无 repair 成功加分 +0"
+      ]
+    }
+  }
+]

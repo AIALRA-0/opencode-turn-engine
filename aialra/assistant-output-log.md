@@ -1,5 +1,67 @@
 # Assistant Output Log
 
+## 2026-06-15 输出记录：Engineering Completion Gate v1
+
+本轮目标是先修工程缺陷，不再继续堆零散功能。核心验收标准是：
+
+```text
+zero patch 从 1/6 降到 0/6
+verified pass 不下降
+不能出现审批卡死
+不能出现逻辑超时
+```
+
+已实现内容：
+
+- 修代码类任务在 final 前会检查 git diff。没有 diff 时，不允许直接 final，会生成 zero patch feedback，并让模型回到 repair
+- 验证失败不再只写在日志里。系统会抽取失败命令、失败文件、期望值、实际值和错误摘要，生成 repair feedback，强制注入下一轮修复
+- 验证通过后开启 stop gate。模型再想 read、bash、edit、write、apply_patch，会被挡住，只允许进入最终报告
+- 每次 gate 决策都进入 public event、Turn Inspector 和 benchmark JSON
+- benchmark runner 修复了一个关键误判：以前会把中间 step-finish 当成整轮完成，导致忙碌中的任务被提前记录成零补丁。现在 AIALRA 目标必须等到 turn.completed 或 turn.aborted
+
+真实验收：
+
+```text
+runID: 20260615211800
+target: AIALRA OpenCode / DeepSeek V4 Pro max
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260615211800.md
+completed: 6/6
+non-empty patch: 6/6
+verified pass: 4/6
+zero patch: 0/6
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+patch quality average: 77
+```
+
+人话结论：
+
+```text
+本轮验收通过
+因为上一轮 post-95 是 4/6 verified pass 和 1/6 zero patch
+这次还是 4/6 verified pass，但 zero patch 降到 0/6
+同时没有审批卡死，也没有逻辑超时
+```
+
+重要中途发现：
+
+```text
+第一次复跑时 Django 和 Pytest 被错误记录成 zero patch
+不是门禁失败，而是 benchmark runner 没等 turn 终态
+根因是 runner 把 step-finish 这种单个模型步骤结束误当成整轮结束
+修复后重新跑 regression-6，结果恢复正常
+```
+
+仍然没有解决的质量问题：
+
+```text
+Pylint 7228 仍然 official unresolved
+Element Web Pro 任务没有官方验证结果，只能算完成且非零补丁
+Completion Gate 解决的是假完成和零补丁，不等于让每个补丁都命中官方测试
+下一步应该继续做 Codex-style 验证反馈质量和定位收敛，而不是再放大 UI 功能
+```
+
 ## 2026-06-01 输出记录：Chesskit 会话卡住和沙盒透明度修复
 
 用户反馈 `ses_17eb92136ffeJOvXUXmSZW5yF0` 在部署类似 ChessNonStop 的开源项目时卡住

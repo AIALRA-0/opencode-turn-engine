@@ -1007,6 +1007,10 @@ function writableRoots(turn: TurnContext) {
   return fileSystemPolicy(turn).writable_roots.filter((root) => path.isAbsolute(root))
 }
 
+function landlockInsideBwrapEnabled() {
+  return process.env.AIALRA_BWRAP_LANDLOCK_ENFORCE === "1"
+}
+
 export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(function* (
   ctx: Tool.Context,
   input: { shell: string; command: string; cwd: string; networkAccess?: boolean },
@@ -1097,10 +1101,12 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
   }
 
   const landlock = landlockHelperStatus()
+  const landlockPath = landlockInsideBwrapEnabled() && landlock.available && landlock.path ? landlock.path : undefined
+  const useLandlock = !!landlockPath
   const seccompProfile = networkEnabled ? "restricted" : "network-off"
-  const command = landlock.available && landlock.path
+  const command = useLandlock
     ? [
-        landlock.path,
+        landlockPath,
         "--read-root",
         "/",
         ...writableRoots(turn).flatMap((root) => ["--write-root", root]),
@@ -1116,8 +1122,8 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
     bwrapSelected: true,
     networkIsolated,
     protectedCreate: protectedMounts.some((mount) => mount.cleanup?.length),
-    landlockEnforced: landlock.available,
-    seccompProfile: landlock.available ? seccompProfile : "none",
+    landlockEnforced: useLandlock,
+    seccompProfile: useLandlock ? seccompProfile : "none",
   })
   args.push("--chdir", input.cwd, "--", ...command)
   yield* AialraTurnTrace.emit({
@@ -1133,7 +1139,14 @@ export const shellSandboxCommand = Effect.fn("TurnSandbox.shellSandboxCommand")(
       network: networkEnabled ? "enabled" : networkIsolated ? "restricted" : "restricted-unenforced",
       networkNamespaceAvailable: capability.bwrap.networkNamespaceProbe.available,
       linux_sandbox_helper: helper,
-      landlock_helper: landlock,
+      landlock_helper: {
+        ...landlock,
+        enforce_in_bwrap: useLandlock,
+        enforce_disabled_reason: useLandlock
+          ? undefined
+          : "disabled_by_default_inside_bwrap_to_preserve_required_device_files_like_dev_null",
+        opt_in_env: "AIALRA_BWRAP_LANDLOCK_ENFORCE=1",
+      },
       writableRoots: writableRoots(turn),
       protected_create: {
         version: "aialra.protected_create.v1",

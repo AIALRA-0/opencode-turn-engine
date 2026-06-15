@@ -3,6 +3,71 @@
 This document tracks what the AIALRA OpenCode fork has already absorbed from
 Codex, what is still missing, and how a user can test the behavior directly.
 
+## 0.00004 2026-06-15 Engineering Completion Gate v1 acceptance
+
+This pass targeted one concrete engineering defect: the system must not let a
+code-fix task pretend to be done when no patch exists.
+
+Implemented behavior:
+
+```text
+1. Code-fix/refactor/test tasks are blocked from final when git diff is empty
+2. Zero-patch feedback is generated and fed back into repair
+3. Verification failures become structured repair feedback
+4. Successful verification activates stop gate
+5. Gate decisions are visible in public events, Turn Inspector, and benchmark JSON
+6. The benchmark runner waits for turn.completed or turn.aborted instead of per-step step-finish
+```
+
+Regression-6 acceptance run:
+
+```text
+runID: 20260615211800
+target: AIALRA OpenCode / DeepSeek V4 Pro max
+report: aialra/turn-observability/real-benchmark-reports/real-benchmark-20260615211800.md
+completed: 6/6
+non-empty patch: 6/6
+verified pass: 4/6
+zero patch: 0/6
+timeout: 0
+approval stuck: 0
+turn terminal: 6/6
+patch quality average: 77
+```
+
+Acceptance decision:
+
+```text
+passed
+```
+
+Reason:
+
+```text
+The previous post-95 gate was 4/6 verified with 1/6 zero patch.
+This run stayed at 4/6 verified and reduced zero patch to 0/6.
+No approval stalls, logical timeouts, or missing turn terminal events were introduced.
+```
+
+Per-case summary:
+
+| Case | Verified | Zero patch | Patch bytes | Gate decisions | Quality | Result |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| django__django-12754 | yes | no | 3164 | 1 | 95 | clean pass |
+| pytest-dev__pytest-7168 | yes | no | 546 | 5 | 85 | clean pass |
+| scikit-learn__scikit-learn-14092 | yes | no | 1483 | 3 | 85 | clean pass |
+| pylint-dev__pylint-7228 | no | no | 1552 | 9 | 50 | completion fixed, patch quality still insufficient |
+| scikit-learn__scikit-learn-13241 | yes | no | 829 | 3 | 85 | clean pass |
+| element-web device notifications | not available | no | 25257 | 1 | 60 | completed, no official verifier for this Pro row |
+
+Current conclusion:
+
+```text
+Completion Gate v1 solved the immediate fake-completion defect.
+It does not solve all patch-quality defects.
+The next useful work is to improve repair feedback quality and localization accuracy, not to add more UI switches.
+```
+
 ## 0.00003 2026-06-01 V3 hard acceptance gate
 
 The V3 rule is now explicit:

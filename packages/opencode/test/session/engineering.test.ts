@@ -112,6 +112,18 @@ describe("EngineeringHarness", () => {
     )
   })
 
+  test("classifies English benchmark repair prompts as bug fixes that require a diff", () => {
+    const state = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt:
+        "You are fixing a real benchmark issue in this repository. Inspect the repository, make the smallest correct code change, and run focused tests.",
+    })
+
+    expect(state.intake.taskClass).toBe("bug_fix")
+    expect(state.intake.expectedEvidence).toContain("diff")
+    expect(state.intake.expectedEvidence).toContain("test")
+  })
+
   test("TurnContext keeps Codex UserTurn parity fields in trace summaries", () => {
     const ctx = turn({
       approvals_reviewer: CodexTurn.approvalReviewer("user"),
@@ -244,6 +256,8 @@ describe("EngineeringHarness", () => {
       "npm test",
       "npm run test:unit",
       "pytest tests/test_api.py",
+      "DJANGO_SETTINGS_MODULE=tests.test_sqlite python tests/runtests.py migrations.test_autodetector.AutodetectorTests.test_create_model_with_field_moved_from_base -v 2",
+      "timeout 120 python -m pytest tests/test_api.py",
       "bun test",
       "node --test test/tool.test.js",
       "cargo test",
@@ -282,6 +296,39 @@ describe("EngineeringHarness", () => {
           expect.objectContaining({ type: "engineering.verification.started", status: "started" }),
           expect.objectContaining({ type: "engineering.verification.finished", status: "passed" }),
           expect.objectContaining({ type: "engineering.stop_gate.blocked_tool", status: "blocked" }),
+        ]),
+      )
+    }
+  })
+
+  test("does not treat diagnostic commands that merely mention tests as verification", () => {
+    const commands = [
+      "ls tests/test_sqlite.py 2>&1; ls tests/runtests.py 2>&1; pip show pytest 2>&1 | head -5",
+      "grep -R \"pytest\" pyproject.toml setup.cfg",
+      "cat tests/test_api.py",
+      "pip show pytest",
+    ]
+
+    for (const command of commands) {
+      EngineeringHarness.clearForTest()
+      PublicEventLog.clearForTest()
+      const ctx = turn()
+      ctx.engineering = EngineeringHarness.snapshot({
+        controls: EngineeringHarness.preset("balanced"),
+        prompt: "修复后运行测试",
+      })
+      EngineeringHarness.start({ turn: ctx, prompt: "修复后运行测试" })
+
+      expect(EngineeringHarness.beforeTool(ctx, "bash", { command }).blocked).toBe(false)
+      expect(EngineeringHarness.state(ctx.turnID)?.artifacts.verificationRuns).toEqual([])
+      EngineeringHarness.recordVerification({ turn: ctx, command, exit: 0, output: "diagnostic output" })
+
+      expect(EngineeringHarness.state(ctx.turnID)?.verification.attempts).toBe(0)
+      expect(EngineeringHarness.state(ctx.turnID)?.stopGate.active).toBe(false)
+      expect(PublicEventLog.list({ sessionID: "ses_engineering" })).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "engineering.verification.finished" }),
+          expect.objectContaining({ type: "engineering.stop_gate.activated" }),
         ]),
       )
     }
@@ -508,6 +555,60 @@ describe("EngineeringHarness", () => {
     )
   })
 
+  test("stop gate blocks final when verification is still missing", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" }).blocked).toBe(false)
+
+    const prompt = EngineeringHarness.stopGatePrompt(ctx, "已完成修复，最终报告如下", { workspaceChanged: true })
+
+    expect(prompt).toContain("还没有运行可识别验证命令")
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("verify")
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "engineering.stop_gate.checked",
+          status: "continue",
+          data: expect.objectContaining({
+            checks: expect.arrayContaining([expect.objectContaining({ name: "verification", status: "continue" })]),
+          }),
+        }),
+        expect.objectContaining({ type: "engineering.verification.repair_requested", status: "continued" }),
+      ]),
+    )
+  })
+
+  test("missing verification requests stop as blocked instead of looping forever", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: {
+        ...EngineeringHarness.preset("fast"),
+        verificationRounds: 1,
+      },
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
+    expect(EngineeringHarness.beforeTool(ctx, "edit", { filePath: "src/tool.js" }).blocked).toBe(false)
+
+    const prompt = EngineeringHarness.stopGatePrompt(ctx, "已完成修复，最终报告如下", { workspaceChanged: true })
+
+    expect(prompt).toContain("多次要求你运行可识别验证")
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("blocked")
+    expect(EngineeringHarness.state(ctx.turnID)?.verification.missingRequests).toBe(1)
+    expect(EngineeringHarness.stopGatePrompt(ctx, "blocked：验证环境缺少依赖，无法验证", { workspaceChanged: true })).toBeUndefined()
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.verification.repair_requested", status: "blocked" }),
+      ]),
+    )
+  })
+
   test("records a concrete skipped verification result at finish", () => {
     const ctx = turn()
     ctx.engineering = EngineeringHarness.snapshot({
@@ -665,10 +766,43 @@ describe("EngineeringHarness", () => {
     expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: "engineering.artifact.updated",
-          status: "updated",
-          data: expect.objectContaining({ artifact: "repairFeedback" }),
+          type: "engineering.verification.repair_requested",
+          status: "continued",
+          data: expect.objectContaining({
+            command: "npm test",
+            expected: expect.stringContaining("expected mode=fast"),
+            actual: expect.stringContaining("actual mode=safe"),
+          }),
         }),
+      ]),
+    )
+  })
+
+  test("finishes as blocked after verification repair budget is exhausted", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: {
+        ...EngineeringHarness.preset("fast"),
+        verificationRounds: 1,
+      },
+      prompt: "修复这个测试失败",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "修复这个测试失败" })
+    EngineeringHarness.recordVerification({
+      turn: ctx,
+      command: "npm test",
+      exit: 1,
+      output: "AssertionError expected ok actual bad",
+    })
+
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("blocked")
+    expect(EngineeringHarness.stopGatePrompt(ctx, "blocked：验证失败轮数已用完，无法继续", { workspaceChanged: true })).toBeUndefined()
+    EngineeringHarness.finish(ctx, "completed", "blocked：验证失败轮数已用完，无法继续")
+
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "engineering.verification.finished", status: "failed" }),
+        expect.objectContaining({ type: "engineering.run.finished", status: "blocked" }),
       ]),
     )
   })
@@ -827,6 +961,33 @@ describe("EngineeringHarness", () => {
     )
   })
 
+  test("stop gate blocks final when git diff is empty", () => {
+    const ctx = turn()
+    ctx.engineering = EngineeringHarness.snapshot({
+      controls: EngineeringHarness.preset("balanced"),
+      prompt: "这个 bug 会失败，帮我修一下",
+    })
+    EngineeringHarness.start({ turn: ctx, prompt: "这个 bug 会失败，帮我修一下" })
+    EngineeringHarness.recordVerification({ turn: ctx, command: "npm test", exit: 0, output: "pass" })
+
+    const prompt = EngineeringHarness.stopGatePrompt(ctx, "已完成修复，最终报告如下", { workspaceChanged: false })
+
+    expect(prompt).toContain("当前没有任何代码改动")
+    expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("repair")
+    expect(PublicEventLog.list({ sessionID: "ses_engineering" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "engineering.stop_gate.checked",
+          status: "continue",
+          data: expect.objectContaining({
+            checks: expect.arrayContaining([expect.objectContaining({ name: "zero_patch", status: "continue" })]),
+          }),
+        }),
+        expect.objectContaining({ type: "engineering.zero_patch.recovery_requested", status: "continued" }),
+      ]),
+    )
+  })
+
   test("exhausts zero patch recovery using the user-configured budget", () => {
     const ctx = turn()
     ctx.engineering = EngineeringHarness.snapshot({
@@ -840,7 +1001,7 @@ describe("EngineeringHarness", () => {
     expect(EngineeringHarness.beforeTool(ctx, "read", { filePath: "src/tool.js" }).blocked).toBe(false)
 
     expect(EngineeringHarness.zeroPatchPrompt(ctx, "已完成分析")).toContain("当前没有任何代码改动")
-    expect(EngineeringHarness.zeroPatchPrompt(ctx, "还是没有改动")).toBeUndefined()
+    expect(EngineeringHarness.zeroPatchPrompt(ctx, "还是没有改动")).toContain("零补丁恢复次数已经用完")
 
     expect(EngineeringHarness.state(ctx.turnID)?.phase).toBe("blocked")
     expect(EngineeringHarness.state(ctx.turnID)?.patch.zeroPatchExhausted).toBe(true)

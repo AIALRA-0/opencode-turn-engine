@@ -291,15 +291,38 @@ function messageProgressSignature(messages, publicEvents, diffSignal) {
   )
 }
 
-function assistantHasContent(messages) {
+function messageCreatedAt(message) {
+  return Number(message.info?.time?.created ?? message.createdAt ?? message.time?.created ?? 0)
+}
+
+function isAssistantMessage(message, since = 0) {
+  return (message.role ?? message.info?.role) === "assistant" && messageCreatedAt(message) >= since
+}
+
+function assistantHasContent(messages, since = 0) {
   return messages.some((message) => {
-    if ((message.role ?? message.info?.role) !== "assistant") return false
+    if (!isAssistantMessage(message, since)) return false
     return (message.parts ?? []).some((part) => {
       if (typeof part.text === "string" && part.text.trim()) return true
       if (typeof part.output === "string" && part.output.trim()) return true
-      return part.type && part.type !== "step-start"
+      return false
     })
   })
+}
+
+function assistantHasRunningTool(messages, since = 0) {
+  return messages.some((message) => {
+    if (!isAssistantMessage(message, since)) return false
+    return (message.parts ?? []).some((part) => part.type === "tool" && ["running", "pending"].includes(part.state?.status))
+  })
+}
+
+function assistantCompleted(messages, since = 0) {
+  const assistant = [...messages].reverse().find((message) => isAssistantMessage(message, since))
+  if (!assistant) return false
+  if (assistantHasRunningTool([assistant], since)) return false
+  if (assistant.info?.time?.completed) return true
+  return (assistant.parts ?? []).some((part) => part.type === "step-finish" || part.type === "finish")
 }
 
 function statusIndicatesActive(status, sessionID) {
@@ -312,10 +335,11 @@ function needsPublicTerminal(target) {
   return target.publicEvents && READ_PUBLIC_EVENTS
 }
 
-function shouldStopPolling(target, idle, finalText, assistantContent, hasTurnTerminal, waitingApproval, waitingQuestion) {
+function shouldStopPolling(target, idle, finalText, assistantContent, assistantDone, assistantRunningTool, hasTurnTerminal, waitingApproval, waitingQuestion) {
   if (waitingApproval || waitingQuestion) return true
+  if (assistantRunningTool) return false
   if (needsPublicTerminal(target)) return hasTurnTerminal
-  return hasTurnTerminal || (idle && (finalText || assistantContent))
+  return hasTurnTerminal || (idle && (finalText || assistantContent || assistantDone))
 }
 
 async function diffProgressSignal(worktree) {
@@ -383,14 +407,16 @@ async function validateTargets() {
   }
 }
 
-async function readPublicEvents(target, sessionID, auth) {
+async function readPublicEvents(target, sessionID, auth, afterID = "") {
   if (!target.publicEvents || !READ_PUBLIC_EVENTS) return []
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 2000)
+  const timer = setTimeout(() => controller.abort(), 5000)
   let text = ""
   let reader
   try {
-    const response = await fetch(`${target.baseURL}/session/${sessionID}/events/public`, {
+    const url = new URL(`${target.baseURL}/session/${sessionID}/events/public`)
+    if (afterID) url.searchParams.set("lastEventID", afterID)
+    const response = await fetch(url, {
       headers: { authorization: auth },
       signal: controller.signal,
     })
@@ -416,15 +442,22 @@ async function readPublicEvents(target, sessionID, auth) {
     .map((line) => {
       try {
         return JSON.parse(line)
-      } catch {
-        return undefined
-      }
-    })
-    .filter(Boolean)
+    } catch {
+      return undefined
+    }
+  })
+    .filter((event) => event && event.type !== "ping")
 }
 
-function textFromMessages(messages) {
-  const assistant = [...messages].reverse().find((message) => message.info?.role === "assistant" || message.role === "assistant")
+function appendPublicEvents(current, next) {
+  if (!next.length) return current
+  const seen = new Set(current.map((event) => event.id))
+  const merged = current.concat(next.filter((event) => event.id && !seen.has(event.id)))
+  return merged.length > 5_000 ? merged.slice(-5_000) : merged
+}
+
+function textFromMessages(messages, since = 0) {
+  const assistant = [...messages].reverse().find((message) => isAssistantMessage(message, since))
   return (assistant?.parts ?? [])
     .filter((part) => part.type === "text")
     .map((part) => part.text ?? "")
@@ -715,6 +748,7 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
     let timedOut = false
     let finalText = ""
     let publicEvents = []
+    let publicEventID = ""
     let pollCount = 0
     let startTimedOut = false
     let progressTimedOut = false
@@ -731,7 +765,7 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       messages = await requestJSON(`${target.baseURL}/session/${sessionID}/message?${query}`, {
         headers: { authorization: auth },
       }).catch(() => [])
-      finalText = textFromMessages(messages)
+      finalText = textFromMessages(messages, started)
       status = await requestJSON(`${target.baseURL}/session/status?${query}`, {
         headers: { authorization: auth },
       }).catch(() => undefined)
@@ -751,10 +785,16 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
       waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
       const idle = !statusIndicatesActive(status, sessionID)
-      const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
-      const assistantContent = assistantHasContent(messages)
+      const hasAssistant = messages.some((message) => isAssistantMessage(message, started))
+      const assistantContent = assistantHasContent(messages, started)
+      const assistantDone = assistantCompleted(messages, started)
+      const assistantRunningTool = assistantHasRunningTool(messages, started)
       if (target.publicEvents && READ_PUBLIC_EVENTS && pollCount % 5 === 0) {
-        publicEvents = await readPublicEvents(target, sessionID, auth)
+        const nextEvents = await readPublicEvents(target, sessionID, auth, publicEventID)
+        if (nextEvents.length) {
+          publicEvents = appendPublicEvents(publicEvents, nextEvents)
+          publicEventID = nextEvents.at(-1)?.id ?? publicEventID
+        }
       }
       const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
       const hasModelActivity =
@@ -777,7 +817,7 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
         timeoutReason = "assistant/model never started"
         break
       }
-      if (shouldStopPolling(target, idle, finalText, assistantContent, hasTurnTerminal, waitingApproval, waitingQuestion)) break
+      if (shouldStopPolling(target, idle, finalText, assistantContent, assistantDone, assistantRunningTool, hasTurnTerminal, waitingApproval, waitingQuestion)) break
       if (PROGRESS_AWARE_TIMEOUT && Date.now() - lastProgressAt >= PROGRESS_STALL_MS) {
         progressTimedOut = true
         timeoutReason = `no observable progress for ${PROGRESS_STALL_MS}ms after ${lastProgressDescription}`
@@ -817,11 +857,12 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
         body: "{}",
       }).catch(() => undefined)
     }
-    publicEvents = await readPublicEvents(target, sessionID, auth)
+    const finalEvents = await readPublicEvents(target, sessionID, auth, publicEventID)
+    if (finalEvents.length) publicEvents = appendPublicEvents(publicEvents, finalEvents)
     await writeFile(join(targetRoot, "opencode-messages.json"), JSON.stringify(messages, null, 2) + "\n")
     await writeFile(join(targetRoot, "opencode-status.json"), JSON.stringify(status ?? {}, null, 2) + "\n")
     if (publicEvents.length) await writeFile(join(targetRoot, "opencode-public-events.json"), JSON.stringify(publicEvents, null, 2) + "\n")
-    const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+    const hasAssistant = messages.some((message) => isAssistantMessage(message, started))
     const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
     const missingPublicTerminal = needsPublicTerminal(target) && !hasTurnTerminal
     const terminalAnomalies = publicEvents
@@ -845,6 +886,7 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       hasTurnTerminal:
         hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && !needsPublicTerminal(target) && hasAssistant),
       terminalAnomalies,
+      gateDecisions: gateDecisionsFromPublicEvents(publicEvents),
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
@@ -877,6 +919,7 @@ async function runOpenCode(target, item, row, worktree, targetRoot) {
       waitingQuestion: false,
       durationMs: Date.now() - started,
       hasTurnTerminal: false,
+      gateDecisions: [],
       toolCallCount: 0,
       eventCount: 0,
       finalText: "",
@@ -915,6 +958,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
     let timedOut = false
     let finalText = ""
     let publicEvents = []
+    let publicEventID = ""
     let pollCount = 0
     let progressTimedOut = false
     let emergencyStopped = false
@@ -930,7 +974,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       messages = await requestJSON(`${target.baseURL}/session/${sessionID}/message?${query}`, {
         headers: { authorization: auth },
       }).catch(() => [])
-      finalText = textFromMessages(messages)
+      finalText = textFromMessages(messages, started)
       status = await requestJSON(`${target.baseURL}/session/status?${query}`, {
         headers: { authorization: auth },
       }).catch(() => undefined)
@@ -950,10 +994,16 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       waitingApproval = Array.isArray(permissions) && permissions.some((permission) => permission.sessionID === sessionID)
       waitingQuestion = Array.isArray(questions) && questions.some((question) => question.sessionID === sessionID)
       const idle = !statusIndicatesActive(status, sessionID)
-      const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
-      const assistantContent = assistantHasContent(messages)
+      const hasAssistant = messages.some((message) => isAssistantMessage(message, started))
+      const assistantContent = assistantHasContent(messages, started)
+      const assistantDone = assistantCompleted(messages, started)
+      const assistantRunningTool = assistantHasRunningTool(messages, started)
       if (target.publicEvents && READ_PUBLIC_EVENTS && pollCount % 5 === 0) {
-        publicEvents = await readPublicEvents(target, sessionID, auth)
+        const nextEvents = await readPublicEvents(target, sessionID, auth, publicEventID)
+        if (nextEvents.length) {
+          publicEvents = appendPublicEvents(publicEvents, nextEvents)
+          publicEventID = nextEvents.at(-1)?.id ?? publicEventID
+        }
       }
       const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
       const hasModelActivity =
@@ -971,7 +1021,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
           `diff=${lastDiffSignal || "none"}`,
         ].join(" ")
       }
-      if (shouldStopPolling(target, idle, finalText, assistantContent, hasTurnTerminal, waitingApproval, waitingQuestion)) break
+      if (shouldStopPolling(target, idle, finalText, assistantContent, assistantDone, assistantRunningTool, hasTurnTerminal, waitingApproval, waitingQuestion)) break
       if (PROGRESS_AWARE_TIMEOUT && Date.now() - lastProgressAt >= PROGRESS_STALL_MS) {
         progressTimedOut = true
         timeoutReason = `no observable progress for ${PROGRESS_STALL_MS}ms after ${lastProgressDescription}`
@@ -1011,11 +1061,12 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
         body: "{}",
       }).catch(() => undefined)
     }
-    publicEvents = await readPublicEvents(target, sessionID, auth)
+    const finalEvents = await readPublicEvents(target, sessionID, auth, publicEventID)
+    if (finalEvents.length) publicEvents = appendPublicEvents(publicEvents, finalEvents)
     await writeFile(join(targetRoot, `opencode-${label}-messages.json`), JSON.stringify(messages, null, 2) + "\n")
     await writeFile(join(targetRoot, `opencode-${label}-status.json`), JSON.stringify(status ?? {}, null, 2) + "\n")
     if (publicEvents.length) await writeFile(join(targetRoot, `opencode-${label}-public-events.json`), JSON.stringify(publicEvents, null, 2) + "\n")
-    const hasAssistant = messages.some((message) => message.info?.role === "assistant" || message.role === "assistant")
+    const hasAssistant = messages.some((message) => isAssistantMessage(message, started))
     const hasTurnTerminal = publicEvents.some((event) => event.type === "turn.completed" || event.type === "turn.aborted")
     const missingPublicTerminal = needsPublicTerminal(target) && !hasTurnTerminal
     const terminalAnomalies = publicEvents
@@ -1037,6 +1088,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       durationMs: Date.now() - started,
       hasTurnTerminal: hasTurnTerminal || (!stopped && !waitingApproval && !waitingQuestion && !needsPublicTerminal(target) && hasAssistant),
       terminalAnomalies,
+      gateDecisions: gateDecisionsFromPublicEvents(publicEvents),
       toolCallCount: countToolCalls(messages),
       eventCount: publicEvents.length,
       finalText: finalText || (waitingApproval ? "等待审批：工具请求需要用户批准" : waitingQuestion ? "等待用户回答问题" : ""),
@@ -1062,6 +1114,7 @@ async function continueOpenCode(target, sessionID, prompt, worktree, targetRoot,
       waitingQuestion: false,
       durationMs: Date.now() - started,
       hasTurnTerminal: false,
+      gateDecisions: [],
       toolCallCount: 0,
       eventCount: 0,
       finalText: "",
@@ -1239,6 +1292,7 @@ function mergeAgentAfterRepair(agent, repair) {
     durationMs: (agent.durationMs ?? 0) + (repair.durationMs ?? 0),
     toolCallCount: Math.max(agent.toolCallCount ?? 0, repair.toolCallCount ?? 0),
     eventCount: Math.max(agent.eventCount ?? 0, repair.eventCount ?? 0),
+    gateDecisions: [...(agent.gateDecisions ?? []), ...(repair.gateDecisions ?? [])],
   }
 }
 
@@ -1271,7 +1325,7 @@ async function runJob(target, item, row) {
       agent = mergeAgentAfterRepair(agent, repair)
       inspection = await inspectAndVerify(prepared.targetRoot, prepared.worktree, item, row, target, `repair-${round}`)
     }
-    const result = {
+    const result = normalizeCompletionResult({
       target: target.id,
       targetName: target.name,
       targetModel: targetModelLabel(target),
@@ -1283,7 +1337,7 @@ async function runJob(target, item, row) {
       ...inspection,
       repairRounds: repairs.length,
       repairs,
-    }
+    })
     result.patchQuality = patchQuality(result)
     await writeFile(join(prepared.targetRoot, "result.json"), JSON.stringify(result, null, 2) + "\n")
     return result
@@ -1319,6 +1373,36 @@ async function removePathWithRetry(target) {
       if (attempt === 3) throw error
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
     }
+  }
+}
+
+function normalizeCompletionResult(result) {
+  const progressStopResolvedByVerification =
+    result.progressAwareTimeout &&
+    !result.emergencyStopped &&
+    result.verification?.passed === true &&
+    result.patchBytes > 0 &&
+    !result.waitingApproval &&
+    !result.waitingQuestion &&
+    result.hasTurnTerminal
+  if (!progressStopResolvedByVerification) return result
+  return {
+    ...result,
+    ok: true,
+    timedOut: false,
+    timeoutReason: "",
+    progressAwareTimeout: false,
+    agentStoppedEarly: true,
+    agentStopReason: result.timeoutReason,
+    benchmarkWarnings: [
+      ...(result.benchmarkWarnings ?? []),
+      {
+        type: "progress_stop_resolved_by_verification",
+        summary:
+          "Runner stopped a costly run after a stable patch, then official verification passed; counted as completed with a cost warning, not a logic timeout.",
+        reason: result.timeoutReason,
+      },
+    ],
   }
 }
 
@@ -1387,6 +1471,68 @@ function patchQuality(result) {
 function mark(value) {
   if (value === undefined) return "-"
   return value ? "是" : "否"
+}
+
+function gateDecisionsFromPublicEvents(events) {
+  const gateTypes = new Set([
+    "engineering.stop_gate.checked",
+    "engineering.stop_gate.activated",
+    "engineering.stop_gate.blocked_tool",
+    "engineering.verification.repair_requested",
+    "engineering.zero_patch.detected",
+    "engineering.zero_patch.recovery_requested",
+    "engineering.zero_patch.recovered",
+    "engineering.zero_patch.exhausted",
+  ])
+  return events
+    .filter((event) => gateTypes.has(event.type))
+    .map((event) => ({
+      id: event.id,
+      type: event.type,
+      status: event.status,
+      severity: event.severity,
+      summary: event.summary,
+      turnID: event.turnID,
+      checks: Array.isArray(event.data?.checks)
+        ? event.data.checks.map((check) => ({
+            name: check.name,
+            status: check.status,
+            reason: check.reason,
+            count: check.count,
+          }))
+        : undefined,
+      reason: event.data?.reason,
+      command: event.data?.command,
+      failedFiles: event.data?.failedFiles,
+      expected: event.data?.expected,
+      actual: event.data?.actual,
+      recovery: event.data?.recovery ?? event.data?.state?.patch?.zeroPatchRecoveries,
+      zeroPatchExhausted: event.data?.state?.patch?.zeroPatchExhausted,
+    }))
+    .slice(-80)
+}
+
+function gateDecisionLines(result) {
+  const decisions = result.gateDecisions ?? []
+  if (!decisions.length) return []
+  return decisions.map((decision) => {
+    const checks = Array.isArray(decision.checks)
+      ? decision.checks
+          .filter((check) => check.status !== "pass" && check.status !== "unknown")
+          .map((check) => `${check.name}:${check.status}:${check.reason}`)
+          .join("; ")
+      : ""
+    return [
+      decision.type,
+      decision.status,
+      decision.summary,
+      decision.reason ? `reason=${decision.reason}` : "",
+      decision.command ? `command=${decision.command}` : "",
+      checks,
+    ]
+      .filter(Boolean)
+      .join(" | ")
+  })
 }
 
 function renderReport(manifest, selected, results) {
@@ -1461,13 +1607,27 @@ function renderReport(manifest, selected, results) {
       lines.push("")
       lines.push("补丁质量：")
       lines.push("```text")
-      lines.push((result.patchQuality ?? patchQuality(result)).reasons.join("\n"))
-      lines.push("```")
+    lines.push((result.patchQuality ?? patchQuality(result)).reasons.join("\n"))
+    lines.push("```")
+      if (result.benchmarkWarnings?.length) {
+        lines.push("")
+        lines.push("评测警告：")
+        lines.push("```text")
+        lines.push(result.benchmarkWarnings.map((warning) => `${warning.type}: ${warning.reason || warning.summary}`).join("\n"))
+        lines.push("```")
+      }
       if (result.repairs?.length) {
         lines.push("")
         lines.push("自动 repair 记录：")
         lines.push("```json")
         lines.push(JSON.stringify(result.repairs, null, 2))
+        lines.push("```")
+      }
+      if (gateDecisionLines(result).length) {
+        lines.push("")
+        lines.push("工程门禁决策：")
+        lines.push("```text")
+        lines.push(gateDecisionLines(result).join("\n"))
         lines.push("```")
       }
       if (result.verification?.output) {
@@ -1532,9 +1692,17 @@ async function runJobsWithLimit(items, limit, onResult) {
 
 async function loadExistingResults(path) {
   try {
-    return JSON.parse(await readFile(path, "utf8"))
+    return JSON.parse(await readFile(path, "utf8")).map(normalizeStoredResult)
   } catch {
     return []
+  }
+}
+
+function normalizeStoredResult(result) {
+  const normalized = normalizeCompletionResult(result)
+  return {
+    ...normalized,
+    patchQuality: patchQuality(normalized),
   }
 }
 

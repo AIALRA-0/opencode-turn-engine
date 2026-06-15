@@ -98,6 +98,7 @@ type ToolCall = {
 
 interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
+  pendingToolUpdates: Record<string, Array<(part: MessageV2.ToolPart) => MessageV2.ToolPart>>
   shouldBreak: boolean
   snapshot: string | undefined
   blocked: boolean
@@ -154,6 +155,7 @@ export const layer = Layer.effect(
         sessionID: input.sessionID,
         model: input.model,
         toolcalls: {},
+        pendingToolUpdates: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
         blocked: false,
@@ -214,7 +216,10 @@ export const layer = Layer.effect(
         update: (part: MessageV2.ToolPart) => MessageV2.ToolPart,
       ) {
         const match = yield* readToolCall(toolCallID)
-        if (!match) return undefined
+        if (!match) {
+          ctx.pendingToolUpdates[toolCallID] = [...(ctx.pendingToolUpdates[toolCallID] ?? []), update]
+          return undefined
+        }
         const part = yield* session.updatePart(update(match.part))
         ctx.toolcalls[toolCallID] = {
           ...match.call,
@@ -508,7 +513,10 @@ export const layer = Layer.effect(
       }) {
         const existing = yield* readToolCall(input.id)
         if (existing) {
-          if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
+          if (!input.providerExecuted || existing.part.metadata?.providerExecuted) {
+            const part = yield* applyPendingToolUpdates(input.id, existing.part)
+            return { call: ctx.toolcalls[input.id], part }
+          }
           const execution = ProviderTool.execution({
             toolCallID: input.id,
             tool: input.name,
@@ -526,7 +534,8 @@ export const layer = Layer.effect(
             messageID: part.messageID,
             sessionID: part.sessionID,
           }
-          return { call: ctx.toolcalls[input.id], part }
+          const updated = yield* applyPendingToolUpdates(input.id, part)
+          return { call: ctx.toolcalls[input.id], part: updated }
         }
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
         if (flags.experimentalEventSystem) {
@@ -565,7 +574,25 @@ export const layer = Layer.effect(
           sessionID: part.sessionID,
           inputEnded: false,
         }
-        return { call: ctx.toolcalls[input.id], part }
+        const updated = yield* applyPendingToolUpdates(input.id, part)
+        return { call: ctx.toolcalls[input.id], part: updated }
+      })
+
+      const applyPendingToolUpdates = Effect.fn("SessionProcessor.applyPendingToolUpdates")(function* (
+        toolCallID: string,
+        part: MessageV2.ToolPart,
+      ) {
+        const updates = ctx.pendingToolUpdates[toolCallID]
+        if (!updates?.length) return part
+        delete ctx.pendingToolUpdates[toolCallID]
+        const updated = yield* session.updatePart(updates.reduce((current, update) => update(current), part))
+        ctx.toolcalls[toolCallID] = {
+          ...ctx.toolcalls[toolCallID],
+          partID: updated.id,
+          messageID: updated.messageID,
+          sessionID: updated.sessionID,
+        }
+        return updated
       })
 
       const isFilePart = (value: unknown): value is MessageV2.FilePart => Schema.is(MessageV2.FilePart)(value)

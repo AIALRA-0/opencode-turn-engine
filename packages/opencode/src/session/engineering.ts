@@ -99,6 +99,7 @@ export type EngineeringRunSnapshot = {
   verification: {
     attempts: number
     passed: boolean
+    missingRequests: number
     skipRequests: number
     skipped: boolean
     skipReason?: string
@@ -506,7 +507,7 @@ export namespace EngineeringHarness {
       ? "deployment"
       : /漏洞|安全|security|xss|csrf|auth/.test(lower)
       ? "security"
-      : /bug|修|错误|失败|报错|regression|fails?|broken/.test(lower)
+      : /bug|修|错误|失败|报错|regression|fails?|broken|\bfix(?:ing|ed|es)?\b|\bissue\b|traceback|exception|incorrect/.test(lower)
         ? "bug_fix"
         : /测试|test|spec|coverage/.test(lower)
           ? "test"
@@ -540,6 +541,7 @@ export namespace EngineeringHarness {
       verification: {
         attempts: 0,
         passed: false,
+        missingRequests: 0,
         skipRequests: 0,
         skipped: false,
       },
@@ -1200,28 +1202,7 @@ export namespace EngineeringHarness {
     if (runtime.artifacts.verificationResults.length > 0) return
     if (runtime.verification.skipRequests >= 1) return
     if (!looksLikeFinalText(text)) return
-    runtime.verification.skipRequests++
-    ensureVerificationPlan(turn, runtime, "final_without_verification")
-    record(turn, {
-      type: "engineering.verification.repair_requested",
-      severity: "warning",
-      title: "验证要求已注入",
-      summary: "模型准备结束，但还没有运行可识别验证命令",
-      status: "continued",
-      data: {
-        reason: "final_without_verification",
-        state: publicState(runtime),
-      },
-      raw: { text },
-    })
-    return [
-      "<system-reminder>",
-      "你已经修改或计划修改工程内容，但还没有运行可识别验证命令",
-      "请优先运行最相关、最小范围的验证，例如项目测试、类型检查、构建检查、lint 或健康检查",
-      "如果确实不能运行验证，最终报告必须写清楚具体原因，例如缺少依赖、没有测试命令、权限或沙箱限制、网络不可用、验证耗时超出本轮预算",
-      "不要只写“未测试”或“建议用户测试”",
-      "</system-reminder>",
-    ].join("\n")
+    return requestVerificationContinuation(turn, runtime, text, "final_without_verification")
   }
 
   export function stopGatePrompt(turn: TurnContext | undefined, text: string, input?: { workspaceChanged?: boolean }) {
@@ -1244,16 +1225,26 @@ export namespace EngineeringHarness {
         state: publicState(runtime),
       },
     })
-    if (!blocking) return
-    phase(turn, "blocked", `stop_gate_${blocking.name}`)
-    return [
-      "<system-reminder>",
-      "系统阻止了最终回复，因为本轮还有必须处理的执行状态",
-      `阻止原因：${blocking.reason}`,
-      blocking.name === "live_process" ? "请先使用 await_process 等待后台命令结束，或使用 cleanup_processes 清理/终止它" : "",
-      "处理完成后再生成最终报告",
-      "</system-reminder>",
-    ].filter(Boolean).join("\n")
+    if (blocking) {
+      if (blocking.name === "zero_patch" && allowsBlockedFinal(text)) return
+      if (blocking.name === "verification" && allowsBlockedFinal(text)) return
+      phase(turn, "blocked", `stop_gate_${blocking.name}`)
+      return [
+        "<system-reminder>",
+        "系统阻止了最终回复，因为本轮还有必须处理的执行状态",
+        `阻止原因：${blocking.reason}`,
+        blocking.name === "live_process" ? "请先使用 await_process 等待后台命令结束，或使用 cleanup_processes 清理/终止它" : "",
+        "处理完成后再生成最终报告",
+        "</system-reminder>",
+      ].filter(Boolean).join("\n")
+    }
+    if (continuing?.name === "verification") {
+      return requestVerificationContinuation(turn, runtime, text, "stop_gate_verification", continuing)
+    }
+    if (continuing?.name === "zero_patch") {
+      return requestZeroPatchRecovery(turn, runtime, text, input, "stop_gate_zero_patch")
+    }
+    return
   }
 
   export function prematureFinalPrompt(turn: TurnContext | undefined, text: string) {
@@ -1306,43 +1297,7 @@ export namespace EngineeringHarness {
     const failure = runtime.feedback.items.at(-1)
     if (failure?.kind !== "verification_failed") return
     if (!looksLikeFinalText(text)) return
-    addFeedback(runtime, {
-      kind: "phase_gate",
-      summary: "模型在验证失败后准备结束，系统要求带着失败信息继续修",
-      detail: failure.detail,
-      command: failure.command,
-      exit: failure.exit,
-    })
-    record(turn, {
-      type: "engineering.artifact.updated",
-      severity: "warning",
-      title: "验证反馈已注入修复阶段",
-      summary: failure.summary,
-      status: "updated",
-      data: {
-        artifact: "repairFeedback",
-        command: failure.command,
-        exit: failure.exit,
-        state: publicState(runtime),
-      },
-      raw: {
-        text,
-        failure,
-      },
-    })
-    return [
-      "<system-reminder>",
-      "验证刚刚失败，不能直接结束本轮",
-      `失败命令：${failure.command ?? runtime.verification.lastCommand ?? "未记录"}`,
-      `失败摘要：${failure.summary}`,
-      failure.failedFiles?.length ? `失败文件：${failure.failedFiles.join(", ")}` : "",
-      failure.expected ? `期望值：${failure.expected}` : "",
-      failure.actual ? `实际值：${failure.actual}` : "",
-      failure.detail ? `失败细节：${failure.detail}` : "",
-      "请根据这条失败反馈继续定位并做最小修复",
-      "修复后重新运行最相关验证",
-      "</system-reminder>",
-    ].filter(Boolean).join("\n")
+    return requestVerificationContinuation(turn, runtime, text, "verification_failed_before_final")
   }
 
   export function zeroPatchPrompt(turn: TurnContext | undefined, text: string, input?: { workspaceChanged?: boolean }) {
@@ -1359,6 +1314,119 @@ export namespace EngineeringHarness {
     if (runtime.patch.writeToolCalls > 0 && input?.workspaceChanged !== false) return
     if (!["localize", "plan", "edit", "repair"].includes(runtime.phase)) return
     if (!looksLikeFinalText(text)) return
+    return requestZeroPatchRecovery(turn, runtime, text, input, "final_without_patch")
+  }
+
+  function requestVerificationContinuation(
+    turn: TurnContext,
+    runtime: RuntimeState,
+    text: string,
+    reason: string,
+    check?: EngineeringStopGateCheck,
+  ) {
+    const failure = runtime.feedback.items.findLast((item) => item.kind === "verification_failed")
+    if (runtime.verification.attempts > 0 && !runtime.verification.passed) {
+      if (runtime.verification.attempts >= runtime.controls.verificationRounds) {
+        phase(turn, "blocked", "verification_rounds_exhausted")
+      } else {
+        phase(turn, "repair", "verification_failed")
+      }
+      addFeedback(runtime, {
+        kind: "phase_gate",
+        summary:
+          runtime.verification.attempts >= runtime.controls.verificationRounds
+            ? "验证失败修复轮数已用完，系统阻止假完成"
+            : "模型在验证失败后准备结束，系统要求带着失败信息继续修",
+        detail: failure?.detail,
+        command: failure?.command ?? runtime.verification.lastCommand,
+        exit: failure?.exit ?? runtime.verification.lastExit,
+      })
+      record(turn, {
+        type: "engineering.verification.repair_requested",
+        severity: runtime.verification.attempts >= runtime.controls.verificationRounds ? "error" : "warning",
+        title: "验证失败反馈已注入",
+        summary: failure?.summary ?? "模型准备结束，但最近一次验证仍然失败",
+        status: runtime.verification.attempts >= runtime.controls.verificationRounds ? "blocked" : "continued",
+        data: {
+          reason,
+          check,
+          command: failure?.command ?? runtime.verification.lastCommand,
+          exit: failure?.exit ?? runtime.verification.lastExit,
+          failedFiles: failure?.failedFiles,
+          assertions: failure?.assertions,
+          expected: failure?.expected,
+          actual: failure?.actual,
+          state: publicState(runtime),
+        },
+        raw: { text, failure },
+      })
+      return [
+        "<system-reminder>",
+        runtime.verification.attempts >= runtime.controls.verificationRounds
+          ? "验证失败恢复次数已经用完，不能假装完成"
+          : "验证刚刚失败，不能直接结束本轮",
+        `失败命令：${failure?.command ?? runtime.verification.lastCommand ?? "未记录"}`,
+        `失败摘要：${failure?.summary ?? "最近一次验证没有通过"}`,
+        failure?.failedFiles?.length ? `失败文件：${failure.failedFiles.join(", ")}` : "",
+        failure?.expected ? `期望值：${failure.expected}` : "",
+        failure?.actual ? `实际值：${failure.actual}` : "",
+        failure?.detail ? `失败细节：${failure.detail}` : "",
+        runtime.verification.attempts >= runtime.controls.verificationRounds
+          ? "请输出 blocked 报告，明确为什么无法继续修复、已经尝试过什么、下一步需要什么信息"
+          : "请根据这条失败反馈继续定位并做最小修复",
+        runtime.verification.attempts >= runtime.controls.verificationRounds ? "" : "修复后重新运行最相关验证",
+        "</system-reminder>",
+      ].filter(Boolean).join("\n")
+    }
+    runtime.verification.skipRequests++
+    runtime.verification.missingRequests++
+    const missingRequestsExhausted = runtime.verification.missingRequests >= Math.max(1, runtime.controls.verificationRounds)
+    ensureVerificationPlan(turn, runtime, reason)
+    if (missingRequestsExhausted) {
+      phase(turn, "blocked", "verification_missing_rounds_exhausted")
+    } else {
+      phase(turn, "verify", reason)
+    }
+    record(turn, {
+      type: "engineering.verification.repair_requested",
+      severity: missingRequestsExhausted ? "error" : "warning",
+      title: missingRequestsExhausted ? "验证缺失恢复耗尽" : "验证要求已注入",
+      summary: missingRequestsExhausted
+        ? "模型多次准备结束，但仍没有产出可识别验证结果"
+        : "模型准备结束，但还没有运行可识别验证命令",
+      status: missingRequestsExhausted ? "blocked" : "continued",
+      data: {
+        reason,
+        check,
+        missingRequests: runtime.verification.missingRequests,
+        max: Math.max(1, runtime.controls.verificationRounds),
+        state: publicState(runtime),
+      },
+      raw: { text },
+    })
+    return [
+      "<system-reminder>",
+      missingRequestsExhausted
+        ? "系统已经多次要求你运行可识别验证，但仍没有看到真实验证结果"
+        : "你已经修改或计划修改工程内容，但还没有运行可识别验证命令",
+      missingRequestsExhausted
+        ? "不要继续反复尝试无关环境探测"
+        : "请优先运行最相关、最小范围的验证，例如项目测试、类型检查、构建检查、lint 或健康检查",
+      "如果确实不能运行验证，最终报告必须写清楚具体原因，例如缺少依赖、没有测试命令、权限或沙箱限制、网络不可用、验证耗时超出本轮预算",
+      missingRequestsExhausted
+        ? "请输出 blocked 报告，明确已经尝试过哪些验证、为什么无法得到验证结果、下一步需要什么信息"
+        : "不要只写“未测试”或“建议用户测试”",
+      "</system-reminder>",
+    ].join("\n")
+  }
+
+  function requestZeroPatchRecovery(
+    turn: TurnContext,
+    runtime: RuntimeState,
+    text: string,
+    input: { workspaceChanged?: boolean } | undefined,
+    reason: string,
+  ) {
     if (runtime.patch.zeroPatchRecoveries >= runtime.controls.zeroPatchRecoveryMax) {
       runtime.patch.zeroPatchExhausted = true
       phase(turn, "blocked", "zero_patch_recovery_exhausted")
@@ -1378,9 +1446,16 @@ export namespace EngineeringHarness {
           workspaceChanged: input?.workspaceChanged,
           state: publicState(runtime),
         },
-        raw: { text },
-      })
-      return
+          raw: { text },
+        })
+      return [
+        "<system-reminder>",
+        "系统阻止了最终回复，因为本轮需要实际代码改动，但 git diff 仍然为空",
+        "零补丁恢复次数已经用完",
+        "不要说已完成、已修复或实现完成",
+        "请输出 blocked 报告，明确为什么没有补丁、已经尝试过什么、下一步需要什么信息",
+        "</system-reminder>",
+      ].join("\n")
     }
     runtime.patch.zeroPatchRecoveries++
     phase(turn, "repair", "zero_patch")
@@ -1400,6 +1475,7 @@ export namespace EngineeringHarness {
         workspaceChanged: input?.workspaceChanged,
         recovery: runtime.patch.zeroPatchRecoveries,
         max: runtime.controls.zeroPatchRecoveryMax,
+        reason,
         state: publicState(runtime),
       },
       raw: { text },
@@ -1410,7 +1486,10 @@ export namespace EngineeringHarness {
       title: "请求零补丁恢复",
       summary: `恢复 ${runtime.patch.zeroPatchRecoveries}/${runtime.controls.zeroPatchRecoveryMax}`,
       status: "continued",
-      data: publicState(runtime),
+      data: {
+        reason,
+        state: publicState(runtime),
+      },
     })
     return [
       "<system-reminder>",
@@ -1489,12 +1568,13 @@ export namespace EngineeringHarness {
         data: quality,
       })
     }
+    const finishStatus = runtime.phase === "blocked" || runtime.patch.zeroPatchExhausted ? "blocked" : status
     record(turn, {
       type: "engineering.run.finished",
       severity: status === "completed" ? "info" : "warning",
-      title: runtime.patch.zeroPatchExhausted ? "工程运行阻塞" : status === "completed" ? "工程运行完成" : "工程运行中断",
+      title: finishStatus === "blocked" ? "工程运行阻塞" : status === "completed" ? "工程运行完成" : "工程运行中断",
       summary: `阶段 ${phaseLabel(runtime.phase)}，工具 ${runtime.loop.toolCalls} 次，验证 ${runtime.verification.attempts} 次`,
-      status: runtime.patch.zeroPatchExhausted ? "blocked" : status,
+      status: finishStatus,
       data: publicState(runtime),
     })
     states.delete(turn.turnID)
@@ -1866,9 +1946,7 @@ function stopGateChecks(turn: TurnContext, runtime: RuntimeState, input: { works
     liveProcesses.length > 0
       ? stopGateCheck("live_process", "blocked", `还有 ${liveProcesses.length} 个后台命令仍在运行`, liveProcesses.length)
       : stopGateCheck("live_process", "pass", "没有发现本 turn 的 running 后台进程", 0),
-    requiresVerification(runtime) && runtime.artifacts.verificationResults.length === 0
-      ? stopGateCheck("verification", "continue", "本轮工程任务还没有可识别验证结果")
-      : stopGateCheck("verification", "pass", runtime.stopGate.active ? "验证已通过并开启通过即停止" : "本轮不需要额外验证或已有验证结果"),
+    verificationStopGateCheck(runtime),
     runtime.intake.expectedEvidence.includes("diff") && input?.workspaceChanged === false
       ? stopGateCheck("zero_patch", runtime.patch.zeroPatchExhausted ? "blocked" : "continue", "工程任务当前没有有效工作区改动")
       : stopGateCheck("zero_patch", "pass", input?.workspaceChanged === true ? "已检测到工作区改动" : "本轮没有发现零补丁阻塞"),
@@ -1892,6 +1970,35 @@ function stopGateCheck(
     count,
     at: Date.now(),
   } satisfies EngineeringStopGateCheck
+}
+
+function verificationStopGateCheck(runtime: RuntimeState) {
+  if (!requiresVerification(runtime)) return stopGateCheck("verification", "pass", "本轮不需要额外验证")
+  if (runtime.verification.passed) {
+    return stopGateCheck("verification", "pass", "验证已通过并开启通过即停止")
+  }
+  if (runtime.verification.skipped) {
+    return stopGateCheck("verification", "pass", runtime.verification.skipReason ?? "验证已按明确原因记录为跳过")
+  }
+  if (runtime.verification.attempts > 0) {
+    return stopGateCheck(
+      "verification",
+      runtime.verification.attempts >= runtime.controls.verificationRounds ? "blocked" : "continue",
+      runtime.verification.attempts >= runtime.controls.verificationRounds
+        ? "验证仍然失败，且验证修复轮数已用完"
+        : "最近一次验证失败，需要带着失败反馈继续修复",
+    )
+  }
+  if (runtime.verification.missingRequests >= Math.max(1, runtime.controls.verificationRounds)) {
+    return stopGateCheck("verification", "blocked", "已经多次要求验证，但仍没有可识别验证结果")
+  }
+  return stopGateCheck("verification", "continue", "本轮工程任务还没有可识别验证结果")
+}
+
+function allowsBlockedFinal(text: string) {
+  return /blocked|阻塞|无法继续|无法修改|不能修改|没有补丁|未能生成补丁|缺少.*信息|需要.*信息|无法验证|验证失败.*用完/i.test(
+    text,
+  )
 }
 
 function verificationPlanSummary(runtime: RuntimeState, command: string | undefined) {
@@ -2047,9 +2154,25 @@ function stablePreview(value: unknown) {
 }
 
 function looksLikeVerification(command: string) {
-  return /\b(test|check|verify|pytest|vitest|jest|mocha|ava|npm\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|pnpm\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|yarn\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|bun\s+(test|run\s+[^;&|]*(test|lint|typecheck|build|e2e))|node\s+--test|cargo\s+test|go\s+test|mvn\s+test|gradle\s+test|make\s+(test|check|lint|build)|just\s+(test|check|lint|build)|tox|nox|hatch\s+test|ruff|eslint|tsc|typecheck|playwright\s+test|cypress\s+run|storybook|next\s+build|vite\s+build|astro\s+check|svelte-check|lighthouse|pa11y|axe|curl\s+(-f|--fail)|wget\s+--spider|docker\s+compose\s+(config|ps)|systemctl\s+is-active)\b/i.test(
-    command,
+  return verificationCommandSegments(command).some((segment) =>
+    /^(npm\s+test|npm\s+run\s+\S*(test|lint|typecheck|build|e2e)\S*|pnpm\s+test|pnpm\s+run\s+\S*(test|lint|typecheck|build|e2e)\S*|yarn\s+\S*(test|lint|typecheck|build|e2e)\S*|yarn\s+run\s+\S*(test|lint|typecheck|build|e2e)\S*|bun\s+test|bun\s+run\s+\S*(test|lint|typecheck|build|e2e)\S*|bun\s+typecheck|node\s+--test|python\d*(\.\d+)?\s+(-m\s+pytest|(-m\s+)?unittest|(\.\/)?tests\/runtests\.py)|pytest|vitest|jest|mocha|ava|cargo\s+test|go\s+test|mvn\s+test|gradle\s+test|make\s+(test|check|lint|build)|just\s+(test|check|lint|build)|tox|nox|hatch\s+test|ruff\s+check|eslint|tsc|typecheck|(npx\s+)?playwright\s+test|cypress\s+run|storybook|next\s+build|vite\s+build|astro\s+check|svelte-check|lighthouse|pa11y|axe|curl\s+(-f|--fail)|wget\s+--spider|docker\s+compose\s+(config|ps)|systemctl\s+is-active)(\s|$)/i.test(segment),
   )
+}
+
+function verificationCommandSegments(command: string) {
+  return command
+    .split(/(?:&&|\|\||;|\n)/)
+    .map((item) => stripCommandPrefix(item.trim()))
+    .filter((item) => item.length > 0)
+}
+
+function stripCommandPrefix(segment: string) {
+  return segment
+    .replace(/^env\s+((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*)/, "")
+    .replace(/^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*)/, "")
+    .replace(/^timeout\s+(?:-\w+\s+)*\d+[smhd]?\s+/, "")
+    .replace(/^time\s+/, "")
+    .trim()
 }
 
 function expectedEvidence(taskClass: EngineeringTaskClass) {

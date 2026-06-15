@@ -1251,19 +1251,17 @@ describe("Codex turn sandbox tool gates", () => {
             helper: "system-bwrap",
           }),
         )
-        if (helper.available) {
-          expect(sandbox?.helper).toEqual(
-            expect.objectContaining({
-              restrictions: expect.objectContaining({
-                seccomp: true,
-              }),
-              seccomp: expect.objectContaining({
-                mode: "network-off",
-                enforcement: "helper",
-              }),
+        expect(sandbox?.helper).toEqual(
+          expect.objectContaining({
+            restrictions: expect.objectContaining({
+              landlock: false,
+              seccomp: false,
             }),
-          )
-        }
+            seccomp: expect.objectContaining({
+              mode: "disabled",
+            }),
+          }),
+        )
         const networkNamespaceAvailable = probeLinuxSandboxCapability().bwrap.networkNamespaceProbe.available
         if (networkNamespaceAvailable) expect(sandbox?.args).toContain("--unshare-net")
         else expect(sandbox?.args).not.toContain("--unshare-net")
@@ -1279,17 +1277,23 @@ describe("Codex turn sandbox tool gates", () => {
             }),
           }),
         )
-        if (helper.available) {
-          expect(checked?.data).toEqual(
-            expect.objectContaining({
-              linux_sandbox_helper: expect.objectContaining({
-                seccomp: expect.objectContaining({
-                  mode: "network-off",
-                }),
+        expect(checked?.data).toEqual(
+          expect.objectContaining({
+            linux_sandbox_helper: expect.objectContaining({
+              restrictions: expect.objectContaining({
+                landlock: false,
+                seccomp: false,
+              }),
+              seccomp: expect.objectContaining({
+                mode: "disabled",
               }),
             }),
-          )
-        }
+            landlock_helper: expect.objectContaining({
+              enforce_in_bwrap: false,
+              opt_in_env: "AIALRA_BWRAP_LANDLOCK_ENFORCE=1",
+            }),
+          }),
+        )
       } finally {
         yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
       }
@@ -1325,14 +1329,37 @@ describe("Codex turn sandbox tool gates", () => {
       try {
         expect(sandbox?.mode).toBe("bwrap")
         expect(sandbox?.args).not.toContain("--unshare-net")
-        if (landlockHelperStatus().available) {
-          expect(sandbox?.helper?.seccomp).toEqual(
-            expect.objectContaining({
-              mode: "restricted",
-              enforcement: "helper",
-            }),
-          )
-        }
+        expect(sandbox?.helper?.seccomp).toEqual(
+          expect.objectContaining({
+            mode: "disabled",
+          }),
+        )
+      } finally {
+        yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
+      }
+    }),
+  )
+
+  it.instance("keeps /dev/null writable inside the bwrap shell sandbox", () =>
+    Effect.gen(function* () {
+      if (!canRunBwrapSandbox()) return
+      const test = yield* TestInstance
+      const cwd = path.join(test.directory, "workspace")
+      yield* Effect.promise(() => fs.mkdir(cwd, { recursive: true }))
+      const sandbox = yield* TurnSandbox.shellSandboxCommand(ctx(turn(cwd)), {
+        shell: "bash",
+        command: "echo ok >/dev/null",
+        cwd,
+      })
+      try {
+        const result = Bun.spawnSync(
+          [
+            sandbox?.program ?? "missing",
+            ...(sandbox?.args ?? []),
+          ],
+          { stdout: "pipe", stderr: "pipe", timeout: 10_000 },
+        )
+        expect(result.exitCode).toBe(0)
       } finally {
         yield* TurnSandbox.cleanupShellSandboxCommand(sandbox)
       }

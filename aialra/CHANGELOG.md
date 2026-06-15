@@ -1,5 +1,31 @@
 # AIALRA changelog
 
+## 2026-06-15
+
+- Implemented Engineering Completion Gate v1. Engineering bug/refactor/test
+  turns now refuse a final answer when the workspace has no git diff, generate
+  zero-patch feedback, and force the model back into repair unless the recovery
+  budget is exhausted or the task is explicitly blocked.
+- Verification failures now feed a structured repair item back into the turn.
+  The repair item records the failed command, likely failure file, expected and
+  actual values when they can be extracted, and a short error summary instead
+  of leaving the failure only in raw logs.
+- Verification success now activates the stop gate. After a recognized
+  successful validation command, read/bash/edit/write/apply_patch style tools
+  are blocked and the model is pushed toward the final report.
+- Gate decisions now enter public events, Turn Inspector, and benchmark JSON.
+  The real benchmark runner also stopped treating per-step `step-finish`
+  messages as whole-turn completion; AIALRA targets with public events now wait
+  for `turn.completed` or `turn.aborted`.
+- Re-ran `tier-regression-6` for AIALRA OpenCode with DeepSeek V4 Pro max, run
+  `20260615211800`. Result: 6/6 completed, 6/6 non-empty patches, 0/6 zero
+  patches, 4/6 official verified passes, 0 timeouts, 0 approval stalls, 6/6
+  turn terminal events, and patch quality average 77. Report:
+  `aialra/turn-observability/real-benchmark-reports/real-benchmark-20260615211800.md`.
+- Acceptance result: passed. The prior post-95 gate was 4/6 verified with 1/6
+  zero patch. This run kept verified pass count at 4/6 and reduced zero patch
+  from 1/6 to 0/6 without adding approval stalls or logical timeouts.
+
 ## 2026-06-05
 
 - Completed the full 95-item protocol-parity execution pass through REQ-095.

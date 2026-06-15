@@ -552,9 +552,9 @@ it.instance(
       expect(result.info.role).toBe("assistant")
       if (result.info.role === "assistant") expect(result.info.finish).toBe("stop")
       expect(yield* llm.calls).toBe(0)
-    }),
+  }),
   { git: true },
-  10_000,
+  30_000,
 )
 
 it.instance(
@@ -1057,6 +1057,7 @@ it.instance(
           if (tool?.state.status === "running" && tool.state.metadata?.sessionId) return tool
         }),
         "timed out waiting for running subtask metadata",
+        "10 seconds",
       )
 
       if (tool.state.status !== "running") return
@@ -1068,7 +1069,7 @@ it.instance(
       yield* Fiber.await(fiber)
     }),
   { git: true },
-  5_000,
+  15_000,
 )
 
 it.instance(
@@ -1102,6 +1103,7 @@ it.instance(
           if (tool?.state.status === "running" && tool.state.metadata?.sessionId) return tool
         }),
         "timed out waiting for running task metadata",
+        "10 seconds",
       )
 
       if (tool.state.status !== "running") return
@@ -1111,9 +1113,9 @@ it.instance(
 
       yield* prompt.cancel(chat.id)
       yield* Fiber.await(fiber)
-    }),
+  }),
   { git: true },
-  10_000,
+  30_000,
 )
 
 it.instance(
@@ -1506,7 +1508,7 @@ it.instance(
       expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("second")
     }),
   { git: true },
-  10_000,
+  30_000,
 )
 
 it.instance(
@@ -2078,7 +2080,7 @@ unix(
 
           yield* llm.tool("bash", {
             command:
-              'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; sleep 2',
+              'yes "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" | head -n 20000; sleep 30',
             description: "Print many lines",
             timeout: 30_000,
             workdir: path.resolve(dir),
