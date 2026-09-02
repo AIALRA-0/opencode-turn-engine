@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
+const vm = require("node:vm");
 
 const {
   BOOTSTRAP_SCRIPT_PATH,
@@ -87,6 +88,76 @@ test("bootstrap seeds the public server and account logout UI", () => {
   assert.ok(script.includes('fetch("/logout", { method: "POST", credentials: "include" })'));
 });
 
+test("bootstrap drops heavy restored projects for the current public server", () => {
+  const origin = "https://opencode.aialra.online";
+  const serverStorageKey = "opencode.global.dat:server";
+  const storage = new Map([
+    [
+      serverStorageKey,
+      JSON.stringify({
+        list: [],
+        projects: {
+          [origin]: [
+            { worktree: "/srv/aialra", expanded: true },
+            { worktree: "/srv/aialra/turn-harness-target/run/worktree", expanded: true },
+            { worktree: "/srv/aialra/apps/codexapp", expanded: true },
+          ],
+          "https://other.example": [{ worktree: "/srv/aialra", expanded: true }],
+        },
+        lastProject: {
+          [origin]: "/srv/aialra",
+          "https://other.example": "/srv/aialra",
+        },
+      }),
+    ],
+  ]);
+
+  const document = {
+    readyState: "loading",
+    documentElement: {},
+    body: {},
+    addEventListener() {},
+    getElementById() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    createElement() {
+      return {
+        querySelector() {
+          return { addEventListener() {} };
+        },
+      };
+    },
+  };
+
+  vm.runInNewContext(openCodeBootstrapScript(), {
+    URL,
+    MutationObserver: class {
+      observe() {}
+    },
+    document,
+    fetch: async () => ({}),
+    localStorage: {
+      getItem: (key) => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+    },
+    window: {
+      location: {
+        origin,
+        assign() {},
+      },
+    },
+  });
+
+  const next = JSON.parse(storage.get(serverStorageKey));
+  assert.deepEqual(next.projects[origin], [{ worktree: "/srv/aialra/apps/codexapp", expanded: true }]);
+  assert.equal(next.lastProject[origin], undefined);
+  assert.deepEqual(next.projects["https://other.example"], [{ worktree: "/srv/aialra", expanded: true }]);
+  assert.equal(next.lastProject["https://other.example"], "/srv/aialra");
+});
+
 test("returns compact JSON when the upstream is unavailable", async () => {
   const proxy = createServer(proxyConfig(9));
   const port = await listen(proxy);
@@ -104,6 +175,29 @@ test("returns compact JSON when the upstream is unavailable", async () => {
     assert.match(body, /upstream_unavailable/);
   } finally {
     await close(proxy);
+  }
+});
+
+test("blocks dangerous project directories before proxying", async () => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((req, res) => {
+    upstreamRequests += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  const upstreamPort = await listen(upstream);
+  const proxy = createServer(proxyConfig(upstreamPort));
+  const proxyPort = await listen(proxy);
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/path?directory=%2Fsrv%2Faialra`, {
+      headers: { cookie: sessionCookie() },
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error, "blocked_project_directory");
+    assert.equal(upstreamRequests, 0);
+  } finally {
+    await close(proxy);
+    await close(upstream);
   }
 });
 

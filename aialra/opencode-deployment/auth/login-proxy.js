@@ -43,6 +43,46 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function isBlockedOpenCodeProjectPath(worktree) {
+  if (typeof worktree !== "string") return true;
+  return (
+    worktree === "/srv/aialra" ||
+    worktree === "/srv/aialra/" ||
+    worktree.startsWith("/srv/aialra/turn-harness-target/") ||
+    worktree.startsWith("/srv/aialra/state/") ||
+    worktree.startsWith("/srv/aialra/logs/")
+  );
+}
+
+function firstHeaderValue(value) {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function blockedProjectDirectory(req) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  const candidates = [
+    url.searchParams.get("directory"),
+    url.searchParams.get("location[directory]"),
+    firstHeaderValue(req.headers["x-opencode-directory"]),
+  ];
+  return candidates.find((directory) => directory && isBlockedOpenCodeProjectPath(directory));
+}
+
+function sendBlockedProjectDirectory(req, res, directory) {
+  const body = JSON.stringify({
+    error: "blocked_project_directory",
+    directory,
+    message: "This OpenCode deployment does not auto-open server root, state, logs, or benchmark worktree directories.",
+  });
+  res.writeHead(409, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
 function timingSafeEqualString(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
@@ -104,6 +144,18 @@ function isValidSession(req, expectedUsername, secret) {
   } catch {
     return false;
   }
+}
+
+function isGatewayAuthenticated(req) {
+  const remoteAddress = req.socket.remoteAddress || "";
+  const fromLoopback =
+    remoteAddress === "127.0.0.1" ||
+    remoteAddress === "::1" ||
+    remoteAddress === "::ffff:127.0.0.1";
+  const authenticated = req.headers["x-aialra-authenticated"] === "1";
+  const subject = String(req.headers["x-aialra-sub"] || "").trim();
+  const user = String(req.headers["x-aialra-user"] || "").trim();
+  return fromLoopback && authenticated && Boolean(subject) && Boolean(user);
 }
 
 function setCookieHeader(token, secure) {
@@ -367,6 +419,35 @@ function openCodeBootstrapScript() {
     return normalized === "http://localhost:4096" || normalized === "http://127.0.0.1:4096";
   }
 
+  function isBlockedProjectPath(worktree) {
+    if (typeof worktree !== "string") return true;
+    return (
+      worktree === "/srv/aialra" ||
+      worktree === "/srv/aialra/" ||
+      worktree.startsWith("/srv/aialra/turn-harness-target/") ||
+      worktree.startsWith("/srv/aialra/state/") ||
+      worktree.startsWith("/srv/aialra/logs/")
+    );
+  }
+
+  function sanitizeProjectsForCurrentOrigin(state) {
+    const projects = state.projects && typeof state.projects === "object" ? { ...state.projects } : {};
+    const lastProject = state.lastProject && typeof state.lastProject === "object" ? { ...state.lastProject } : {};
+    const currentProjects = Array.isArray(projects[origin])
+      ? projects[origin].filter((item) => item && !isBlockedProjectPath(item.worktree))
+      : [];
+
+    projects[origin] = currentProjects;
+    if (
+      isBlockedProjectPath(lastProject[origin]) ||
+      !currentProjects.some((item) => item.worktree === lastProject[origin])
+    ) {
+      delete lastProject[origin];
+    }
+
+    return { projects, lastProject };
+  }
+
   function seedCurrentServer() {
     const current = {
       type: "http",
@@ -382,11 +463,12 @@ function openCodeBootstrapScript() {
         return normalizeUrl(url) !== origin && !isBrokenLocalhost(url);
       }),
     ];
+    const { projects, lastProject } = sanitizeProjectsForCurrentOrigin(state);
     writeJson(serverStorageKey, {
       ...state,
       list: nextList,
-      projects: state.projects && typeof state.projects === "object" ? state.projects : {},
-      lastProject: state.lastProject && typeof state.lastProject === "object" ? state.lastProject : {},
+      projects,
+      lastProject,
     });
     try {
       localStorage.setItem(defaultServerKey, origin);
@@ -577,6 +659,12 @@ async function handleLogin(req, res, config) {
 }
 
 function proxyRequest(req, res, config, attempt = 0) {
+  const blockedDirectory = blockedProjectDirectory(req);
+  if (blockedDirectory) {
+    sendBlockedProjectDirectory(req, res, blockedDirectory);
+    return;
+  }
+
   const headers = { ...req.headers };
   headers.host = `${config.upstreamHost}:${config.upstreamPort}`;
   headers.authorization = config.upstreamAuthorization;
@@ -654,9 +742,18 @@ function proxyRequest(req, res, config, attempt = 0) {
 }
 
 function proxyUpgrade(req, socket, head, config) {
-  if (!isValidSession(req, config.username, config.sessionSecret)) {
+  if (!isGatewayAuthenticated(req) && !isValidSession(req, config.username, config.sessionSecret)) {
     socket.write(
       "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 26\r\n\r\n{\"error\":\"login_required\"}",
+    );
+    socket.destroy();
+    return;
+  }
+  const blockedDirectory = blockedProjectDirectory(req);
+  if (blockedDirectory) {
+    socket.write(
+      "HTTP/1.1 409 Conflict\r\ncontent-type: application/json\r\ncache-control: no-store\r\n\r\n" +
+        JSON.stringify({ error: "blocked_project_directory", directory: blockedDirectory }),
     );
     socket.destroy();
     return;
@@ -728,6 +825,14 @@ function createServer(config) {
         proxyRequest(req, res, config);
         return;
       }
+      if (isGatewayAuthenticated(req) && url.pathname === "/login") {
+        redirect(res, url.searchParams.get("next") || "/");
+        return;
+      }
+      if (isGatewayAuthenticated(req) && url.pathname === "/logout") {
+        redirect(res, "/_aialra_auth/logout", { "set-cookie": clearCookieHeader() });
+        return;
+      }
       if (req.method === "GET" && url.pathname === "/login") {
         sendLogin(res, { next: url.searchParams.get("next") || "/" });
         return;
@@ -741,7 +846,7 @@ function createServer(config) {
         return;
       }
 
-      if (!isValidSession(req, config.username, config.sessionSecret)) {
+      if (!isGatewayAuthenticated(req) && !isValidSession(req, config.username, config.sessionSecret)) {
         sendUnauthenticated(req, res);
         return;
       }

@@ -10,9 +10,9 @@ User=root
 Group=root
 WorkingDirectory=/srv/aialra/apps/opencode-turn-engine
 EnvironmentFile=/srv/aialra/config/secrets/opencode.env
-Environment=HOME=/srv/aialra/state/root-home
-Environment=XDG_CONFIG_HOME=/srv/aialra/state/root-home/.config
-Environment=XDG_DATA_HOME=/srv/aialra/state/root-home/.local/share
+Environment=HOME=/srv/aialra/state/opencode-home
+Environment=XDG_CONFIG_HOME=/srv/aialra/state/opencode-home/.config
+Environment=XDG_DATA_HOME=/srv/aialra/state/opencode-home/.local/share
 Environment=NODE_ENV=production
 Environment=AIALRA_TURN_TRACE=1
 Environment=AIALRA_TURN_TRACE_DIR=/srv/aialra/apps/opencode-turn-engine/aialra/turn-observability/traces
